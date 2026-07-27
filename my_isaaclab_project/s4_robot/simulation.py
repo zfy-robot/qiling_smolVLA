@@ -42,7 +42,7 @@ class TaskLayout:
     """
 
     table_center_x: float = 0.82
-    table_center_y: float = -0.2
+    table_center_y: float = -0.05
     block_x: float = 0.50
     block_y_offset: float = 0.20
     plate_x: float = 0.50

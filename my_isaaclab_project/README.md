@@ -143,10 +143,10 @@ bash run.sh control reach-block --block blue --z-offset 0.20 --tcp-z-offset -0.1
 `scripts/03_record_physics_dataset.py`：
 
 - `--robot-base-z 0.98`
-- `--task-x 0.55`
-- `--task-y 0.0`
+- `--task-x 0.50`
+- `--task-y -0.05`
 - `--block-y-offset 0.20`
-- `--plate-x 0.55`
+- `--plate-x 0.50`
 - `--joint-stiffness 140.0`
 - `--joint-damping 28.0`
 - `--target-alpha 0.08`

@@ -263,6 +263,7 @@ bash run.sh sim
 ```
 
 `run.sh sim` 默认已经带 `--print-layout --show-tcp-frames`。
+当前默认任务布局整体偏向机器人右侧：`--task-y=-0.05`。因此红色圆柱/垫块约在 `y=+0.15`，蓝色圆柱/垫块约在 `y=-0.25`，盘子/垫块约在 `y=-0.05`。这些位置都由 `TaskLayout.table_center_y` 派生，修改布局时必须同步检查 red/blue/plate/platform 的 reset 位置和日志打印。
 
 检查本项目配置、路径和 26D action 顺序：
 
@@ -299,7 +300,7 @@ bash run.sh control hand close
 bash run.sh control reach-block --block blue --hand close
 ```
 
-右手抓取 smoke test：
+右手 pick-place smoke test：
 
 ```bash
 bash run.sh control grasp-block
@@ -312,22 +313,29 @@ bash run.sh control grasp-block --block red --approach-z 0.22 --grasp-z 0.08 --l
 bash run.sh control grasp-block --block blue --grasp-pose current
 bash run.sh control grasp-block --block blue --grasp-pose current --grasp-roll 0.20
 bash run.sh control grasp-block --block blue --grasp-pose current --grasp-pitch -0.20
-bash run.sh control grasp-block --block blue --grasp-pose current --grasp-yaw 0.20
+bash run.sh control grasp-block --block blue --grasp-pose current --grasp-yaw -0.20
 ```
 
 `grasp-block` 参数语义：
 
 - `--block red|blue`：选择右手要抓的物块。当前只是右手 smoke test，不会自动切左手。
-- `--approach-z`：approach 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.20m`，用于先到物块上方。
-- `--grasp-z`：lower/close 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.08m`，用于下降到接近抓取高度。
-- `--lift-z`：lift 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.22m`，闭合手后抬起。
+- `--approach-z`：approach 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.10m`，用于先到物块上方。
+- `--grasp-z`：lower/close 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.01m`，用于下降到接近抓取高度。
+- `--lift-z`：lift 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.15m`，闭合手后抬起。
+- `--place-approach-z`：移动到盘子上方阶段 TCP 相对盘子中心的 Z 偏移，默认 `0.18m`。
+- `--place-z`：放置/张手阶段 TCP 相对盘子中心的 Z 偏移，默认 `0.10m`。
+- `--release-retreat-y`：release 张手后，继续用同一套 Cartesian IK 在世界坐标系 Y 方向移动的偏移，默认 `-0.20m`。
+- `--release-retreat-z`：release 张手后，继续用同一套 Cartesian IK 在世界坐标系 Z 方向移动的偏移，默认 `+0.15m`。
+- `--retreat-steps`：release 后 world Y/Z 退避阶段最大步数，默认 `360`。
 - `--x-offset/--y-offset`：所有阶段共用的水平偏移，用于微调手指相对物块的位置。
-- `--tolerance`：阶段切换的 TCP 距离阈值，默认 `0.06m`。如果 reach 误差仍约 `5cm`，不要把这个值调太小，否则状态机会卡在 approach/lower。
+- `--tolerance`：阶段切换的 TCP 距离阈值，默认 `0.05m`。这是当前抓取/放置 smoke test 的正常阈值；如果状态机卡在 lower/place_lower，再结合日志微调。
 - `--approach-steps`：approach 阶段最大步数；到达 tolerance 或超过最大步数都会进入 lower。
 - `--lower-steps`：lower 阶段等待到位的告警步数，不再允许靠超时进入 close。lower 必须达到 `--tolerance` 才能闭合手，避免 reset 后第一次命令在物块上方空抓。
 - `--close-steps`：close 阶段保持闭合命令的步数，之后进入 lift。
-- `--grasp-pose none|current`：`none` 只控位置；`current` 在命令开始时锁定当前 TCP 姿态，并用 pose IK 保持该姿态。
-- `--grasp-roll/--grasp-pitch/--grasp-yaw`：在锁定的当前 TCP 姿态上叠加局部 RPY 微调，单位 rad。建议一次只调一个轴，每次 `0.1~0.2rad`。
+- `--lift-steps/--place-steps/--release-steps/--retreat-steps`：抓起后移动到盘子、等待释放、张手、释放后 world Y/Z 退避的阶段步数。`place_lower -> release` 和 `lower -> close` 一样必须到 tolerance，避免高处张手。
+- `--grasp-pose none|current`：`none` 只控位置；`current` 在 approach/lower/close 前使用命令开始时锁定的 TCP 姿态；进入 lift 时再锁定“实际抓住时”的 TCP 姿态，搬运、放置、松手、回撤都保持这个 carry/place 姿态，避免放置阶段继续改变末端姿态。
+- `--grasp-roll/--grasp-pitch/--grasp-yaw`：在锁定的当前 TCP 姿态上叠加局部 RPY 微调，单位 rad。当前默认 `grasp_pitch=0.10`、`grasp_yaw=-0.20`；yaw 用来让右肘更向外打开，搬运/放置时减少手臂挡住盘子或内收挤压圆柱。
+- `--place-roll`：进入放置阶段后，在实际抓住瞬间的 carry TCP 姿态基础上，额外绕本地 x 轴旋转，默认 `+0.40rad`。按右手系看作绕 TCP 本地 +x 方向逆时针旋转；`lift` 仍保持抓住瞬间姿态，`move_to_plate/place_lower/release` 使用额外 roll 后的放置姿态。如果可视化方向相反，显式传负值。
 
 右臂直接关节测试：
 
@@ -574,7 +582,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 - 2026-07-27 新增最小 pose IK 抓取姿态调试：
   - `RightArmReachController` 内部保留 position IK controller，同时新增 `DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")` 的 pose IK controller。
   - `reach-block` 默认仍为 position-only，不影响原有位置调试。
-  - `grasp-block --grasp-pose current` 会在命令开始时锁定当前右手 TCP 姿态，然后在 `approach/lower/close/lift` 全阶段保持这个姿态；目标姿态和目标位置一样都是固定 world/base anchor，不跟随被碰动的圆柱。
+  - `grasp-block --grasp-pose current` 会在命令开始时锁定当前右手 TCP 姿态，用于 `approach/lower/close`。后续已进一步改为：进入 `lift` 时锁定实际抓住瞬间的 TCP 姿态，搬运、放置、松手、回撤都保持这个 carry/place 姿态；目标姿态和目标位置一样都是固定 world/base anchor，不跟随被碰动的圆柱。
   - `--grasp-roll/--grasp-pitch/--grasp-yaw` 会在锁定姿态上叠加局部姿态偏移，便于小步调手掌朝向。
   - `/World/Visuals/TargetBlockTCP` marker 现在会显示目标姿态，不再只是 identity orientation 的位置 marker。
   - 状态日志新增 `rot_err=(rx,ry,rz)`，为 root/base frame 下的 axis-angle 姿态误差。调姿态时先让 `right_tcp_dist` 小，再看 `rot_err` 是否下降。
@@ -598,8 +606,24 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
   - 用户 15:10 的 `/tmp/isaaclab/logs/isaaclab_2026-07-27_15-10-15.log` 是空文件；只出现 `CCD is not supported on GPU` 仍不能说明启动失败根因。
 - 2026-07-27 用户已验证当前默认配置可用：
   - 可用启动命令曾是 `bash run.sh sim --print-layout --show-tcp-frames --no-remove-table-clutter`，现已固化为 `bash run.sh sim` 默认行为：自动 print layout、显示 TCP frames、且不再删除桌面筐子。
-  - 可用抓取命令曾是 `bash run.sh control grasp-block --block blue --grasp-pose current --grasp-pitch 0.1`，现已固化为 `bash run.sh control grasp-block` 默认行为：`block=blue`、`grasp_pose=current`、`grasp_pitch=0.1`。
+  - 可用抓取命令曾是 `bash run.sh control grasp-block --block blue --grasp-pose current --grasp-pitch 0.1`，现已固化为 `bash run.sh control grasp-block` 默认行为：`block=blue`、`grasp_pose=current`、`grasp_pitch=0.1`，后续又加入 `grasp_yaw=-0.20` 作为默认外展姿态。
   - 当前右手可以把蓝色圆柱抓起来，这是进入后续放置/采集数据前的最新稳定基线。
+- 2026-07-27 用户反馈右手已能抓起圆柱，开始扩展放置流程：
+  - `grasp-block` 从“抓起并保持”扩展为完整右手 pick-place smoke test。旧流程曾是 `approach -> lower -> close -> lift -> move_to_plate -> place_lower -> release -> retreat -> done`，其中 `retreat` 是相对盘子 world Z 抬高。
+  - 抓取阶段继续使用命令开始时锁定的圆柱 world/base anchor；放置阶段切换到命令开始时锁定的盘子 world/base anchor，避免被抓物体或盘子轻微扰动后目标漂移。
+  - `place_lower -> release` 不允许靠超时高处张手，必须 TCP 进入 `--tolerance`；如果不到位会打印 `[ARM] waiting at plate release target before opening: ...`。
+  - 旧版本 release 后右手张开，retreat 阶段抬到盘子上方，然后进入 `hold` 模式保持当前姿态；这也是用户反馈“放置完没有回原点”的原因，因为代码明确把 `done` 设成了 hold。
+- 2026-07-27 根据用户反馈继续提高放置成功率：
+  - 放置阶段不再继续追命令开始时的末端姿态。状态机从 `close -> lift` 切换时，会读取当时真实 TCP quaternion，写入 `carry_tcp_quat_w`；`lift` 使用这个姿态抬起。
+  - 用户后续明确放置时应在已经抓取后，绕手末端坐标系 x 方向逆时针旋转一个角度。因此 `place_rpy/place-roll` 默认改为 `[+0.40, 0.0, 0.0]`，也就是在 carry 姿态上额外叠加本地 x roll `+0.40rad`，得到 `place_tcp_quat_w`。`move_to_plate/place_lower/release` 使用该放置姿态。
+  - 默认任务布局整体向机器人右侧移动：`scripts/03_record_physics_dataset.py --task-y` 和 `TaskLayout.table_center_y` 都改为 `-0.05`。红/蓝圆柱、三个垫块、盘子都从该 Y 中心派生，reset 和 `format_layout()` 会同步使用新位置。
+  - 位置变化后，默认蓝色圆柱约为 `(0.50, -0.25, z)`，盘子约为 `(0.50, -0.05, z)`，更靠右臂工作区；如后续改 `--task-y`，必须同时观察 `bash run.sh sim` 启动时打印的 red/blue/plate/platform 坐标。
+  - 默认 `grasp_yaw` 从 `0.0rad` 改为 `-0.20rad`，仿真端手写 JSON 的兜底 `grasp_rpy` 同步为 `[0.0, 0.1, -0.20]`。目的不是在放置阶段单独扭手腕，而是让抓取时形成一个右肘更外展的姿态；进入 `lift` 后该实际姿态会被锁定并用于后续放置。
+  - 默认 `place_z` 从 `0.08m` 改为 `0.10m`，即 `bash run.sh control grasp-block` 现在默认等价于带 `--place-z 0.10`，让松手释放点略高一点，减少手指/圆柱/盘子边缘接触干扰。
+  - 默认 `tolerance` 改为 `0.05m`，用于当前抓取/放置 smoke test。注意不要误设为 `0.5m`，否则会导致 TCP 尚未到位就切阶段。
+  - 局部 `post_place_retreat` 方案已废弃：实测放置后往旁边退时，手指仍在圆柱附近运动，可能因接触/平滑开合把圆柱再次带起。
+  - `release -> home -> done` 方案也已废弃：用户实测直接回 home 的关节空间路径会在刚离开圆柱时加速/乱甩并把圆柱带飞。
+  - 最新放置后流程改为 `release -> release_retreat -> done`。release 保持张手足够步数后，不再回 home；继续用抓取/放置过程中同一套 Cartesian IK，在固定 plate anchor 上设置 release 目标的世界坐标偏移：`Y=-0.20m, Z=+0.15m`。即退避 TCP 目标为 `plate + [0, -0.20, place_z + 0.15]`。退避完成后进入 `hold`，保持当前手臂姿态和打开的右手。
 - 2026-07-27 关于“张开时无名指比其他指头慢”的初步判断：
   - URDF 中 `rh_index_mcp_pitch/rh_middle_mcp_pitch/rh_ring_mcp_pitch/rh_pinky_mcp_pitch` 的 limit/effort/velocity 均为 `lower=0`、`upper=1.60`、`effort=100`、`velocity=1`，`rh_ring_mcp_pitch` 本身没有更慢的驱动配置。
   - 右手 policy/control 顺序为 `thumb_yaw, thumb_pitch, index, middle, ring, pinky`，open/close 对四指给的是相同目标。
@@ -655,19 +679,29 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 40. 圆柱和手部抓取做第一轮稳定化：圆柱高度/质量调整，摩擦/阻尼/solver/contact 参数更保守，右手 close 目标降低，并修复手部目标绕过平滑导致瞬时闭合的问题。
 41. 修复 `grasp-block` 目标参考系：抓取命令开始时锁定圆柱初始位置作为固定 world/base anchor，后续 lower/lift 不再跟随被碰动的圆柱当前位置。
 42. 新增手部单独速度限制 `--hand-max-joint-step=0.004`，并把 `grasp-block --close-steps` 默认提高到 `160`，降低 position-controlled 手指夹飞圆柱的概率。
-43. 新增 `grasp-block --grasp-pose current` 姿态锁定和 pose IK：抓取流程可保持命令开始时的 TCP 姿态，并可通过 `--grasp-roll/--grasp-pitch/--grasp-yaw` 微调。日志新增 `rot_err`，目标 TCP marker 显示目标姿态。
+43. 新增 `grasp-block --grasp-pose current` 姿态锁定和 pose IK：抓取 approach/lower/close 使用命令开始时锁定的 TCP 姿态，并可通过 `--grasp-roll/--grasp-pitch/--grasp-yaw` 微调。日志新增 `rot_err`，目标 TCP marker 显示目标姿态。
 44. 修复 `grasp-block` 第一次空抓问题：`lower` 阶段不再按 `lower_steps` 超时自动闭合，必须 TCP 进入 tolerance 后才进入 `close`。同时圆柱质量降到 `0.08kg`，提高当前手指夹持后抬起的可能性。
 45. 新增任务垫块，当前高度 `0.05m`；单块大垫板已拆成 `RedPlatform/BluePlatform/PlatePlatform` 三个小垫块，红/蓝圆柱和盘子整体抬高到对应垫块表面。删除桌面筐子的逻辑和参数已移除，`container_h20` 不再由代码自动隐藏。
 46. 为避免垫高后手末端被垫块挡住，`grasp-block --grasp-z` 默认改为 `+0.02m`，默认抓圆柱中上部；低位抓取必须显式调参并观察是否撞垫块。
-47. 固化当前可用默认入口：`bash run.sh sim` 默认等价于带 `--print-layout --show-tcp-frames`，`bash run.sh control grasp-block` 默认等价于右手抓蓝色圆柱并使用 `grasp-pose=current, grasp-pitch=0.1`。
+47. 固化当前可用默认入口：`bash run.sh sim` 默认等价于带 `--print-layout --show-tcp-frames`，`bash run.sh control grasp-block` 默认等价于右手抓蓝色圆柱并使用 `grasp-pose=current, grasp-pitch=0.1`，后续加入默认 `grasp-yaw=-0.20`。
+48. 扩展 `grasp-block` 为右手 pick-place smoke test：抓起圆柱后移动到盘子 anchor，上方下降到 release 目标，张手释放。
+49. 放置阶段改为锁定实际抓取瞬间的 TCP 姿态，搬运/放置/松手/回撤不再引入新的末端姿态变化；默认任务布局 Y 中心改为 `-0.05`，圆柱、垫块、盘子整体向右臂一侧移动。
+50. 默认 `grasp-yaw` 改为 `-0.20rad`，让右臂在抓取到放置的 carry pose 中更外展，提升放入盘子时的空间余量。
+51. 默认 `grasp-block --place-z` 改为 `0.10m`，提高 release 点，降低放置时撞盘子或垫块的概率。
+52. 默认 `grasp-block --tolerance` 改为 `0.05m`；注意不要误设为 `0.5m`，该值会过早切阶段。
+53. 新增 `grasp-block --place-roll`，默认 `+0.40rad`。放置阶段会在实际抓取姿态上额外绕 TCP 本地 x 轴逆时针旋转，用于让手腕外旋后再放置。
+54. 修正旧的放置结束逻辑：之前 `done` 会进入 `hold`，所以用户看到“放置完没有回原点”是符合旧代码的。
+55. 废弃 `post_place_retreat` 局部退避方案：放置后往旁边退会让手指在圆柱附近继续扰动，可能再次抓到圆柱。
+56. 废弃 `release -> home -> done` 方案：直接回 home 的关节空间路径在放置后可能加速/乱甩并打飞圆柱。
+57. 最新默认流程为 `release -> release_retreat -> done`：release 后继续使用同一套 Cartesian IK，在世界坐标系下相对 release TCP 目标移动 `Y=-0.20m, Z=+0.15m`，右手保持打开，退避完成后 hold 当前姿态。
 
 ## 未完成工作
 
 高优先级未完成：
 
 1. 双臂控制还没有接通。当前自动 reach 只控制右臂，左臂还没有 `LeftArmReachController` 或统一 bimanual controller。
-2. 已有右手 `grasp-block` smoke test 状态机，但还不是稳定真实抓取专家。当前只覆盖 `approach -> lower -> close -> lift`，还没有 place/release；已有 `--grasp-pose current` pose IK 调试，但还没有固化的侧抓/包络抓姿态模板。
-3. 当前物块还没有被稳定真实接触抓起并放入盘子。不能用它生成训练数据。
+2. 已有右手 `grasp-block` pick-place smoke test 状态机，但还不是稳定真实抓取专家。当前覆盖 `approach -> lower -> close -> lift -> move_to_plate -> place_lower -> release -> release_retreat -> done`；已有 `--grasp-pose current` pose IK 和 carry/place 姿态锁定，但还没有固化的侧抓/包络抓姿态模板。
+3. 当前用户已验证右手能抓起蓝色圆柱，但“放入盘子并稳定释放”的成功率还需要继续实机仿真验证。通过前不能用它生成训练数据。
 4. 右臂 reach 已切换到 IsaacLab 官方 `DifferentialIKController`，并加了 PhysX gravity compensation；现在执行链路已明显改善，但仍有约 `5cm` 收敛误差。下一步优先测试 `grasp-block`，判断误差是否足以闭合抓住物块；若不够，升级 pose IK/grasp frame。
 5. HDF5 writer 和 schema 已经落到本项目，但还没有接入运行中的 IsaacLab scene；`record-hdf5` 目前是 scaffold。
 6. LeRobotDataset 转换脚本已落到本项目，但还没有真实 HDF5 样本验证。

@@ -22,7 +22,7 @@ parser.add_argument("--table-visual-z", type=float, default=0.0, help="World Z t
 parser.add_argument("--table-scale", type=float, default=1.0, help="Uniform scale for the visual table USD.")
 parser.add_argument("--robot-base-z", type=float, default=0.98, help="World Z for fixed robot base_link.")
 parser.add_argument("--task-x", type=float, default=0.50, help="World X for block centers.")
-parser.add_argument("--task-y", type=float, default=0.0, help="World Y center for table and task objects.")
+parser.add_argument("--task-y", type=float, default=-0.05, help="World Y center for table and task objects.")
 parser.add_argument("--block-y-offset", type=float, default=0.20, help="Half spacing between red and blue blocks.")
 parser.add_argument("--plate-x", type=float, default=0.50, help="World X for plate center.")
 parser.add_argument("--continuous", action="store_true", help="Run forever for debug.")
@@ -329,7 +329,15 @@ def compose_grasp_quat(
         return None
     if mode != "current":
         raise ValueError(f"Unsupported grasp pose mode: {mode}")
-    current = torch.tensor(current_tcp_quat, dtype=torch.float32, device=device).view(1, 4)
+    return compose_local_rpy_quat(current_tcp_quat, rpy, device)
+
+
+def compose_local_rpy_quat(
+    base_quat: np.ndarray,
+    rpy: np.ndarray,
+    device: str,
+) -> np.ndarray:
+    current = torch.tensor(base_quat, dtype=torch.float32, device=device).view(1, 4)
     current = current / torch.linalg.norm(current, dim=1, keepdim=True).clamp_min(1e-6)
     rpy_t = torch.tensor(rpy, dtype=torch.float32, device=device).view(3)
     delta = quat_from_euler_xyz(rpy_t[0:1], rpy_t[1:2], rpy_t[2:3])
@@ -629,16 +637,29 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                     base_offset = np.array([0.0, 0.0], dtype=np.float32)
                                 grasp_plan = {
                                     "base_offset": base_offset,
-                                    "approach_z": float(payload.get("approach_z", 0.20)),
-                                    "grasp_z": float(payload.get("grasp_z", 0.08)),
-                                    "lift_z": float(payload.get("lift_z", 0.22)),
+                                    "approach_z": float(payload.get("approach_z", 0.10)),
+                                    "grasp_z": float(payload.get("grasp_z", 0.01)),
+                                    "lift_z": float(payload.get("lift_z", 0.15)),
+                                    "place_approach_z": float(payload.get("place_approach_z", 0.18)),
+                                    "place_z": float(payload.get("place_z", 0.10)),
                                     "grasp_pose": payload.get("grasp_pose", "current"),
-                                    "grasp_rpy": np.asarray(payload.get("grasp_rpy", [0.0, 0.0, 0.0]), dtype=np.float32),
-                                    "tolerance": max(float(payload.get("tolerance", 0.06)), 0.01),
+                                    "grasp_rpy": np.asarray(payload.get("grasp_rpy", [0.0, 0.1, -0.20]), dtype=np.float32),
+                                    "place_rpy": np.asarray(payload.get("place_rpy", [0.40, 0.0, 0.0]), dtype=np.float32),
+                                    "release_retreat_offset": np.asarray(
+                                        payload.get("release_retreat_offset", [0.0, -0.20, 0.15]),
+                                        dtype=np.float32,
+                                    ),
+                                    "tolerance": max(float(payload.get("tolerance", 0.05)), 0.01),
                                     "approach_steps": max(int(payload.get("approach_steps", 360)), 1),
                                     "lower_steps": max(int(payload.get("lower_steps", 240)), 1),
                                     "close_steps": max(int(payload.get("close_steps", 160)), 1),
+                                    "lift_steps": max(int(payload.get("lift_steps", 120)), 1),
+                                    "place_steps": max(int(payload.get("place_steps", 360)), 1),
+                                    "release_steps": max(int(payload.get("release_steps", 120)), 1),
+                                    "retreat_steps": max(int(payload.get("retreat_steps", 360)), 1),
                                 }
+                                if grasp_plan["release_retreat_offset"].shape != (3,):
+                                    grasp_plan["release_retreat_offset"] = np.array([0.0, -0.20, 0.15], dtype=np.float32)
                                 grasp_phase = "approach"
                                 grasp_phase_steps = 0
                                 reach_offset = np.array(
@@ -672,6 +693,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             block_pos = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
                             if mode == "grasp-block":
                                 grasp_plan["anchor_block_pos_w"] = block_pos.copy()
+                                grasp_plan["anchor_plate_pos_w"] = scene["plate"].data.root_pos_w[0].detach().cpu().numpy().copy()
                             if reach_offset_frame == "world":
                                 preview_offset_w = reach_offset
                             else:
@@ -695,6 +717,11 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                     sim.device,
                                 )
                                 grasp_plan["target_tcp_quat_w"] = None if target_tcp_quat is None else target_tcp_quat.copy()
+                                grasp_plan["carry_tcp_quat_w"] = None
+                                grasp_plan["place_tcp_quat_w"] = None
+                                grasp_plan["active_target_tcp_quat_w"] = (
+                                    None if target_tcp_quat is None else target_tcp_quat.copy()
+                                )
                             preview_delta = preview_target_tcp - current_tcp
                             if mode == "grasp-block":
                                 print(
@@ -703,15 +730,21 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                     f"tol={grasp_plan['tolerance']:.3f} offset_frame={reach_offset_frame} "
                                     f"grasp_pose={grasp_plan['grasp_pose']} "
                                     f"grasp_rpy=({grasp_plan['grasp_rpy'][0]:.3f},{grasp_plan['grasp_rpy'][1]:.3f},{grasp_plan['grasp_rpy'][2]:.3f}) "
+                                    f"place_rpy=({grasp_plan['place_rpy'][0]:.3f},{grasp_plan['place_rpy'][1]:.3f},{grasp_plan['place_rpy'][2]:.3f}) "
                                     f"tcp_offset=({reach_tcp_offset[0]:.3f}, {reach_tcp_offset[1]:.3f}, {reach_tcp_offset[2]:.3f})"
                                 )
                                 print(
                                     f"[ARM] grasp anchor locked in fixed world/base frame: "
                                     f"({block_pos[0]:.3f},{block_pos[1]:.3f},{block_pos[2]:.3f})"
                                 )
+                                plate_anchor = grasp_plan["anchor_plate_pos_w"]
+                                print(
+                                    f"[ARM] plate anchor locked in fixed world/base frame: "
+                                    f"({plate_anchor[0]:.3f},{plate_anchor[1]:.3f},{plate_anchor[2]:.3f})"
+                                )
                                 if target_tcp_quat is not None:
                                     print(
-                                        f"[ARM] grasp target TCP quat locked: "
+                                        f"[ARM] grasp approach TCP quat locked: "
                                         f"({target_tcp_quat[0]:.4f},{target_tcp_quat[1]:.4f},"
                                         f"{target_tcp_quat[2]:.4f},{target_tcp_quat[3]:.4f})"
                                     )
@@ -842,34 +875,61 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
             if keyboard_jog is not None:
                 action = keyboard_jog.update(action)
 
-            desired_action = hold_action.copy() if arm_mode == "idle" else commanded_action.copy()
+            desired_action = hold_action.copy() if arm_mode in {"idle", "hold"} else commanded_action.copy()
             target_pos = None
             reach_debug = None
             if arm_mode == "grasp-block" and grasp_plan is not None and reach_block is not None:
                 grasp_phase_steps += 1
-                block_pos = grasp_plan.get("anchor_block_pos_w")
-                if block_pos is None:
-                    block_pos = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
+                block_anchor = grasp_plan.get("anchor_block_pos_w")
+                if block_anchor is None:
+                    block_anchor = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
+                plate_anchor = grasp_plan.get("anchor_plate_pos_w")
+                if plate_anchor is None:
+                    plate_anchor = scene["plate"].data.root_pos_w[0].detach().cpu().numpy()
                 base_offset = grasp_plan["base_offset"]
-                phase_z = {
-                    "approach": grasp_plan["approach_z"],
-                    "lower": grasp_plan["grasp_z"],
-                    "close": grasp_plan["grasp_z"],
-                    "lift": grasp_plan["lift_z"],
-                }.get(grasp_phase, grasp_plan["approach_z"])
-                phase_offset = np.array([base_offset[0], base_offset[1], phase_z], dtype=np.float32)
+                block_phase_offsets = {
+                    "approach": np.array([base_offset[0], base_offset[1], grasp_plan["approach_z"]], dtype=np.float32),
+                    "lower": np.array([base_offset[0], base_offset[1], grasp_plan["grasp_z"]], dtype=np.float32),
+                    "close": np.array([base_offset[0], base_offset[1], grasp_plan["grasp_z"]], dtype=np.float32),
+                    "lift": np.array([base_offset[0], base_offset[1], grasp_plan["lift_z"]], dtype=np.float32),
+                }
+                plate_phase_offsets = {
+                    "move_to_plate": np.array([0.0, 0.0, grasp_plan["place_approach_z"]], dtype=np.float32),
+                    "place_lower": np.array([0.0, 0.0, grasp_plan["place_z"]], dtype=np.float32),
+                    "release": np.array([0.0, 0.0, grasp_plan["place_z"]], dtype=np.float32),
+                    "release_retreat": np.array(
+                        [
+                            grasp_plan["release_retreat_offset"][0],
+                            grasp_plan["release_retreat_offset"][1],
+                            grasp_plan["place_z"] + grasp_plan["release_retreat_offset"][2],
+                        ],
+                        dtype=np.float32,
+                    ),
+                }
+                if grasp_phase in plate_phase_offsets:
+                    phase_anchor = plate_anchor
+                    phase_offset = plate_phase_offsets[grasp_phase]
+                else:
+                    phase_anchor = block_anchor
+                    phase_offset = block_phase_offsets.get(grasp_phase, block_phase_offsets["approach"])
                 if reach_controller is not None:
-                    if reach_offset_frame == "world":
+                    if grasp_phase == "release_retreat" or reach_offset_frame == "world":
                         phase_offset_w = phase_offset
                     else:
                         offset_t = torch.tensor(phase_offset, dtype=torch.float32, device=sim.device).view(1, 3)
                         phase_offset_w = reach_controller.rotate_wrist_vector_to_world(offset_t)[0].detach().cpu().numpy()
                     current_tcp_pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
                     current_tcp = current_tcp_pose[0] if current_tcp_pose is not None else np.zeros(3, dtype=np.float32)
-                    phase_dist = float(np.linalg.norm(block_pos + phase_offset_w - current_tcp))
+                    phase_dist = float(np.linalg.norm(phase_anchor + phase_offset_w - current_tcp))
                 else:
                     phase_dist = float("inf")
                 old_phase = grasp_phase
+                current_tcp_pose = None
+                current_tcp_quat = None
+                if reach_controller is not None:
+                    current_tcp_pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
+                    if current_tcp_pose is not None:
+                        current_tcp_quat = current_tcp_pose[1]
                 if grasp_phase == "approach" and (
                     phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["approach_steps"]
                 ):
@@ -892,29 +952,107 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 elif grasp_phase == "close" and grasp_phase_steps >= grasp_plan["close_steps"]:
                     grasp_phase = "lift"
                     grasp_phase_steps = 0
+                    if current_tcp_quat is not None:
+                        grasp_plan["carry_tcp_quat_w"] = current_tcp_quat.copy()
+                        place_rpy = grasp_plan.get("place_rpy", np.zeros(3, dtype=np.float32))
+                        if np.asarray(place_rpy).shape != (3,):
+                            place_rpy = np.zeros(3, dtype=np.float32)
+                        grasp_plan["place_tcp_quat_w"] = compose_local_rpy_quat(
+                            current_tcp_quat,
+                            np.asarray(place_rpy, dtype=np.float32),
+                            sim.device,
+                        )
+                        print(
+                            "[ARM] carry/place TCP quat locked from actual grasp pose: "
+                            f"({current_tcp_quat[0]:.4f},{current_tcp_quat[1]:.4f},"
+                            f"{current_tcp_quat[2]:.4f},{current_tcp_quat[3]:.4f})"
+                        )
+                        place_quat = grasp_plan["place_tcp_quat_w"]
+                        print(
+                            "[ARM] place TCP quat with local x-roll offset: "
+                            f"({place_quat[0]:.4f},{place_quat[1]:.4f},"
+                            f"{place_quat[2]:.4f},{place_quat[3]:.4f})"
+                        )
+                elif grasp_phase == "lift" and (
+                    phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["lift_steps"]
+                ):
+                    grasp_phase = "move_to_plate"
+                    grasp_phase_steps = 0
+                elif grasp_phase == "move_to_plate" and (
+                    phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["place_steps"]
+                ):
+                    grasp_phase = "place_lower"
+                    grasp_phase_steps = 0
+                elif grasp_phase == "place_lower":
+                    if phase_dist <= grasp_plan["tolerance"]:
+                        grasp_phase = "release"
+                        grasp_phase_steps = 0
+                    elif grasp_phase_steps >= grasp_plan["place_steps"]:
+                        now = time.monotonic()
+                        if now - last_grasp_wait_report > 1.0:
+                            print(
+                                "[ARM] waiting at plate release target before opening: "
+                                f"dist={phase_dist:.3f}m tol={grasp_plan['tolerance']:.3f}m. "
+                                "The hand will not open high; tune --place-z/--tolerance if this stays stuck."
+                            )
+                            last_grasp_wait_report = now
+                        grasp_phase_steps = grasp_plan["place_steps"]
+                elif grasp_phase == "release" and grasp_phase_steps >= grasp_plan["release_steps"]:
+                    commanded_action[ACTION_SLICES.right_hand] = OPEN_RIGHT_HAND.copy()
+                    desired_action[ACTION_SLICES.right_hand] = OPEN_RIGHT_HAND.copy()
+                    hand_target = OPEN_RIGHT_HAND.copy()
+                    grasp_phase = "release_retreat"
+                    grasp_phase_steps = 0
+                elif grasp_phase == "release_retreat" and (
+                    phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["retreat_steps"]
+                ):
+                    grasp_phase = "done"
+                    grasp_phase_steps = 0
                 if grasp_phase != old_phase:
                     print(f"[ARM] grasp phase {old_phase} -> {grasp_phase} dist={phase_dist:.3f}m")
-                phase_z = {
-                    "approach": grasp_plan["approach_z"],
-                    "lower": grasp_plan["grasp_z"],
-                    "close": grasp_plan["grasp_z"],
-                    "lift": grasp_plan["lift_z"],
-                }.get(grasp_phase, grasp_plan["approach_z"])
-                reach_offset = np.array([base_offset[0], base_offset[1], phase_z], dtype=np.float32)
-                hand_target = CLOSE_RIGHT_HAND.copy() if grasp_phase in {"close", "lift"} else OPEN_RIGHT_HAND.copy()
-            if arm_mode in {"reach-block", "grasp-block"} and reach_controller is not None and reach_block is not None:
+                if grasp_phase == "lift":
+                    carry_quat = grasp_plan.get("carry_tcp_quat_w")
+                    grasp_plan["active_target_tcp_quat_w"] = carry_quat if carry_quat is not None else grasp_plan.get("target_tcp_quat_w")
+                elif grasp_phase in {"move_to_plate", "place_lower", "release", "release_retreat", "done"}:
+                    place_quat = grasp_plan.get("place_tcp_quat_w")
+                    carry_quat = grasp_plan.get("carry_tcp_quat_w")
+                    grasp_plan["active_target_tcp_quat_w"] = (
+                        place_quat if place_quat is not None else carry_quat if carry_quat is not None else grasp_plan.get("target_tcp_quat_w")
+                    )
+                else:
+                    grasp_plan["active_target_tcp_quat_w"] = grasp_plan.get("target_tcp_quat_w")
+                if grasp_phase in plate_phase_offsets:
+                    target_block_pos_w = plate_anchor
+                    reach_offset = plate_phase_offsets[grasp_phase]
+                else:
+                    target_block_pos_w = block_anchor
+                    reach_offset = block_phase_offsets.get(grasp_phase, block_phase_offsets["approach"])
+                grasp_plan["active_anchor_pos_w"] = target_block_pos_w.copy()
+                hand_target = CLOSE_RIGHT_HAND.copy() if grasp_phase in {"close", "lift", "move_to_plate", "place_lower"} else OPEN_RIGHT_HAND.copy()
+                if grasp_phase == "done":
+                    arm_mode = "hold"
+                    hold_action = commanded_action.copy()
+                    commanded_action = hold_action.copy()
+                    desired_action = hold_action.copy()
+                    hand_target = OPEN_RIGHT_HAND.copy()
+                    print("[ARM] grasp-place sequence done; released cylinder and retreated in world -Y/+Z.")
+            if (
+                arm_mode in {"reach-block", "grasp-block"}
+                and reach_controller is not None
+                and reach_block is not None
+            ):
                 target_block_pos_w = None
                 target_pose_quat_w = None
                 if arm_mode == "grasp-block" and grasp_plan is not None:
-                    target_block_pos_w = grasp_plan.get("anchor_block_pos_w")
-                    target_pose_quat_w = grasp_plan.get("target_tcp_quat_w")
+                    target_block_pos_w = grasp_plan.get("active_anchor_pos_w", grasp_plan.get("anchor_block_pos_w"))
+                    target_pose_quat_w = grasp_plan.get("active_target_tcp_quat_w", grasp_plan.get("target_tcp_quat_w"))
                 desired_action, reach_debug, reach_q_target, reach_q_current = reach_controller.update_action(
                     desired_action,
                     scene[reach_block],
                     reach_offset,
                     reach_tcp_offset,
                     hand_target,
-                    offset_frame=reach_offset_frame,
+                    offset_frame="world" if arm_mode == "grasp-block" and grasp_phase == "release_retreat" else reach_offset_frame,
                     target_block_pos_w=target_block_pos_w,
                     target_tcp_quat_w=target_pose_quat_w,
                 )
