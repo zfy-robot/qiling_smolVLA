@@ -23,7 +23,12 @@ ISAAC_ASSET_ROOT = Path("/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac")
 DEFAULT_SCENE_USD = ISAAC_ASSET_ROOT / "Environments" / "Simple_Warehouse" / "warehouse.usd"
 DEFAULT_TABLE_USD = ISAAC_ASSET_ROOT / "Props" / "PackingTable" / "packing_table.usd"
 
-BLOCK_SIZE = 0.05
+BLOCK_CYLINDER_RADIUS = 0.035
+BLOCK_CYLINDER_HEIGHT = 0.12
+BLOCK_MASS = 0.08
+TASK_PLATFORM_HEIGHT = 0.05
+BLOCK_PLATFORM_SIZE = (0.11, 0.11, TASK_PLATFORM_HEIGHT)
+PLATE_PLATFORM_SIZE = (0.30, 0.30, TASK_PLATFORM_HEIGHT)
 TABLE_YAW_90_QUAT = (0.7071068, 0.0, 0.0, 0.7071068)
 
 
@@ -38,24 +43,47 @@ class TaskLayout:
 
     table_center_x: float = 0.82
     table_center_y: float = -0.2
-    block_x: float = 0.55
+    block_x: float = 0.50
     block_y_offset: float = 0.20
-    plate_x: float = 0.96
+    plate_x: float = 0.50
+
+    def task_surface_z(self, table_top_z: float) -> float:
+        return table_top_z + TASK_PLATFORM_HEIGHT
+
+    def red_platform_pos(self, table_top_z: float) -> np.ndarray:
+        return np.array(
+            [self.block_x, self.table_center_y + self.block_y_offset, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
+            dtype=np.float32,
+        )
+
+    def blue_platform_pos(self, table_top_z: float) -> np.ndarray:
+        return np.array(
+            [self.block_x, self.table_center_y - self.block_y_offset, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
+            dtype=np.float32,
+        )
+
+    def plate_platform_pos(self, table_top_z: float) -> np.ndarray:
+        return np.array(
+            [self.plate_x, self.table_center_y, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
+            dtype=np.float32,
+        )
 
     def red_block_pos(self, table_top_z: float) -> np.ndarray:
+        surface_z = self.task_surface_z(table_top_z)
         return np.array(
-            [self.block_x, self.table_center_y + self.block_y_offset, table_top_z + BLOCK_SIZE * 0.5],
+            [self.block_x, self.table_center_y + self.block_y_offset, surface_z + BLOCK_CYLINDER_HEIGHT * 0.5],
             dtype=np.float32,
         )
 
     def blue_block_pos(self, table_top_z: float) -> np.ndarray:
+        surface_z = self.task_surface_z(table_top_z)
         return np.array(
-            [self.block_x, self.table_center_y - self.block_y_offset, table_top_z + BLOCK_SIZE * 0.5],
+            [self.block_x, self.table_center_y - self.block_y_offset, surface_z + BLOCK_CYLINDER_HEIGHT * 0.5],
             dtype=np.float32,
         )
 
     def plate_pos(self, table_top_z: float) -> np.ndarray:
-        return np.array([self.plate_x, self.table_center_y, table_top_z + 0.015], dtype=np.float32)
+        return np.array([self.plate_x, self.table_center_y, self.task_surface_z(table_top_z) + 0.015], dtype=np.float32)
 
 
 @dataclass(frozen=True)
@@ -63,6 +91,7 @@ class SceneBuildCfg:
     table_top_z: float
     joint_stiffness: float
     joint_damping: float
+    joint_effort_limit: float
     robot_base_z: float = 1.08
     scene_usd: Path = DEFAULT_SCENE_USD
     table_usd: Path = DEFAULT_TABLE_USD
@@ -92,7 +121,13 @@ def create_simulation_context(device: str) -> SimulationContext:
     return sim
 
 
-def build_robot(prim_path: str, joint_stiffness: float, joint_damping: float, robot_base_z: float) -> Articulation:
+def build_robot(
+    prim_path: str,
+    joint_stiffness: float,
+    joint_damping: float,
+    joint_effort_limit: float,
+    robot_base_z: float,
+) -> Articulation:
     robot_cfg = ArticulationCfg(
         prim_path=prim_path,
         spawn=sim_utils.UrdfFileCfg(
@@ -121,6 +156,7 @@ def build_robot(prim_path: str, joint_stiffness: float, joint_damping: float, ro
                 joint_names_expr=list(ALL_DRIVE_JOINTS),
                 stiffness=joint_stiffness,
                 damping=joint_damping,
+                effort_limit_sim=joint_effort_limit,
             ),
         },
     )
@@ -150,21 +186,54 @@ def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
 
 
 def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
-    contact_material = sim_utils.RigidBodyMaterialCfg(static_friction=1.2, dynamic_friction=1.0, restitution=0.0)
-    collision_props = schemas.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0)
+    contact_material = sim_utils.RigidBodyMaterialCfg(static_friction=2.0, dynamic_friction=1.6, restitution=0.0)
+    collision_props = schemas.CollisionPropertiesCfg(contact_offset=0.002, rest_offset=0.0005)
     dynamic_rigid_props = schemas.RigidBodyPropertiesCfg(
-        solver_position_iteration_count=16,
-        solver_velocity_iteration_count=2,
-        max_depenetration_velocity=1.0,
-        linear_damping=0.05,
-        angular_damping=0.05,
+        solver_position_iteration_count=24,
+        solver_velocity_iteration_count=4,
+        max_depenetration_velocity=0.25,
+        linear_damping=0.25,
+        angular_damping=0.35,
+    )
+    def make_platform_cfg(name: str, pos: np.ndarray, size: tuple[float, float, float]) -> RigidObjectCfg:
+        return RigidObjectCfg(
+            prim_path=f"/World/RecordTask/{name}",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(float(x) for x in pos)),
+            spawn=CuboidCfg(
+                size=size,
+                rigid_props=schemas.RigidBodyPropertiesCfg(
+                    kinematic_enabled=True,
+                    solver_position_iteration_count=16,
+                    solver_velocity_iteration_count=2,
+                ),
+                collision_props=collision_props,
+                physics_material=contact_material,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.20, 0.20, 0.18)),
+            ),
+        )
+
+    red_platform_cfg = make_platform_cfg(
+        "RedPlatform",
+        cfg.layout.red_platform_pos(cfg.table_top_z),
+        BLOCK_PLATFORM_SIZE,
+    )
+    blue_platform_cfg = make_platform_cfg(
+        "BluePlatform",
+        cfg.layout.blue_platform_pos(cfg.table_top_z),
+        BLOCK_PLATFORM_SIZE,
+    )
+    plate_platform_cfg = make_platform_cfg(
+        "PlatePlatform",
+        cfg.layout.plate_platform_pos(cfg.table_top_z),
+        PLATE_PLATFORM_SIZE,
     )
     red_cfg = RigidObjectCfg(
         prim_path="/World/RecordTask/RedBlock",
         init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(float(x) for x in cfg.layout.red_block_pos(cfg.table_top_z))),
-        spawn=CuboidCfg(
-            size=(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE),
-            mass_props=schemas.MassPropertiesCfg(mass=0.05),
+        spawn=CylinderCfg(
+            radius=BLOCK_CYLINDER_RADIUS,
+            height=BLOCK_CYLINDER_HEIGHT,
+            mass_props=schemas.MassPropertiesCfg(mass=BLOCK_MASS),
             rigid_props=dynamic_rigid_props,
             collision_props=collision_props,
             physics_material=contact_material,
@@ -174,9 +243,10 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
     blue_cfg = RigidObjectCfg(
         prim_path="/World/RecordTask/BlueBlock",
         init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(float(x) for x in cfg.layout.blue_block_pos(cfg.table_top_z))),
-        spawn=CuboidCfg(
-            size=(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE),
-            mass_props=schemas.MassPropertiesCfg(mass=0.05),
+        spawn=CylinderCfg(
+            radius=BLOCK_CYLINDER_RADIUS,
+            height=BLOCK_CYLINDER_HEIGHT,
+            mass_props=schemas.MassPropertiesCfg(mass=BLOCK_MASS),
             rigid_props=dynamic_rigid_props,
             collision_props=collision_props,
             physics_material=contact_material,
@@ -200,6 +270,9 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
         ),
     )
     return {
+        "red_platform": RigidObject(cfg=red_platform_cfg),
+        "blue_platform": RigidObject(cfg=blue_platform_cfg),
+        "plate_platform": RigidObject(cfg=plate_platform_cfg),
         "red": RigidObject(cfg=red_cfg),
         "blue": RigidObject(cfg=blue_cfg),
         "plate": RigidObject(cfg=plate_cfg),
@@ -225,7 +298,16 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         )
     )
     return {
-        "robot": build_robot("/World/Robot", cfg.joint_stiffness, cfg.joint_damping, cfg.robot_base_z),
+        "robot": build_robot(
+            "/World/Robot",
+            cfg.joint_stiffness,
+            cfg.joint_damping,
+            cfg.joint_effort_limit,
+            cfg.robot_base_z,
+        ),
+        "red_platform": task_objects["red_platform"],
+        "blue_platform": task_objects["blue_platform"],
+        "plate_platform": task_objects["plate_platform"],
         "red": task_objects["red"],
         "blue": task_objects["blue"],
         "plate": task_objects["plate"],
@@ -250,6 +332,9 @@ def reset_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim: SimulationCon
     robot.write_joint_state_to_sim(init_pos, torch.zeros_like(init_pos))
     robot.reset()
 
+    write_object_pose(scene["red_platform"], cfg.layout.red_platform_pos(cfg.table_top_z), sim.device)
+    write_object_pose(scene["blue_platform"], cfg.layout.blue_platform_pos(cfg.table_top_z), sim.device)
+    write_object_pose(scene["plate_platform"], cfg.layout.plate_platform_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["red"], cfg.layout.red_block_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["blue"], cfg.layout.blue_block_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["plate"], cfg.layout.plate_pos(cfg.table_top_z), sim.device)
@@ -268,9 +353,19 @@ def format_layout(cfg: SceneBuildCfg) -> str:
     red = cfg.layout.red_block_pos(cfg.table_top_z)
     blue = cfg.layout.blue_block_pos(cfg.table_top_z)
     plate = cfg.layout.plate_pos(cfg.table_top_z)
+    red_platform = cfg.layout.red_platform_pos(cfg.table_top_z)
+    blue_platform = cfg.layout.blue_platform_pos(cfg.table_top_z)
+    plate_platform = cfg.layout.plate_platform_pos(cfg.table_top_z)
     return (
         "Task layout:\n"
         f"  robot_base_z={cfg.robot_base_z:.3f}\n"
+        f"  task_surface_z={cfg.layout.task_surface_z(cfg.table_top_z):.3f}\n"
+        f"  red_platform=({red_platform[0]:.3f}, {red_platform[1]:.3f}, {red_platform[2]:.3f}) "
+        f"size=({BLOCK_PLATFORM_SIZE[0]:.3f}, {BLOCK_PLATFORM_SIZE[1]:.3f}, {BLOCK_PLATFORM_SIZE[2]:.3f})\n"
+        f"  blue_platform=({blue_platform[0]:.3f}, {blue_platform[1]:.3f}, {blue_platform[2]:.3f}) "
+        f"size=({BLOCK_PLATFORM_SIZE[0]:.3f}, {BLOCK_PLATFORM_SIZE[1]:.3f}, {BLOCK_PLATFORM_SIZE[2]:.3f})\n"
+        f"  plate_platform=({plate_platform[0]:.3f}, {plate_platform[1]:.3f}, {plate_platform[2]:.3f}) "
+        f"size=({PLATE_PLATFORM_SIZE[0]:.3f}, {PLATE_PLATFORM_SIZE[1]:.3f}, {PLATE_PLATFORM_SIZE[2]:.3f})\n"
         f"  table_center=({cfg.layout.table_center_x:.3f}, {cfg.layout.table_center_y:.3f})\n"
         f"  red_block=({red[0]:.3f}, {red[1]:.3f}, {red[2]:.3f})\n"
         f"  blue_block=({blue[0]:.3f}, {blue[1]:.3f}, {blue[2]:.3f})\n"

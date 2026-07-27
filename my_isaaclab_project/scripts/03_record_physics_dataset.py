@@ -21,20 +21,56 @@ parser.add_argument("--table-usd", type=Path, default=None, help="Local visual t
 parser.add_argument("--table-visual-z", type=float, default=0.0, help="World Z translation for the visual table USD.")
 parser.add_argument("--table-scale", type=float, default=1.0, help="Uniform scale for the visual table USD.")
 parser.add_argument("--robot-base-z", type=float, default=0.98, help="World Z for fixed robot base_link.")
-parser.add_argument("--task-x", type=float, default=0.55, help="World X for block centers.")
+parser.add_argument("--task-x", type=float, default=0.50, help="World X for block centers.")
 parser.add_argument("--task-y", type=float, default=0.0, help="World Y center for table and task objects.")
 parser.add_argument("--block-y-offset", type=float, default=0.20, help="Half spacing between red and blue blocks.")
-parser.add_argument("--plate-x", type=float, default=0.55, help="World X for plate center.")
+parser.add_argument("--plate-x", type=float, default=0.50, help="World X for plate center.")
 parser.add_argument("--continuous", action="store_true", help="Run forever for debug.")
 parser.add_argument("--keyboard-jog", action="store_true", help="Enable live keyboard joint jogging.")
 parser.add_argument("--jog-step", type=float, default=0.03, help="Joint increment for keyboard jogging, in radians.")
 parser.add_argument("--control-file", type=Path, default=Path("/tmp/s4_joint_command.json"))
 parser.add_argument("--arm-control-file", type=Path, default=Path("/tmp/s4_arm_control.json"))
 parser.add_argument("--print-layout", action="store_true")
-parser.add_argument("--joint-stiffness", type=float, default=140.0)
-parser.add_argument("--joint-damping", type=float, default=28.0)
-parser.add_argument("--target-alpha", type=float, default=0.08)
-parser.add_argument("--max-joint-step", type=float, default=0.012)
+parser.add_argument("--joint-stiffness", type=float, default=600.0)
+parser.add_argument("--joint-damping", type=float, default=80.0)
+parser.add_argument("--joint-effort-limit", type=float, default=300.0)
+parser.add_argument("--target-alpha", type=float, default=0.12)
+parser.add_argument("--max-joint-step", type=float, default=0.018)
+parser.add_argument("--hand-max-joint-step", type=float, default=0.004)
+parser.add_argument("--reach-max-cart-step", type=float, default=0.012)
+parser.add_argument("--reach-max-joint-delta", type=float, default=0.030)
+parser.add_argument("--reach-damping", type=float, default=0.16)
+parser.add_argument("--reach-posture-gain", type=float, default=0.03)
+parser.add_argument("--reach-max-error", type=float, default=0.85)
+parser.add_argument(
+    "--reach-jacobian-body-shift",
+    type=int,
+    default=None,
+    help="Body row offset from right_wrist_yaw_link for PhysX Jacobian. Default keeps IsaacLab fixed-base convention.",
+)
+parser.add_argument("--reach-jacobian-sign", type=float, default=1.0, help="Set -1 to flip the raw PhysX Jacobian sign for diagnostics.")
+parser.add_argument(
+    "--reach-adaptive-direction-sign",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help="Auto-flip reach direction if measured TCP motion repeatedly moves away from the target. Disabled by default.",
+)
+parser.add_argument(
+    "--reach-min-tcp-below-block",
+    type=float,
+    default=0.04,
+    help="Hold reach control if TCP falls this far below the target block center.",
+)
+parser.add_argument("--unstable-arm-threshold", type=float, default=3.2)
+parser.add_argument("--unstable-arm-velocity-threshold", type=float, default=18.0)
+parser.add_argument("--reset-settle-steps", type=int, default=120, help="Physics steps to settle the robot after reset before syncing hold targets.")
+parser.add_argument(
+    "--gravity-compensation",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Apply PhysX joint-space gravity compensation as feed-forward effort.",
+)
+parser.add_argument("--gravity-comp-scale", type=float, default=1.0, help="Scale for gravity compensation feed-forward effort.")
 parser.add_argument("--show-tcp-frames", action="store_true", help="Visualize current hand TCP and target block TCP frames.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -48,6 +84,7 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.markers import FRAME_MARKER_CFG, VisualizationMarkers
+from isaaclab.utils.math import quat_from_euler_xyz, quat_mul
 
 from s4_robot.arm_control import (
     KeyboardJog,
@@ -59,8 +96,8 @@ from s4_robot.arm_control import (
     smooth_command,
     write_default_control_file,
 )
-from s4_robot.control_mapping import ACTION_SLICES, bimanual_default_action, format_action_layout
-from s4_robot.s4_robot_cfg import RIGHT_ARM_JOINTS, RIGHT_HAND_JOINTS, get_joint_limits
+from s4_robot.control_mapping import ACTION_SLICES, extract_bimanual_state, format_action_layout
+from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS, RIGHT_ARM_JOINTS, RIGHT_HAND_JOINTS, get_joint_limits
 from s4_robot.simulation import (
     DEFAULT_SCENE_USD,
     DEFAULT_TABLE_USD,
@@ -100,6 +137,7 @@ def make_scene_cfg() -> SceneBuildCfg:
         table_top_z=load_table_top_z(),
         joint_stiffness=float(args_cli.joint_stiffness),
         joint_damping=float(args_cli.joint_damping),
+        joint_effort_limit=float(args_cli.joint_effort_limit),
         scene_usd=scene_usd,
         table_usd=table_usd,
         robot_base_z=float(args_cli.robot_base_z),
@@ -124,11 +162,75 @@ def set_named_joint_targets(
             full_target[robot.joint_names.index(name)] = safe_value
 
 
+def control_action_from_full_target(full_target: np.ndarray, robot: Articulation) -> np.ndarray:
+    return extract_bimanual_state(full_target, robot.joint_names)
+
+
+def control_action_from_sim(robot: Articulation) -> np.ndarray:
+    joint_pos = robot.data.joint_pos[0].detach().cpu().numpy()
+    return extract_bimanual_state(joint_pos, robot.joint_names)
+
+
+def settle_scene_to_target(scene: dict[str, object], camera, full_target: np.ndarray, sim, steps: int) -> np.ndarray:
+    """Settle physics under a target, then return the settled robot joint state."""
+    robot: Articulation = scene["robot"]
+    steps = max(int(steps), 0)
+    target_tensor = torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1)
+    for _ in range(steps):
+        robot.set_joint_position_target(target_tensor)
+        robot.write_data_to_sim()
+        sim.step(render=not args_cli.headless)
+        robot.update(dt=sim.get_physics_dt())
+        scene["red_platform"].update(dt=sim.get_physics_dt())
+        scene["blue_platform"].update(dt=sim.get_physics_dt())
+        scene["plate_platform"].update(dt=sim.get_physics_dt())
+        scene["red"].update(dt=sim.get_physics_dt())
+        scene["blue"].update(dt=sim.get_physics_dt())
+        scene["plate"].update(dt=sim.get_physics_dt())
+        camera.update(dt=sim.get_physics_dt())
+    settled = robot.data.joint_pos[0].detach().cpu().numpy().copy()
+    return settled
+
+
+def control_action_bias_from_target(full_target: np.ndarray, robot: Articulation) -> np.ndarray:
+    """Return actuator target minus actual joint state in 26D action order."""
+    return np.zeros_like(control_action_from_sim(robot))
+
+
+def resolve_existing_joint_ids(robot: Articulation, joint_names: list[str]) -> list[int]:
+    return [robot.joint_names.index(name) for name in joint_names if name in robot.joint_names]
+
+
+def apply_gravity_compensation(
+    robot: Articulation,
+    joint_ids: list[int],
+    scale: float,
+    enabled: bool,
+) -> tuple[float, float]:
+    """Apply joint-space gravity compensation and return max/mean absolute effort."""
+    if not joint_ids:
+        return 0.0, 0.0
+    if not enabled:
+        zeros = torch.zeros(1, len(joint_ids), dtype=torch.float32, device=robot.device)
+        robot.set_joint_effort_target(zeros, joint_ids=joint_ids)
+        return 0.0, 0.0
+    gravity = robot.root_physx_view.get_gravity_compensation_forces()
+    if gravity.shape[1] <= max(joint_ids):
+        zeros = torch.zeros(1, len(joint_ids), dtype=torch.float32, device=robot.device)
+        robot.set_joint_effort_target(zeros, joint_ids=joint_ids)
+        return 0.0, 0.0
+    efforts = gravity[:, joint_ids] * float(scale)
+    robot.set_joint_effort_target(efforts, joint_ids=joint_ids)
+    abs_efforts = torch.abs(efforts)
+    return float(torch.max(abs_efforts)), float(torch.mean(abs_efforts))
+
+
 def reset_unstable_arm_state(
     robot: Articulation,
     joint_names: list[str],
     full_target: np.ndarray,
-    threshold_rad: float = 20.0,
+    threshold_rad: float,
+    velocity_threshold_rad_s: float,
 ) -> bool:
     joint_ids = [robot.joint_names.index(name) for name in joint_names if name in robot.joint_names]
     if not joint_ids:
@@ -136,7 +238,11 @@ def reset_unstable_arm_state(
     q = robot.data.joint_pos.clone()
     qd = robot.data.joint_vel.clone()
     arm_q = q[0, joint_ids]
-    if torch.isfinite(arm_q).all() and float(torch.max(torch.abs(arm_q))) <= threshold_rad:
+    arm_qd = qd[0, joint_ids]
+    finite = torch.isfinite(arm_q).all() and torch.isfinite(arm_qd).all()
+    within_position = float(torch.max(torch.abs(arm_q))) <= threshold_rad
+    within_velocity = float(torch.max(torch.abs(arm_qd))) <= velocity_threshold_rad_s
+    if finite and within_position and within_velocity:
         return False
     target = torch.tensor(full_target[joint_ids], dtype=torch.float32, device=robot.device)
     q[0, joint_ids] = target
@@ -165,6 +271,7 @@ class TcpFrameVisualizer:
         self,
         hand_tcp_pose: tuple[np.ndarray, np.ndarray] | None,
         target_tcp_pos: np.ndarray | None,
+        target_tcp_quat: np.ndarray | None = None,
     ) -> None:
         hand_tcp_pos, hand_tcp_quat = hand_tcp_pose if hand_tcp_pose is not None else (None, None)
         if hand_tcp_pos is not None:
@@ -176,8 +283,12 @@ class TcpFrameVisualizer:
             self.hand_marker.set_visibility(False)
         if target_tcp_pos is not None:
             pos = torch.tensor(target_tcp_pos, dtype=torch.float32, device=self.device).view(1, 3)
+            if target_tcp_quat is None:
+                quat = self.identity_quat
+            else:
+                quat = torch.tensor(target_tcp_quat, dtype=torch.float32, device=self.device).view(1, 4)
             self.target_marker.set_visibility(True)
-            self.target_marker.visualize(translations=pos, orientations=self.identity_quat)
+            self.target_marker.visualize(translations=pos, orientations=quat)
         else:
             self.target_marker.set_visibility(False)
 
@@ -197,32 +308,241 @@ def estimate_right_hand_tcp_pose(
     return tcp_pos.detach().cpu().numpy(), tcp_quat.detach().cpu().numpy()
 
 
+def right_tcp_position(
+    robot: Articulation,
+    reach_controller: RightArmReachController,
+    tcp_offset_wrist: np.ndarray,
+) -> np.ndarray:
+    pose = estimate_right_hand_tcp_pose(robot, reach_controller, tcp_offset_wrist)
+    if pose is None:
+        return np.zeros(3, dtype=np.float32)
+    return pose[0]
+
+
+def compose_grasp_quat(
+    current_tcp_quat: np.ndarray,
+    rpy: np.ndarray,
+    mode: str,
+    device: str,
+) -> np.ndarray | None:
+    if mode == "none":
+        return None
+    if mode != "current":
+        raise ValueError(f"Unsupported grasp pose mode: {mode}")
+    current = torch.tensor(current_tcp_quat, dtype=torch.float32, device=device).view(1, 4)
+    current = current / torch.linalg.norm(current, dim=1, keepdim=True).clamp_min(1e-6)
+    rpy_t = torch.tensor(rpy, dtype=torch.float32, device=device).view(3)
+    delta = quat_from_euler_xyz(rpy_t[0:1], rpy_t[1:2], rpy_t[2:3])
+    target = quat_mul(current, delta)
+    target = target / torch.linalg.norm(target, dim=1, keepdim=True).clamp_min(1e-6)
+    return target[0].detach().cpu().numpy().astype(np.float32)
+
+
+def print_right_arm_diagnostics(
+    robot: Articulation,
+    reach_controller: RightArmReachController,
+    tcp_offset_wrist: np.ndarray,
+    full_command_target: np.ndarray,
+    sim,
+    eps: float,
+    hold_steps: int,
+    drive_steps: int,
+) -> None:
+    eps = max(float(eps), 1e-4)
+    hold_steps = max(int(hold_steps), 0)
+    drive_steps = max(int(drive_steps), 0)
+    joint_ids = [robot.joint_names.index(name) for name in RIGHT_ARM_JOINTS]
+    q0 = robot.data.joint_pos.clone()
+    qd0 = robot.data.joint_vel.clone()
+    target_tensor = torch.tensor(full_command_target, dtype=torch.float32, device=robot.device).view(1, -1)
+    tcp0 = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
+    print("[DIAG] right arm chain diagnostic begin")
+    print(f"[DIAG] {reach_controller.resolution_summary()}")
+    print(
+        f"[DIAG] tcp0=({tcp0[0]:.5f},{tcp0[1]:.5f},{tcp0[2]:.5f}) "
+        f"eps={eps:.5f} hold_steps={hold_steps} drive_steps={drive_steps}"
+    )
+    print(
+        "[DIAG] right arm q="
+        + ",".join(f"{name}:{float(q0[0, jid]):.4f}" for name, jid in zip(RIGHT_ARM_JOINTS, joint_ids, strict=True))
+    )
+    print(
+        "[DIAG] right arm q_target="
+        + ",".join(
+            f"{name}:{float(full_command_target[jid]):.4f}" for name, jid in zip(RIGHT_ARM_JOINTS, joint_ids, strict=True)
+        )
+    )
+    print(
+        "[DIAG] right arm gains="
+        + ",".join(
+            f"{name}:kp={float(robot.data.joint_stiffness[0, jid]):.1f}/kd={float(robot.data.joint_damping[0, jid]):.1f}"
+            for name, jid in zip(RIGHT_ARM_JOINTS, joint_ids, strict=True)
+        )
+    )
+    print(
+        "[DIAG] right arm effort_limits="
+        + ",".join(
+            f"{name}:{float(robot.data.joint_effort_limits[0, jid]):.1f}"
+            for name, jid in zip(RIGHT_ARM_JOINTS, joint_ids, strict=True)
+        )
+    )
+
+    if hold_steps > 0:
+        hold_start = tcp0.copy()
+        for _ in range(hold_steps):
+            robot.set_joint_position_target(target_tensor)
+            robot.write_data_to_sim()
+            sim.step(render=not args_cli.headless)
+            robot.update(dt=sim.get_physics_dt())
+        hold_end = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
+        hold_delta = hold_end - hold_start
+        print(
+            f"[DIAG] hold_drift steps={hold_steps} "
+            f"delta=({hold_delta[0]:.5f},{hold_delta[1]:.5f},{hold_delta[2]:.5f}) "
+            f"tcp_end=({hold_end[0]:.5f},{hold_end[1]:.5f},{hold_end[2]:.5f})"
+        )
+
+    robot.write_joint_state_to_sim(q0, qd0)
+    robot.set_joint_position_target(target_tensor)
+    robot.write_data_to_sim()
+    robot.update(dt=sim.get_physics_dt())
+    tcp0 = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
+
+    jacobians = robot.root_physx_view.get_jacobians()
+    candidate_rows = []
+    for row in [reach_controller.right_wrist_id - 1, reach_controller.right_wrist_id]:
+        if 0 <= row < jacobians.shape[1] and row not in candidate_rows:
+            candidate_rows.append(row)
+    tcp_offset_t = torch.tensor(tcp_offset_wrist, dtype=torch.float32, device=robot.device).view(1, 3)
+    tcp_offset_w = reach_controller.rotate_wrist_vector_to_world(tcp_offset_t)
+
+    jac_cols_by_row = {}
+    for row in candidate_rows:
+        jac = jacobians[:, row, :, joint_ids]
+        linear = jac[:, 0:3, :]
+        angular = jac[:, 3:6, :]
+        offset_cols = tcp_offset_w.unsqueeze(-1).expand_as(angular)
+        tcp_jac = linear + torch.cross(angular, offset_cols, dim=1)
+        jac_cols_by_row[row] = tcp_jac[0].detach().cpu().numpy()
+
+    for local_i, (name, jid) in enumerate(zip(RIGHT_ARM_JOINTS, joint_ids, strict=True)):
+        q_plus = q0.clone()
+        q_minus = q0.clone()
+        q_plus[0, jid] += eps
+        q_minus[0, jid] -= eps
+        robot.write_joint_state_to_sim(q_plus, torch.zeros_like(q_plus))
+        robot.update(dt=sim.get_physics_dt())
+        tcp_plus = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
+        robot.write_joint_state_to_sim(q_minus, torch.zeros_like(q_minus))
+        robot.update(dt=sim.get_physics_dt())
+        tcp_minus = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
+        fd_col = (tcp_plus - tcp_minus) / (2.0 * eps)
+        row_parts = []
+        for row, cols in jac_cols_by_row.items():
+            col = cols[:, local_i]
+            denom = max(float(np.linalg.norm(fd_col) * np.linalg.norm(col)), 1e-8)
+            cos = float(np.dot(fd_col, col) / denom)
+            row_parts.append(f"row{row}=({col[0]:+.4f},{col[1]:+.4f},{col[2]:+.4f}) cos={cos:+.3f}")
+        print(
+            f"[DIAG] fd {name}[id={jid}] "
+            f"fd=({fd_col[0]:+.4f},{fd_col[1]:+.4f},{fd_col[2]:+.4f}) "
+            + " ".join(row_parts)
+        )
+
+    if drive_steps > 0:
+        print(f"[DIAG] positive joint-target response begin drive_steps={drive_steps}")
+        for name, jid in zip(RIGHT_ARM_JOINTS, joint_ids, strict=True):
+            hold_target = target_tensor.clone()
+            robot.write_joint_state_to_sim(q0, torch.zeros_like(q0))
+            robot.set_joint_position_target(hold_target)
+            robot.write_data_to_sim()
+            robot.reset()
+            robot.update(dt=sim.get_physics_dt())
+            for _ in range(4):
+                robot.set_joint_position_target(hold_target)
+                robot.write_data_to_sim()
+                sim.step(render=not args_cli.headless)
+                robot.update(dt=sim.get_physics_dt())
+            q_start = robot.data.joint_pos.clone()
+            tcp_start = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
+            drive_target = hold_target.clone()
+            drive_target[0, jid] = drive_target[0, jid] + eps
+            for _ in range(drive_steps):
+                robot.set_joint_position_target(drive_target)
+                robot.write_data_to_sim()
+                sim.step(render=not args_cli.headless)
+                robot.update(dt=sim.get_physics_dt())
+            q_end = float(robot.data.joint_pos[0, jid])
+            right_q_delta = (robot.data.joint_pos[0, joint_ids] - q_start[0, joint_ids]).detach().cpu().numpy()
+            q_delta = q_end - float(q_start[0, jid])
+            tcp_delta = right_tcp_position(robot, reach_controller, tcp_offset_wrist) - tcp_start
+            print(
+                f"[DIAG] drive+ {name}[id={jid}] target_delta=+{eps:.5f} q_delta={q_delta:+.5f} "
+                f"tcp_delta=({tcp_delta[0]:+.5f},{tcp_delta[1]:+.5f},{tcp_delta[2]:+.5f}) "
+                f"all_right_dq=({','.join(f'{x:+.5f}' for x in right_q_delta)})"
+            )
+        print("[DIAG] positive joint-target response end")
+
+    robot.write_joint_state_to_sim(q0, qd0)
+    robot.set_joint_position_target(target_tensor)
+    robot.write_data_to_sim()
+    robot.reset()
+    robot.update(dt=sim.get_physics_dt())
+    print("[DIAG] right arm chain diagnostic end")
+
+
+def make_right_reach_controller(robot: Articulation, device: str) -> RightArmReachController:
+    return RightArmReachController(
+        robot,
+        device,
+        max_cart_step=float(args_cli.reach_max_cart_step),
+        max_joint_delta=float(args_cli.reach_max_joint_delta),
+        damping=float(args_cli.reach_damping),
+        posture_gain=float(args_cli.reach_posture_gain),
+        max_reach_error=float(args_cli.reach_max_error),
+        jacobian_body_shift=args_cli.reach_jacobian_body_shift,
+        jacobian_sign=float(args_cli.reach_jacobian_sign),
+        adaptive_direction_sign=bool(args_cli.reach_adaptive_direction_sign),
+        min_tcp_below_block=float(args_cli.reach_min_tcp_below_block),
+    )
+
+
 def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     robot: Articulation = scene["robot"]
     camera = scene["camera"]
     sim_dt = sim.get_physics_dt()
     default_target = reset_scene(scene, cfg, sim)
+    settle_scene_to_target(scene, camera, default_target, sim, args_cli.reset_settle_steps)
     full_command_target = default_target.copy()
     robot.set_joint_position_target(torch.tensor(full_command_target, device=sim.device).view(1, -1))
     robot.write_data_to_sim()
-    action = bimanual_default_action()
+    action = control_action_from_sim(robot)
     commanded_action = action.copy()
     hold_action = action.copy()
+    action_target_bias = control_action_bias_from_target(full_command_target, robot)
 
     reach_controller = None
     arm_mode = "idle"
     reach_block = None
     reach_offset = np.array([0.0, 0.0, 0.14], dtype=np.float32)
+    reach_offset_frame = "world"
     reach_tcp_offset = DEFAULT_TCP_OFFSET_WRIST.copy()
     hand_target = OPEN_RIGHT_HAND.copy()
     test_right_arm = None
     reach_q_target = None
     reach_q_current = None
     target_tcp_pos = None
+    target_tcp_quat = None
+    grasp_plan = None
+    grasp_phase = None
+    grasp_phase_steps = 0
+    gravity_comp_joint_ids = resolve_existing_joint_ids(robot, list(ALL_DRIVE_JOINTS))
+    last_gravity_comp_stats = (0.0, 0.0)
     tcp_visualizer = None
     if args_cli.show_tcp_frames and not args_cli.headless:
         tcp_visualizer = TcpFrameVisualizer(sim.device)
-        reach_controller = RightArmReachController(robot, sim.device)
+        reach_controller = make_right_reach_controller(robot, sim.device)
+        print(f"[ARM] reach resolution: {reach_controller.resolution_summary()}")
 
     keyboard_jog = None
     if args_cli.keyboard_jog and not args_cli.headless:
@@ -238,15 +558,34 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     print(f"Joint control file: {args_cli.control_file}")
     print(f"Arm control file: {args_cli.arm_control_file}")
     print("Arm controller: idle at startup; reach command is inactive until a control command is written.")
+    print(
+        f"Robot dynamics: fixed_base={robot.is_fixed_base} "
+        f"joint_stiffness={float(args_cli.joint_stiffness):.1f} "
+        f"joint_damping={float(args_cli.joint_damping):.1f} "
+        f"joint_effort_limit={float(args_cli.joint_effort_limit):.1f} "
+        f"gravity_compensation={bool(args_cli.gravity_compensation)} "
+        f"gravity_comp_scale={float(args_cli.gravity_comp_scale):.2f}"
+    )
     if tcp_visualizer is not None:
         print("TCP frames: /World/Visuals/RightHandTCP and /World/Visuals/TargetBlockTCP")
     if keyboard_jog is not None:
         print("Keyboard jog: '['/']' select joint, 'u' increase, 'j' decrease, 'r' reset, 'p' print selected.")
+    print("Reach controller: IsaacLab DifferentialIKController, root-frame TCP target, PhysX geometric Jacobian.")
+    print(
+        "Reach Jacobian params: "
+        f"body_shift={args_cli.reach_jacobian_body_shift} "
+        f"sign={float(args_cli.reach_jacobian_sign):.1f} "
+        f"adaptive_direction_sign={bool(args_cli.reach_adaptive_direction_sign)} "
+        f"min_tcp_below_block={float(args_cli.reach_min_tcp_below_block):.3f}m"
+    )
+    print(f"Hand smoothing: max_joint_step={float(args_cli.hand_max_joint_step):.4f} rad/step")
+    print("Reset command: bash run.sh control reset-scene")
     print()
 
     try:
         last_report = time.monotonic()
         last_unstable_report = 0.0
+        last_grasp_wait_report = 0.0
         last_control_mtime = None
         last_arm_control_mtime = None
         while simulation_app.is_running():
@@ -267,6 +606,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     arm_mode = "idle"
                     reach_block = None
                     target_tcp_pos = None
+                    target_tcp_quat = None
                 else:
                     try:
                         payload = json.loads(args_cli.arm_control_file.read_text(encoding="utf-8"))
@@ -274,13 +614,47 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                         print(f"[WARN] ignoring invalid arm control file: {exc}")
                     else:
                         mode = payload.get("mode", "idle")
-                        if mode == "reach-block" and payload.get("block") in {"red", "blue"}:
-                            arm_mode = "reach-block"
+                        if mode in {"reach-block", "grasp-block"} and payload.get("block") in {"red", "blue"}:
+                            arm_mode = mode
                             reach_block = payload["block"]
                             test_right_arm = None
-                            reach_offset = np.asarray(payload.get("offset", [0.0, 0.0, 0.14]), dtype=np.float32)
-                            if reach_offset.shape != (3,):
-                                reach_offset = np.array([0.0, 0.0, 0.14], dtype=np.float32)
+                            action = control_action_from_sim(robot)
+                            commanded_action = action.copy()
+                            hold_action = action.copy()
+                            action_target_bias = control_action_bias_from_target(full_command_target, robot)
+                            target_tcp_quat = None
+                            if mode == "grasp-block":
+                                base_offset = np.asarray(payload.get("base_offset", [0.0, 0.0]), dtype=np.float32)
+                                if base_offset.shape != (2,):
+                                    base_offset = np.array([0.0, 0.0], dtype=np.float32)
+                                grasp_plan = {
+                                    "base_offset": base_offset,
+                                    "approach_z": float(payload.get("approach_z", 0.20)),
+                                    "grasp_z": float(payload.get("grasp_z", 0.08)),
+                                    "lift_z": float(payload.get("lift_z", 0.22)),
+                                    "grasp_pose": payload.get("grasp_pose", "current"),
+                                    "grasp_rpy": np.asarray(payload.get("grasp_rpy", [0.0, 0.0, 0.0]), dtype=np.float32),
+                                    "tolerance": max(float(payload.get("tolerance", 0.06)), 0.01),
+                                    "approach_steps": max(int(payload.get("approach_steps", 360)), 1),
+                                    "lower_steps": max(int(payload.get("lower_steps", 240)), 1),
+                                    "close_steps": max(int(payload.get("close_steps", 160)), 1),
+                                }
+                                grasp_phase = "approach"
+                                grasp_phase_steps = 0
+                                reach_offset = np.array(
+                                    [base_offset[0], base_offset[1], grasp_plan["approach_z"]],
+                                    dtype=np.float32,
+                                )
+                            else:
+                                grasp_plan = None
+                                grasp_phase = None
+                                grasp_phase_steps = 0
+                                reach_offset = np.asarray(payload.get("offset", [0.0, 0.0, 0.20]), dtype=np.float32)
+                                if reach_offset.shape != (3,):
+                                    reach_offset = np.array([0.0, 0.0, 0.20], dtype=np.float32)
+                            reach_offset_frame = payload.get("offset_frame", "world")
+                            if reach_offset_frame not in {"world", "wrist"}:
+                                reach_offset_frame = "world"
                             reach_tcp_offset = np.asarray(
                                 payload.get("tcp_offset_wrist", DEFAULT_TCP_OFFSET_WRIST),
                                 dtype=np.float32,
@@ -288,21 +662,94 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             if reach_tcp_offset.shape != (3,):
                                 reach_tcp_offset = DEFAULT_TCP_OFFSET_WRIST.copy()
                             hand_target = CLOSE_RIGHT_HAND.copy() if payload.get("hand") == "close" else OPEN_RIGHT_HAND.copy()
+                            if mode == "grasp-block":
+                                hand_target = OPEN_RIGHT_HAND.copy()
                             if reach_controller is None:
-                                reach_controller = RightArmReachController(robot, sim.device)
-                            print(
-                                f"[ARM] reach {reach_block} cartesian-step + "
-                                f"({reach_offset[0]:.3f}, {reach_offset[1]:.3f}, {reach_offset[2]:.3f}) m "
-                                f"tcp_offset=({reach_tcp_offset[0]:.3f}, {reach_tcp_offset[1]:.3f}, {reach_tcp_offset[2]:.3f}) "
-                                f"hand={payload.get('hand', 'open')}"
+                                reach_controller = make_right_reach_controller(robot, sim.device)
+                                print(f"[ARM] reach resolution: {reach_controller.resolution_summary()}")
+                            else:
+                                reach_controller.reset_diagnostics()
+                            block_pos = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
+                            if mode == "grasp-block":
+                                grasp_plan["anchor_block_pos_w"] = block_pos.copy()
+                            if reach_offset_frame == "world":
+                                preview_offset_w = reach_offset
+                            else:
+                                offset_t = torch.tensor(reach_offset, dtype=torch.float32, device=sim.device).view(1, 3)
+                                preview_offset_w = reach_controller.rotate_wrist_vector_to_world(offset_t)[0].detach().cpu().numpy()
+                            preview_target_tcp = block_pos + preview_offset_w
+                            current_tcp_pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
+                            current_tcp = current_tcp_pose[0] if current_tcp_pose is not None else np.zeros(3, dtype=np.float32)
+                            current_tcp_quat = (
+                                current_tcp_pose[1] if current_tcp_pose is not None else np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
                             )
+                            if mode == "grasp-block":
+                                grasp_pose_mode = grasp_plan.get("grasp_pose", "current")
+                                grasp_rpy = grasp_plan.get("grasp_rpy", np.zeros(3, dtype=np.float32))
+                                if np.asarray(grasp_rpy).shape != (3,):
+                                    grasp_rpy = np.zeros(3, dtype=np.float32)
+                                target_tcp_quat = compose_grasp_quat(
+                                    current_tcp_quat,
+                                    np.asarray(grasp_rpy, dtype=np.float32),
+                                    grasp_pose_mode,
+                                    sim.device,
+                                )
+                                grasp_plan["target_tcp_quat_w"] = None if target_tcp_quat is None else target_tcp_quat.copy()
+                            preview_delta = preview_target_tcp - current_tcp
+                            if mode == "grasp-block":
+                                print(
+                                    f"[ARM] grasp {reach_block}: approach_z={grasp_plan['approach_z']:.3f} "
+                                    f"grasp_z={grasp_plan['grasp_z']:.3f} lift_z={grasp_plan['lift_z']:.3f} "
+                                    f"tol={grasp_plan['tolerance']:.3f} offset_frame={reach_offset_frame} "
+                                    f"grasp_pose={grasp_plan['grasp_pose']} "
+                                    f"grasp_rpy=({grasp_plan['grasp_rpy'][0]:.3f},{grasp_plan['grasp_rpy'][1]:.3f},{grasp_plan['grasp_rpy'][2]:.3f}) "
+                                    f"tcp_offset=({reach_tcp_offset[0]:.3f}, {reach_tcp_offset[1]:.3f}, {reach_tcp_offset[2]:.3f})"
+                                )
+                                print(
+                                    f"[ARM] grasp anchor locked in fixed world/base frame: "
+                                    f"({block_pos[0]:.3f},{block_pos[1]:.3f},{block_pos[2]:.3f})"
+                                )
+                                if target_tcp_quat is not None:
+                                    print(
+                                        f"[ARM] grasp target TCP quat locked: "
+                                        f"({target_tcp_quat[0]:.4f},{target_tcp_quat[1]:.4f},"
+                                        f"{target_tcp_quat[2]:.4f},{target_tcp_quat[3]:.4f})"
+                                    )
+                            else:
+                                print(
+                                    f"[ARM] reach {reach_block} cartesian-step + "
+                                    f"({reach_offset[0]:.3f}, {reach_offset[1]:.3f}, {reach_offset[2]:.3f}) m "
+                                    f"offset_frame={reach_offset_frame} "
+                                    f"tcp_offset=({reach_tcp_offset[0]:.3f}, {reach_tcp_offset[1]:.3f}, {reach_tcp_offset[2]:.3f}) "
+                                    f"hand={payload.get('hand', 'open')}"
+                                )
+                            print(
+                                f"[ARM] preview block=({block_pos[0]:.3f},{block_pos[1]:.3f},{block_pos[2]:.3f}) "
+                                f"target_tcp=({preview_target_tcp[0]:.3f},{preview_target_tcp[1]:.3f},{preview_target_tcp[2]:.3f}) "
+                                f"tcp=({current_tcp[0]:.3f},{current_tcp[1]:.3f},{current_tcp[2]:.3f}) "
+                                f"target_minus_tcp=({preview_delta[0]:+.3f},{preview_delta[1]:+.3f},{preview_delta[2]:+.3f})"
+                            )
+                            if preview_delta[2] < -0.005:
+                                print(
+                                    "[WARN] reach target is below the current TCP in world Z; "
+                                    "the first motion will intentionally include a downward component. "
+                                    "Use a larger --z-offset for an above-block approach."
+                                )
                         elif mode == "hand" and payload.get("hand") in {"open", "close"}:
-                            arm_mode = "idle"
+                            arm_mode = "hold"
                             reach_block = None
                             test_right_arm = None
                             target_tcp_pos = None
+                            target_tcp_quat = None
+                            grasp_plan = None
+                            grasp_phase = None
+                            grasp_phase_steps = 0
+                            action = control_action_from_sim(robot)
+                            commanded_action = action.copy()
+                            hold_action = action.copy()
+                            action_target_bias = control_action_bias_from_target(full_command_target, robot)
                             hand_target = CLOSE_RIGHT_HAND.copy() if payload["hand"] == "close" else OPEN_RIGHT_HAND.copy()
-                            print(f"[ARM] hand {payload['hand']}")
+                            print(f"[ARM] hand {payload['hand']} while holding current right-arm state")
                         elif mode == "test-right-arm":
                             right_arm = np.asarray(payload.get("right_arm", []), dtype=np.float32)
                             if right_arm.shape == (7,):
@@ -310,53 +757,204 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                 reach_block = None
                                 test_right_arm = right_arm
                                 target_tcp_pos = None
+                                target_tcp_quat = None
                                 print(f"[ARM] direct right-arm target: {[round(float(x), 3) for x in right_arm]}")
                             else:
                                 arm_mode = "idle"
                                 reach_block = None
                                 test_right_arm = None
                                 target_tcp_pos = None
+                                target_tcp_quat = None
                                 print("[ARM] idle: invalid test-right-arm target")
+                        elif mode == "reset-scene":
+                            default_target = reset_scene(scene, cfg, sim)
+                            reset_camera(camera, sim)
+                            settle_scene_to_target(
+                                scene,
+                                camera,
+                                default_target,
+                                sim,
+                                args_cli.reset_settle_steps,
+                            )
+                            full_command_target = default_target.copy()
+                            action = control_action_from_sim(robot)
+                            commanded_action = action.copy()
+                            hold_action = action.copy()
+                            action_target_bias = control_action_bias_from_target(full_command_target, robot)
+                            arm_mode = "idle"
+                            reach_block = None
+                            test_right_arm = None
+                            target_tcp_pos = None
+                            target_tcp_quat = None
+                            grasp_plan = None
+                            grasp_phase = None
+                            grasp_phase_steps = 0
+                            reach_q_target = None
+                            reach_q_current = None
+                            hand_target = OPEN_RIGHT_HAND.copy()
+                            reach_offset_frame = "world"
+                            if reach_controller is not None:
+                                reach_controller.reset_diagnostics()
+                            robot.set_joint_position_target(torch.tensor(full_command_target, device=sim.device).view(1, -1))
+                            robot.write_data_to_sim()
+                            print(f"[SCENE] reset robot, task objects, camera, and control state after {args_cli.reset_settle_steps} settle steps.")
+                        elif mode == "diagnose-right-arm":
+                            arm_mode = "idle"
+                            reach_block = None
+                            test_right_arm = None
+                            target_tcp_pos = None
+                            target_tcp_quat = None
+                            grasp_plan = None
+                            grasp_phase = None
+                            grasp_phase_steps = 0
+                            if reach_controller is None:
+                                reach_controller = make_right_reach_controller(robot, sim.device)
+                                print(f"[ARM] reach resolution: {reach_controller.resolution_summary()}")
+                            diag_eps = float(payload.get("eps", 0.01))
+                            diag_hold_steps = int(payload.get("hold_steps", 60))
+                            diag_drive_steps = int(payload.get("drive_steps", 30))
+                            print_right_arm_diagnostics(
+                                robot,
+                                reach_controller,
+                                reach_tcp_offset,
+                                full_command_target,
+                                sim,
+                                eps=diag_eps,
+                                hold_steps=diag_hold_steps,
+                                drive_steps=diag_drive_steps,
+                            )
+                            action = control_action_from_sim(robot)
+                            commanded_action = action.copy()
+                            hold_action = action.copy()
+                            action_target_bias = control_action_bias_from_target(full_command_target, robot)
+                            args_cli.arm_control_file.write_text(json.dumps({"mode": "idle"}, indent=2), encoding="utf-8")
+                            print("[ARM] idle after diagnostics")
                         else:
                             arm_mode = "idle"
                             reach_block = None
                             test_right_arm = None
                             target_tcp_pos = None
+                            target_tcp_quat = None
+                            grasp_plan = None
+                            grasp_phase = None
+                            grasp_phase_steps = 0
                             print("[ARM] idle")
             if keyboard_jog is not None:
                 action = keyboard_jog.update(action)
 
-            desired_action = hold_action.copy() if arm_mode == "idle" else action.copy()
+            desired_action = hold_action.copy() if arm_mode == "idle" else commanded_action.copy()
             target_pos = None
-            wrist_dist = None
-            if arm_mode == "reach-block" and reach_controller is not None and reach_block is not None:
-                desired_action, target_pos, wrist_dist, reach_q_target, reach_q_current = reach_controller.update_action(
+            reach_debug = None
+            if arm_mode == "grasp-block" and grasp_plan is not None and reach_block is not None:
+                grasp_phase_steps += 1
+                block_pos = grasp_plan.get("anchor_block_pos_w")
+                if block_pos is None:
+                    block_pos = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
+                base_offset = grasp_plan["base_offset"]
+                phase_z = {
+                    "approach": grasp_plan["approach_z"],
+                    "lower": grasp_plan["grasp_z"],
+                    "close": grasp_plan["grasp_z"],
+                    "lift": grasp_plan["lift_z"],
+                }.get(grasp_phase, grasp_plan["approach_z"])
+                phase_offset = np.array([base_offset[0], base_offset[1], phase_z], dtype=np.float32)
+                if reach_controller is not None:
+                    if reach_offset_frame == "world":
+                        phase_offset_w = phase_offset
+                    else:
+                        offset_t = torch.tensor(phase_offset, dtype=torch.float32, device=sim.device).view(1, 3)
+                        phase_offset_w = reach_controller.rotate_wrist_vector_to_world(offset_t)[0].detach().cpu().numpy()
+                    current_tcp_pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
+                    current_tcp = current_tcp_pose[0] if current_tcp_pose is not None else np.zeros(3, dtype=np.float32)
+                    phase_dist = float(np.linalg.norm(block_pos + phase_offset_w - current_tcp))
+                else:
+                    phase_dist = float("inf")
+                old_phase = grasp_phase
+                if grasp_phase == "approach" and (
+                    phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["approach_steps"]
+                ):
+                    grasp_phase = "lower"
+                    grasp_phase_steps = 0
+                elif grasp_phase == "lower":
+                    if phase_dist <= grasp_plan["tolerance"]:
+                        grasp_phase = "close"
+                        grasp_phase_steps = 0
+                    elif grasp_phase_steps >= grasp_plan["lower_steps"]:
+                        now = time.monotonic()
+                        if now - last_grasp_wait_report > 1.0:
+                            print(
+                                "[ARM] waiting at lower target before closing: "
+                                f"dist={phase_dist:.3f}m tol={grasp_plan['tolerance']:.3f}m. "
+                                "The hand will not close high; tune --grasp-z/--tolerance if this stays stuck."
+                            )
+                            last_grasp_wait_report = now
+                        grasp_phase_steps = grasp_plan["lower_steps"]
+                elif grasp_phase == "close" and grasp_phase_steps >= grasp_plan["close_steps"]:
+                    grasp_phase = "lift"
+                    grasp_phase_steps = 0
+                if grasp_phase != old_phase:
+                    print(f"[ARM] grasp phase {old_phase} -> {grasp_phase} dist={phase_dist:.3f}m")
+                phase_z = {
+                    "approach": grasp_plan["approach_z"],
+                    "lower": grasp_plan["grasp_z"],
+                    "close": grasp_plan["grasp_z"],
+                    "lift": grasp_plan["lift_z"],
+                }.get(grasp_phase, grasp_plan["approach_z"])
+                reach_offset = np.array([base_offset[0], base_offset[1], phase_z], dtype=np.float32)
+                hand_target = CLOSE_RIGHT_HAND.copy() if grasp_phase in {"close", "lift"} else OPEN_RIGHT_HAND.copy()
+            if arm_mode in {"reach-block", "grasp-block"} and reach_controller is not None and reach_block is not None:
+                target_block_pos_w = None
+                target_pose_quat_w = None
+                if arm_mode == "grasp-block" and grasp_plan is not None:
+                    target_block_pos_w = grasp_plan.get("anchor_block_pos_w")
+                    target_pose_quat_w = grasp_plan.get("target_tcp_quat_w")
+                desired_action, reach_debug, reach_q_target, reach_q_current = reach_controller.update_action(
                     desired_action,
                     scene[reach_block],
                     reach_offset,
                     reach_tcp_offset,
                     hand_target,
+                    offset_frame=reach_offset_frame,
+                    target_block_pos_w=target_block_pos_w,
+                    target_tcp_quat_w=target_pose_quat_w,
                 )
-                target_tcp_pos = target_pos
+                target_pos = reach_debug.target_tcp_pos
+                target_tcp_pos = reach_debug.target_tcp_pos
+                target_tcp_quat = reach_debug.target_tcp_quat
+                if reach_debug.held_for_safety:
+                    now = time.monotonic()
+                    if now - last_unstable_report > 1.0:
+                        print(f"[WARN] reach held for safety: {reach_debug.safety_reason}")
+                        last_unstable_report = now
             elif arm_mode == "test-right-arm" and test_right_arm is not None:
                 desired_action[ACTION_SLICES.right_arm] = test_right_arm
                 desired_action[ACTION_SLICES.right_hand] = hand_target
+            if hand_target is not None and arm_mode != "idle":
+                desired_action[ACTION_SLICES.right_hand] = hand_target
 
-            commanded_action = smooth_command(
+            next_commanded_action = smooth_command(
                 commanded_action,
                 desired_action,
                 alpha=float(args_cli.target_alpha),
                 max_joint_step=float(args_cli.max_joint_step),
             )
+            hand_delta = np.clip(
+                next_commanded_action[ACTION_SLICES.right_hand] - commanded_action[ACTION_SLICES.right_hand],
+                -float(args_cli.hand_max_joint_step),
+                float(args_cli.hand_max_joint_step),
+            )
+            next_commanded_action[ACTION_SLICES.right_hand] = commanded_action[ACTION_SLICES.right_hand] + hand_delta
+            commanded_action = next_commanded_action
             if arm_mode == "idle":
                 full_command_target = default_target.copy()
             else:
                 full_command_target = default_target.copy()
+                right_arm_drive_target = commanded_action[ACTION_SLICES.right_arm]
                 set_named_joint_targets(
                     full_command_target,
                     robot,
                     RIGHT_ARM_JOINTS,
-                    commanded_action[ACTION_SLICES.right_arm],
+                    right_arm_drive_target,
                 )
                 set_named_joint_targets(
                     full_command_target,
@@ -364,17 +962,30 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     RIGHT_HAND_JOINTS,
                     commanded_action[ACTION_SLICES.right_hand],
                 )
-            if hand_target is not None:
-                set_named_joint_targets(full_command_target, robot, RIGHT_HAND_JOINTS, hand_target)
-            if reset_unstable_arm_state(robot, RIGHT_ARM_JOINTS, full_command_target):
+            if reset_unstable_arm_state(
+                robot,
+                RIGHT_ARM_JOINTS,
+                full_command_target,
+                threshold_rad=float(args_cli.unstable_arm_threshold),
+                velocity_threshold_rad_s=float(args_cli.unstable_arm_velocity_threshold),
+            ):
                 now = time.monotonic()
                 if now - last_unstable_report > 1.0:
                     print("[WARN] right arm joint state became unstable; reset right-arm state to clamped target.")
                     last_unstable_report = now
             robot.set_joint_position_target(torch.tensor(full_command_target, device=sim.device).view(1, -1))
+            last_gravity_comp_stats = apply_gravity_compensation(
+                robot,
+                gravity_comp_joint_ids,
+                scale=float(args_cli.gravity_comp_scale),
+                enabled=bool(args_cli.gravity_compensation),
+            )
             robot.write_data_to_sim()
             sim.step(render=not args_cli.headless)
             robot.update(dt=sim_dt)
+            scene["red_platform"].update(dt=sim_dt)
+            scene["blue_platform"].update(dt=sim_dt)
+            scene["plate_platform"].update(dt=sim_dt)
             scene["red"].update(dt=sim_dt)
             scene["blue"].update(dt=sim_dt)
             scene["plate"].update(dt=sim_dt)
@@ -384,7 +995,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 if target_tcp_pos is None and reach_block is not None:
                     block_pos = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
                     target_tcp_pos = block_pos + reach_offset
-                tcp_visualizer.visualize(hand_tcp_pose, target_tcp_pos)
+                tcp_visualizer.visualize(hand_tcp_pose, target_tcp_pos, target_tcp_quat)
 
             now = time.monotonic()
             if now - last_report > 2.0:
@@ -396,15 +1007,48 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     f"blue=({blue_pos[0]:.3f},{blue_pos[1]:.3f},{blue_pos[2]:.3f}) "
                     f"plate=({plate_pos[0]:.3f},{plate_pos[1]:.3f},{plate_pos[2]:.3f})"
                 )
-                if target_pos is not None and wrist_dist is not None:
+                if arm_mode == "grasp-block" and grasp_phase is not None:
+                    status += f" grasp_phase={grasp_phase}[{grasp_phase_steps}]"
+                if reach_debug is not None:
                     status += (
-                        f" target=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f}) "
-                        f"right_tcp_dist={wrist_dist:.3f}m"
+                        f" block=({reach_debug.block_pos[0]:.3f},{reach_debug.block_pos[1]:.3f},{reach_debug.block_pos[2]:.3f}) "
+                        f"offset_frame={reach_debug.offset_frame} "
+                        f"offset_w=({reach_debug.offset_world[0]:.3f},{reach_debug.offset_world[1]:.3f},{reach_debug.offset_world[2]:.3f}) "
+                        f"target_tcp=({reach_debug.target_tcp_pos[0]:.3f},{reach_debug.target_tcp_pos[1]:.3f},{reach_debug.target_tcp_pos[2]:.3f}) "
+                        f"tcp=({reach_debug.current_tcp_pos[0]:.3f},{reach_debug.current_tcp_pos[1]:.3f},{reach_debug.current_tcp_pos[2]:.3f}) "
+                        f"tcp_err=({reach_debug.tcp_error[0]:.3f},{reach_debug.tcp_error[1]:.3f},{reach_debug.tcp_error[2]:.3f}) "
+                        f"rot_err=({reach_debug.rot_error_axis_angle[0]:.3f},{reach_debug.rot_error_axis_angle[1]:.3f},{reach_debug.rot_error_axis_angle[2]:.3f}) "
+                        f"step_w=({reach_debug.step_error_world[0]:.4f},{reach_debug.step_error_world[1]:.4f},{reach_debug.step_error_world[2]:.4f}) "
+                        f"pred_w=({reach_debug.predicted_tcp_delta[0]:.4f},{reach_debug.predicted_tcp_delta[1]:.4f},{reach_debug.predicted_tcp_delta[2]:.4f}) "
+                        f"actual_d=({reach_debug.actual_delta_world[0]:.4f},{reach_debug.actual_delta_world[1]:.4f},{reach_debug.actual_delta_world[2]:.4f}) "
+                        f"dq=({','.join(f'{x:+.4f}' for x in reach_debug.joint_delta)}) "
+                        f"jac_row={reach_debug.jacobian_body_row} "
+                        f"jac_sign={reach_debug.jacobian_sign:.1f} "
+                        f"dir_sign={reach_debug.direction_sign:.1f} "
+                        f"progress={reach_debug.actual_progress:.5f} "
+                        f"right_tcp_dist={reach_debug.tcp_dist:.3f}m"
                     )
+                    if reach_debug.held_for_safety:
+                        status += f" reach_held={reach_debug.safety_reason}"
                 if reach_q_target is not None and reach_q_current is not None:
                     q_err = float(np.max(np.abs(reach_q_target - reach_q_current)))
                     q_lag = float(np.max(np.abs(reach_q_target - commanded_action[ACTION_SLICES.right_arm])))
-                    status += f" right_arm_q_err={q_err:.3f} right_arm_cmd_lag={q_lag:.3f}"
+                    cmd_delta = commanded_action[ACTION_SLICES.right_arm] - reach_q_current
+                    drive_delta = (
+                        commanded_action[ACTION_SLICES.right_arm]
+                        + action_target_bias[ACTION_SLICES.right_arm]
+                        - reach_q_current
+                    )
+                    status += (
+                        f" right_arm_q_err={q_err:.3f} right_arm_cmd_lag={q_lag:.3f} "
+                        f"cmd_delta=({','.join(f'{x:+.4f}' for x in cmd_delta)}) "
+                        f"drive_delta=({','.join(f'{x:+.4f}' for x in drive_delta)})"
+                    )
+                if args_cli.gravity_compensation:
+                    status += (
+                        f" gravity_comp=max:{last_gravity_comp_stats[0]:.2f}"
+                        f"/mean:{last_gravity_comp_stats[1]:.2f}"
+                    )
                 if arm_mode == "test-right-arm" and test_right_arm is not None:
                     q_lag = float(np.max(np.abs(test_right_arm - commanded_action[ACTION_SLICES.right_arm])))
                     status += f" direct_right_arm_cmd_lag={q_lag:.3f}"
