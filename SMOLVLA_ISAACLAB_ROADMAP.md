@@ -226,9 +226,6 @@ my_isaaclab_project/
 │   ├── hdf5_schema.py
 │   ├── dataset_writer.py
 │   └── lerobot_conversion.py
-├── training/
-├── evaluation/
-├── teleop/
 └── scripts/
     ├── 00_inspect_project.py
     ├── 03_record_physics_dataset.py
@@ -236,6 +233,7 @@ my_isaaclab_project/
     ├── 04_record_bimanual_hdf5.py
     ├── 05_convert_hdf5_to_lerobot.py
     ├── 06_eval_smolvla_in_isaaclab.py
+    ├── 07_preview_smolvla_policy.py
     ├── train_smolvla_local.sh
     ├── control_arm.py
     └── set_joint_command.py
@@ -247,11 +245,12 @@ my_isaaclab_project/
 2. 固定 S4 base，只控制上肢/手，腿部保持默认姿态。
 3. 通过 JSON 控制文件让右臂去接近红/蓝物块。
 4. 通过键盘或命令行调试 26D action。
-5. 用 `--show-tcp-frames` 可视化右手 TCP 和目标 TCP。
+5. 按需用 `--show-tcp-frames` 可视化右手 TCP 和目标 TCP；默认启动已关闭箭头，避免干扰观察和数据采集画面。
 6. 使用 `control_mapping.py` 维护 26D 双臂双手控制空间。
 7. 用 `s4_pipeline/config.py` 集中读取本项目配置和路径。
 8. 用 `data/hdf5_schema.py` 固定后续 HDF5 字段名。
-9. 用 `data/lerobot_conversion.py` 预留本项目 HDF5 -> LeRobotDataset 转换，不再改 BenchHub 仓库。
+9. 用 `data/lerobot_conversion.py` 完成本项目 HDF5 -> LeRobotDataset 转换，不再改 BenchHub 仓库。
+10. 用 `scripts/07_preview_smolvla_policy.py` 离线查看 checkpoint 输出和 expert action 误差。
 
 ### 当前运行命令
 
@@ -262,8 +261,22 @@ cd /home/zfy/smolVLA/my_isaaclab_project
 bash run.sh sim
 ```
 
-`run.sh sim` 默认已经带 `--print-layout --show-tcp-frames`。
+`run.sh sim` 默认已经带 `--print-layout`，但不再默认显示 TCP/目标箭头。需要调试 TCP 坐标系时再显式加 `--show-tcp-frames`：
+
+```bash
+bash run.sh sim --show-tcp-frames
+```
 当前默认任务布局整体偏向机器人右侧：`--task-y=-0.05`。因此红色圆柱/垫块约在 `y=+0.15`，蓝色圆柱/垫块约在 `y=-0.25`，盘子/垫块约在 `y=-0.05`。这些位置都由 `TaskLayout.table_center_y` 派生，修改布局时必须同步检查 red/blue/plate/platform 的 reset 位置和日志打印。
+当前默认相机在机器人右前上方，覆盖右臂抓蓝色圆柱、移动到盘子、release 和退避：
+
+```bash
+--camera-eye 0.18 -0.62 1.42
+--camera-target 0.52 -0.12 0.98
+--camera-width 640
+--camera-height 480
+```
+
+调相机时先用 `bash run.sh sim --camera-eye ... --camera-target ...` 看窗口效果，确认能看到完整抓取过程后，再把同样参数传给 `record-hdf5`。
 
 检查本项目配置、路径和 26D action 顺序：
 
@@ -326,13 +339,14 @@ bash run.sh control grasp-block --block blue --grasp-pose current --grasp-yaw -0
 - `--place-z`：放置/张手阶段 TCP 相对盘子中心的 Z 偏移，默认 `0.10m`。
 - `--release-retreat-y`：release 张手后，继续用同一套 Cartesian IK 在世界坐标系 Y 方向移动的偏移，默认 `-0.20m`。
 - `--release-retreat-z`：release 张手后，继续用同一套 Cartesian IK 在世界坐标系 Z 方向移动的偏移，默认 `+0.15m`。
-- `--retreat-steps`：release 后 world Y/Z 退避阶段最大步数，默认 `360`。
+- `--retreat-steps`：release 后 world Y/Z 退避阶段最大步数，默认 `120`。
 - `--x-offset/--y-offset`：所有阶段共用的水平偏移，用于微调手指相对物块的位置。
 - `--tolerance`：阶段切换的 TCP 距离阈值，默认 `0.05m`。这是当前抓取/放置 smoke test 的正常阈值；如果状态机卡在 lower/place_lower，再结合日志微调。
-- `--approach-steps`：approach 阶段最大步数；到达 tolerance 或超过最大步数都会进入 lower。
-- `--lower-steps`：lower 阶段等待到位的告警步数，不再允许靠超时进入 close。lower 必须达到 `--tolerance` 才能闭合手，避免 reset 后第一次命令在物块上方空抓。
-- `--close-steps`：close 阶段保持闭合命令的步数，之后进入 lift。
-- `--lift-steps/--place-steps/--release-steps/--retreat-steps`：抓起后移动到盘子、等待释放、张手、释放后 world Y/Z 退避的阶段步数。`place_lower -> release` 和 `lower -> close` 一样必须到 tolerance，避免高处张手。
+- `--approach-steps`：approach 阶段最大步数，默认 `120`；到达 tolerance 或超过最大步数都会进入 lower。
+- `--lower-steps`：lower 阶段等待到位的告警步数，默认 `120`；不再允许靠超时进入 close。lower 必须达到 `--tolerance` 才能闭合手，避免 reset 后第一次命令在物块上方空抓。
+- `--close-steps`：close 阶段保持闭合命令的步数，默认 `70`，之后进入 lift。
+- `--lift-steps/--place-steps/--release-steps/--retreat-steps`：抓起后移动到盘子、等待释放、张手、释放后 world Y/Z 退避的阶段步数，当前默认分别为 `60/150/50/120`。`place_lower -> release` 和 `lower -> close` 一样必须到 tolerance，避免高处张手。
+- 当前默认目标是约 `600 step`，也就是 `600 / 120Hz = 5s` 的仿真时间。若 lower 或 place_lower 没到 tolerance，实际回合会超过 5s，优先检查目标是否可达和 TCP 误差，而不是继续硬缩 step。
 - `--grasp-pose none|current`：`none` 只控位置；`current` 在 approach/lower/close 前使用命令开始时锁定的 TCP 姿态；进入 lift 时再锁定“实际抓住时”的 TCP 姿态，搬运、放置、松手、回撤都保持这个 carry/place 姿态，避免放置阶段继续改变末端姿态。
 - `--grasp-roll/--grasp-pitch/--grasp-yaw`：在锁定的当前 TCP 姿态上叠加局部 RPY 微调，单位 rad。当前默认 `grasp_pitch=0.10`、`grasp_yaw=-0.20`；yaw 用来让右肘更向外打开，搬运/放置时减少手臂挡住盘子或内收挤压圆柱。
 - `--place-roll`：进入放置阶段后，在实际抓住瞬间的 carry TCP 姿态基础上，额外绕本地 x 轴旋转，默认 `+0.40rad`。按右手系看作绕 TCP 本地 +x 方向逆时针旋转；`lift` 仍保持抓住瞬间姿态，`move_to_plate/place_lower/release` 使用额外 roll 后的放置姿态。如果可视化方向相反，显式传负值。
@@ -355,16 +369,142 @@ bash run.sh control diagnose-right-arm --eps 0.01 --hold-steps 120 --drive-steps
 - `fd ... row... cos=...`：直接写关节状态做有限差分，对比 PhysX Jacobian 的 body row/关节列。如果 cos 大量为负或接近 0，说明 Jacobian row、TCP offset 或关节列映射错。
 - `drive+ ... q_delta ... tcp_delta`：逐个关节发 `q + eps` 的位置目标，看实际关节是否正向跟随。如果 `q_delta` 反向或几乎不动，说明 actuator/drive/effort/重力保持层有问题；如果 `q_delta` 正常但 TCP 方向和有限差分相反，再查 TCP frame 和 body pose 更新链路。
 
-后续流程入口已经预留：
+后续流程入口：
 
 ```bash
-bash run.sh record-hdf5
+bash run.sh record-hdf5 --num-episodes 1 --block blue
 bash run.sh convert-lerobot --root-path <hdf5 file or dir>
 bash run.sh train-smolvla
 bash run.sh eval-smolvla --checkpoint <checkpoint>
 ```
 
-当前状态：`record-hdf5` 和 `eval-smolvla` 是 fail-fast scaffold，会明确提示未实现；`convert-lerobot` 已有本项目内转换逻辑，但需要先有符合 `data/hdf5_schema.py` 的 HDF5；`train-smolvla` 会先检查 LeRobotDataset 是否存在。
+当前状态：`record-hdf5` 已接入 scripted 右臂抓蓝色圆柱放盘子的采集链路，会自动启动 `grasp-block` 并写 HDF5。默认输出：
+
+```text
+/home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5
+```
+
+HDF5 字段包括：
+
+- `processed_actions`：26D action。
+- `states/articulation/robot/joint_position`：完整 robot joint position。
+- `obs/s4_active_joint_pos`：26D active state。
+- `obs/chest_front_rgb`：当前默认相机 RGB。
+- `obs/right_arm_eef_pose`：右手估算 TCP pose。
+- `states/rigid_object/red_block/root_pose`、`blue_block/root_pose`、`plate/root_pose`：任务物体 pose。
+
+注意：当前采集只是 scripted 右臂 smoke-test 数据，用于先打通相机、HDF5、LeRobotDataset、SmolVLA 训练链路。它还不是最终双臂 VR/真机数据。`eval-smolvla` 仍是 scaffold，需等转换和训练验证后再接回放。
+
+### 当前数据到训练流程
+
+这条链路参考 `qi-studio-benchhub/train_smolvla.sh` 和 BenchHub 的 `teleop -> replay_action_demo -> convert_hdf5_to_lerobot_dataset -> lerobot-train` 流程，但实现只放在 `my_isaaclab_project`，不要修改拉下来的参考仓库。
+
+1. 相机和场景检查，使用 `env_isaaclab`：
+
+```bash
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh sim
+```
+
+默认会打印 red/blue/plate/platform 坐标，并使用右前上方相机。TCP/目标箭头默认关闭；需要看坐标系时再运行：
+
+```bash
+bash run.sh sim --show-tcp-frames
+```
+
+调相机时使用同一个入口，确认窗口中能看到右手从抓取、搬运、放置到退避的全过程：
+
+```bash
+bash run.sh sim \
+  --camera-eye 0.18 -0.62 1.42 \
+  --camera-target 0.52 -0.12 0.98 \
+  --camera-width 640 \
+  --camera-height 480
+```
+
+2. 采集 scripted HDF5，仍使用 `env_isaaclab`：
+
+```bash
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh record-hdf5 --num-episodes 1 --block blue
+```
+
+`record-hdf5` 默认和 `sim` 不完全一样：为了避免单条 demo 过大，录制入口默认使用 `320x240` 相机、`record_every_n=2`，并对 RGB 图像 HDF5 dataset 使用 gzip 压缩。需要高分辨率调试或正式采集时再显式传：
+
+```bash
+bash run.sh record-hdf5 --num-episodes 1 --block blue \
+  --camera-width 640 --camera-height 480 --record-every-n 1
+```
+
+默认输出：
+
+```text
+/home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5
+```
+
+批量采集时先确认 1 条 episode 成功，再扩大数量。常规 smoke-test 建议先保持低分辨率：
+
+```bash
+bash run.sh record-hdf5 --num-episodes 20 --block blue
+```
+
+3. HDF5 回放/质检：
+
+BenchHub 已有参考脚本 `qi-studio-benchhub/lw_benchhub/scripts/teleop/replay_action_demo.py`，它的职责是读取 HDF5 的 `processed_actions`，在 IsaacLab 中按动作回放，并重新记录相机、状态和末端位姿。本项目目前还没有等价的 `run.sh replay-hdf5`，这是采集后必须补的下一步。实现时必须按本项目的 26D action 名称映射和当前 `grasp-block` 控制入口回放，不能直接套 BenchHub 的硬编码关节 index。
+
+临时检查 HDF5 结构可用：
+
+```bash
+python - <<'PY'
+import h5py
+p = "/home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5"
+with h5py.File(p, "r") as f:
+    def show(name, obj):
+        if hasattr(obj, "shape"):
+            print(name, obj.shape, obj.dtype)
+    f.visititems(show)
+PY
+```
+
+4. 转换为 LeRobotDataset，使用 `smolvla` 训练环境：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh convert-lerobot \
+  --root-path /home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5
+```
+
+默认输出：
+
+```text
+/home/zfy/smolVLA/datasets/lerobot_data/s4_bimanual_red_blue_plate_v0
+```
+
+这个步骤对应 BenchHub 的 `convert_hdf5_to_lerobot_dataset.py`：读取 `processed_actions`、`states/articulation/robot/joint_position` 和 `obs/chest_front_rgb`，写成 LeRobotDataset 的 `action`、`observation.state`、`observation.images.chest_front_rgb`。
+
+5. SmolVLA 训练，继续使用 `smolvla` 环境：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh train-smolvla
+```
+
+训练配置在 `configs/smolvla_s4_bimanual.yaml`。当前默认：
+
+- dataset root：`/home/zfy/smolVLA/datasets/lerobot_data/s4_bimanual_red_blue_plate_v0`
+- output：`/home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0`
+- `policy.type=smolvla`
+- `chunk_size=50`
+- `max_state_dim=50`
+- `max_action_dim=32`
+- VLM 权重：`/home/zfy/.cache/modelscope/hub/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct`
+
+6. 策略评估/回放：
+
+`bash run.sh eval-smolvla --checkpoint <checkpoint>` 目前只是入口 scaffold，还没有把 SmolVLA 输出动作稳定接回当前 IsaacLab 场景。等 HDF5 采集、HDF5 回放、LeRobot 转换和一次小步数训练都验证后，再实现本项目的 policy rollout。不要直接改 BenchHub 的 `eval_smolvla_policy.py`；只参考它的加载 checkpoint、读图像、输出 action、按频率执行 action 的流程。
 
 ### 当前场景实现
 
@@ -379,8 +519,8 @@ bash run.sh eval-smolvla --checkpoint <checkpoint>
   - `/World/RecordTask/Plate`
 - 相机：
   - `/World/DebugFrontCamera`
-  - 480x640 RGB
-  - 胸前/前方视角，朝桌面看。
+  - `run.sh sim` 可视化默认 480x640 RGB；`record-hdf5` 为控制数据体积默认 240x320 RGB。
+  - 默认 `eye=(0.18,-0.62,1.42)`、`target=(0.52,-0.12,0.98)`，右前上方朝当前右臂任务区看。
 
 重要问题：之前用户创建的 `/home/zfy/smolVLA/task_sence.usd` 当前没有被 `simulation.py` 默认使用。当前默认又回到了官方 warehouse + packing table。如果后续要使用用户自建仓库/桌子场景，需要在 `SceneBuildCfg` 或配置里显式把 `scene_usd` 改为 `task_sence.usd`，并确认是否还需要额外 spawn 桌子。
 
@@ -605,7 +745,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
   - `grasp-block --grasp-z` 默认从 `-0.04m` 改为 `+0.02m`，让 lower TCP 目标在圆柱中上部，而不是离垫块表面只有约 `2cm`。如果需要更低抓取，再显式传 `--grasp-z 0.00` 或负值，但要注意手指/手掌可能先碰到垫块。
   - 用户 15:10 的 `/tmp/isaaclab/logs/isaaclab_2026-07-27_15-10-15.log` 是空文件；只出现 `CCD is not supported on GPU` 仍不能说明启动失败根因。
 - 2026-07-27 用户已验证当前默认配置可用：
-  - 可用启动命令曾是 `bash run.sh sim --print-layout --show-tcp-frames --no-remove-table-clutter`，现已固化为 `bash run.sh sim` 默认行为：自动 print layout、显示 TCP frames、且不再删除桌面筐子。
+  - 可用启动命令曾是 `bash run.sh sim --print-layout --show-tcp-frames --no-remove-table-clutter`，现已固化为 `bash run.sh sim` 默认行为：自动 print layout、不再删除桌面筐子。2026-07-27 后 TCP/目标箭头默认关闭，需要调试时显式传 `--show-tcp-frames`。
   - 可用抓取命令曾是 `bash run.sh control grasp-block --block blue --grasp-pose current --grasp-pitch 0.1`，现已固化为 `bash run.sh control grasp-block` 默认行为：`block=blue`、`grasp_pose=current`、`grasp_pitch=0.1`，后续又加入 `grasp_yaw=-0.20` 作为默认外展姿态。
   - 当前右手可以把蓝色圆柱抓起来，这是进入后续放置/采集数据前的最新稳定基线。
 - 2026-07-27 用户反馈右手已能抓起圆柱，开始扩展放置流程：
@@ -624,6 +764,12 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
   - 局部 `post_place_retreat` 方案已废弃：实测放置后往旁边退时，手指仍在圆柱附近运动，可能因接触/平滑开合把圆柱再次带起。
   - `release -> home -> done` 方案也已废弃：用户实测直接回 home 的关节空间路径会在刚离开圆柱时加速/乱甩并把圆柱带飞。
   - 最新放置后流程改为 `release -> release_retreat -> done`。release 保持张手足够步数后，不再回 home；继续用抓取/放置过程中同一套 Cartesian IK，在固定 plate anchor 上设置 release 目标的世界坐标偏移：`Y=-0.20m, Z=+0.15m`。即退避 TCP 目标为 `plate + [0, -0.20, place_z + 0.15]`。退避完成后进入 `hold`，保持当前手臂姿态和打开的右手。
+- 2026-07-27 开始接数据链路：
+  - 默认相机改为右前上方视角：`eye=(0.18,-0.62,1.42)`、`target=(0.52,-0.12,0.98)`，用于覆盖当前右臂抓蓝色圆柱、移动到盘子、release、退避全过程。
+  - `03_record_physics_dataset.py` 增加 `--camera-eye/--camera-target/--camera-width/--camera-height`，相机 reset 会使用同一组配置。
+  - `03_record_physics_dataset.py` 增加 `--record-output/--record-episodes/--record-every-n/--auto-grasp`，可在同一个仿真循环内自动发 `grasp-block` 并记录 HDF5 episode。
+  - `04_record_bimanual_hdf5.py` 从 scaffold 改为实际 wrapper：`bash run.sh record-hdf5 --num-episodes 1 --block blue` 会转发到 `03_record_physics_dataset.py --record-output ... --auto-grasp`。
+  - 当前 HDF5 记录 scripted 右臂流程，不是最终 bimanual/VR 数据；用途是先打通采集、转换、训练链路。
 - 2026-07-27 关于“张开时无名指比其他指头慢”的初步判断：
   - URDF 中 `rh_index_mcp_pitch/rh_middle_mcp_pitch/rh_ring_mcp_pitch/rh_pinky_mcp_pitch` 的 limit/effort/velocity 均为 `lower=0`、`upper=1.60`、`effort=100`、`velocity=1`，`rh_ring_mcp_pitch` 本身没有更慢的驱动配置。
   - 右手 policy/control 顺序为 `thumb_yaw, thumb_pitch, index, middle, ring, pinky`，open/close 对四指给的是相同目标。
@@ -655,7 +801,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 16. 新增 `configs/smolvla_s4_bimanual.yaml` 和 `scripts/train_smolvla_local.sh`，训练入口归本项目所有。
 17. 新增 `scripts/00_inspect_project.py`，并在 `run.sh` 增加 `inspect-config`。
 18. 在 `run.sh` 增加 `record-hdf5`、`convert-lerobot`、`train-smolvla`、`eval-smolvla` 入口。
-19. 数据配置已改为 BenchHub 兼容方向：`observation.state` 预留 50D full/padded state，`observation.active_state` 保留 26D 控制态，`action` 保持 26D。
+19. 数据配置已按当前真实 checkpoint 修正：`observation.state` 为 48D full imported robot joint position，`observation.active_state` 保留 26D 控制态，`action` 保持 26D，采集默认图像为 240x320。
 20. 右臂 reach 控制增加了更保守的默认参数、TCP 误差诊断和失稳保护，降低测试时手臂被甩飞的概率。
 21. 修正右臂 reach 的 Jacobian 控制误差坐标系：从 base-frame error 改为 world-frame error，与 PhysX translational Jacobian 对齐。
 22. 新增运行中 `reset-scene`/`reload-scene` 控制命令，用于重置机器人、任务物体、相机和控制状态。
@@ -683,7 +829,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 44. 修复 `grasp-block` 第一次空抓问题：`lower` 阶段不再按 `lower_steps` 超时自动闭合，必须 TCP 进入 tolerance 后才进入 `close`。同时圆柱质量降到 `0.08kg`，提高当前手指夹持后抬起的可能性。
 45. 新增任务垫块，当前高度 `0.05m`；单块大垫板已拆成 `RedPlatform/BluePlatform/PlatePlatform` 三个小垫块，红/蓝圆柱和盘子整体抬高到对应垫块表面。删除桌面筐子的逻辑和参数已移除，`container_h20` 不再由代码自动隐藏。
 46. 为避免垫高后手末端被垫块挡住，`grasp-block --grasp-z` 默认改为 `+0.02m`，默认抓圆柱中上部；低位抓取必须显式调参并观察是否撞垫块。
-47. 固化当前可用默认入口：`bash run.sh sim` 默认等价于带 `--print-layout --show-tcp-frames`，`bash run.sh control grasp-block` 默认等价于右手抓蓝色圆柱并使用 `grasp-pose=current, grasp-pitch=0.1`，后续加入默认 `grasp-yaw=-0.20`。
+47. 固化当前可用默认入口：`bash run.sh sim` 默认等价于带 `--print-layout` 且不显示 TCP/目标箭头，`bash run.sh control grasp-block` 默认等价于右手抓蓝色圆柱并使用 `grasp-pose=current, grasp-pitch=0.1`，后续加入默认 `grasp-yaw=-0.20`。
 48. 扩展 `grasp-block` 为右手 pick-place smoke test：抓起圆柱后移动到盘子 anchor，上方下降到 release 目标，张手释放。
 49. 放置阶段改为锁定实际抓取瞬间的 TCP 姿态，搬运/放置/松手/回撤不再引入新的末端姿态变化；默认任务布局 Y 中心改为 `-0.05`，圆柱、垫块、盘子整体向右臂一侧移动。
 50. 默认 `grasp-yaw` 改为 `-0.20rad`，让右臂在抓取到放置的 carry pose 中更外展，提升放入盘子时的空间余量。
@@ -694,6 +840,45 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 55. 废弃 `post_place_retreat` 局部退避方案：放置后往旁边退会让手指在圆柱附近继续扰动，可能再次抓到圆柱。
 56. 废弃 `release -> home -> done` 方案：直接回 home 的关节空间路径在放置后可能加速/乱甩并打飞圆柱。
 57. 最新默认流程为 `release -> release_retreat -> done`：release 后继续使用同一套 Cartesian IK，在世界坐标系下相对 release TCP 目标移动 `Y=-0.20m, Z=+0.15m`，右手保持打开，退避完成后 hold 当前姿态。
+58. 调整默认相机到右前上方视角，覆盖蓝色圆柱、盘子、右手抓取和放置过程；相机位姿和分辨率已通过命令行参数暴露。
+59. 实现 scripted HDF5 采集入口：`bash run.sh record-hdf5 --num-episodes 1 --block blue` 会自动启动当前右臂 `grasp-block` 流程并写出 HDF5。
+60. 关闭默认可视化箭头：`bash run.sh sim` 不再自动传 `--show-tcp-frames`。采集前默认画面更接近真实相机输入；调 TCP 坐标时仍可手动运行 `bash run.sh sim --show-tcp-frames`。
+61. 录制数据体积优化：单条 demo 录到 1GB 的主要原因是 `640x480 RGB * 每步一帧 * 未压缩 HDF5`。现在 `record-hdf5` 默认改为 `320x240`、`record_every_n=2`，并给 `obs/chest_front_rgb` 加 gzip 压缩；`run.sh sim` 可视化默认分辨率不变。
+62. 录制节奏改为约 5 秒档：仿真步长仍为 `1/120s`，目标 episode 约 `600 step`。默认阶段改为 `approach=120, lower_warn=120, close=70, lift=60, place=150, release=50, retreat=120`，并把 IK/关节平滑速度提高到 `target_alpha=0.18, max_joint_step=0.030, hand_max_joint_step=0.008, reach_max_cart_step=0.020, reach_max_joint_delta=0.050`。注意 `lower` 和 `place_lower` 仍必须到 tolerance 才切阶段，所以如果控制不到位，真实 episode 会超过 5 秒，这是为了避免空抓或高处放置。
+63. HDF5 采集结束日志新增 `sim_steps/sim_seconds/wall_seconds/realtime_factor`。以后判断“一个回合是否 5 秒左右”优先看 `[RECORD] wrote ... sim_seconds=...`，不要只看现实等待时间，因为 IsaacSim 渲染和写盘可能慢于实时。
+64. 修复 `run.sh` 环境切换问题：旧版在脚本开头无条件把 `PATH` 改到 `env_isaaclab`，导致用户即使 `conda activate smolvla` 后运行 `bash run.sh convert-lerobot`，实际也会用 IsaacLab Python，从而报 `ModuleNotFoundError: No module named 'lerobot'`。现在只有 `sim/record-hdf5/eval-smolvla/joint-debug/headless` 会调用 `use_isaaclab_env`；`convert-lerobot/train-smolvla/control/inspect-config` 保留当前 shell 环境。转换和训练必须先 `conda activate smolvla`。
+65. 当前 `README.md` 已重写为主流程文档，明确“采集 -> HDF5 -> LeRobotDataset -> SmolVLA 训练 -> 离线预览”已经走通，当前瓶颈是成功数据不足和在线 rollout 尚未实现。
+66. 清理无关空壳和缓存：删除 `my_isaaclab_project/evaluation/`、`training/`、`teleop/` 三个仅含 `__init__.py` 的空占位目录，并删除所有 `__pycache__`。后续需要 teleop/evaluation/training 模块时，再按实际功能重新创建。
+67. 修正 `configs/s4_bimanual_dataset.json` 当前特征描述：`observation.state` 从旧的 50D 预留描述改为当前 48D，默认图像 shape 从 480x640 改为录制/训练用的 240x320。
+
+命令换行注意：下面这种写法会把第三行的文件名当成 shell 命令执行，产生 `s4_right_blue_cylinder_plate_scripted.hdf5：未找到命令`：
+
+```bash
+bash run.sh convert-lerobot \
+  --root-path /home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/
+  s4_right_blue_cylinder_plate_scripted.hdf5
+```
+
+正确写法是传目录，或把完整文件路径放在同一条参数里：
+
+```bash
+bash run.sh convert-lerobot \
+  --root-path /home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/
+
+bash run.sh convert-lerobot \
+  --root-path /home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5
+```
+65. 补齐 `smolvla` 环境转换依赖并适配 LeRobot API：
+  - 已安装 `h5py==3.16.0`，解决读取 HDF5 的缺包。
+  - 已安装 `torch==2.7.0+cu128`、`torchvision==0.22.0+cu128`，解决 LeRobot import 对 PyTorch 的依赖。注意在 Codex 工具沙箱里 `torch.cuda.is_available()` 可能是 False；实际训练是否可用以用户终端为准。
+  - 已安装 `datasets==5.0.0`，安装过程中 `fsspec` 被依赖约束调整为 `2026.4.0`。
+  - `av` 不能用最新版 `18.0.0`，当前 LeRobot `pyproject.toml` 约束为 `av>=15,<16`，已降级为 `av==15.1.0`，否则会报 `module 'av' has no attribute 'option'`。
+  - 本项目 `data/lerobot_conversion.py` 已适配当前 LeRobot API：`LeRobotDataset.create(..., video_backend="pyav")`，不再传旧参数 `vcodec`。
+66. 修复训练 CLI 参数名：当前 `lerobot-train` 没有旧参数 `--eval_freq`，正确参数是 `--env_eval_freq`。`scripts/train_smolvla_local.sh` 已改为 `--env_eval_freq=0`，继续沿用“训练 smoke test 不跑环境评估”的意图。
+67. 修复训练 cache 路径：`lerobot-train` 会通过 HuggingFace/datasets 在本地写 cache。当前环境中 `/home/zfy/.cache/huggingface` 可能不可写，会报 `OSError: [Errno 30] Read-only file system: '/home/zfy/.cache/huggingface'`。`scripts/train_smolvla_local.sh` 现在默认使用 `/home/zfy/smolVLA/.cache/huggingface`，并设置 `HF_HOME/HF_HUB_CACHE/HF_DATASETS_CACHE/TRANSFORMERS_CACHE`。
+68. 下载并改用真实本地 VLM 路径：原配置 `vlm_model_name=/home/zfy/.cache/modelscope/.../SmolVLM2-500M-Video-Instruct` 在本机不存在，Transformers 会把这个不存在的绝对路径当 repo id 校验并报 `Repo id must be in the form ...`。已用 `hf download HuggingFaceTB/SmolVLM2-500M-Video-Instruct --local-dir /home/zfy/smolVLA/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct` 下载模型，并把 `configs/smolvla_s4_bimanual.yaml` 指向该目录。仓库根目录新增 `.gitignore`，忽略 `datasets/`、`models/`、`.cache/` 和 `__pycache__/`，避免把大数据和模型权重提交进 git。
+69. 训练 smoke test 默认使用单进程 dataloader：Codex 工具沙箱里 PyTorch DataLoader 多进程会在 `multiprocessing.resource_sharer` 创建 socket 时触发 `PermissionError: [Errno 1] Operation not permitted`。`configs/smolvla_s4_bimanual.yaml` 默认 `num_workers=0`，`scripts/train_smolvla_local.sh` 读取该配置并传 `--persistent_workers=false`。用户在正常终端确认训练稳定后，可再把 `num_workers` 调回 `2` 或 `4` 提升吞吐。
+70. 训练设备默认显式设为 `cuda`：`configs/smolvla_s4_bimanual.yaml` 增加 `device: cuda`，`train_smolvla_local.sh` 传 `--policy.device="$DEVICE"`。Codex 工具沙箱里无法看到 GPU，会退到 CPU 或报 CUDA 不可用；用户自己的终端有 RTX 4090，应先用 `python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"` 确认 PyTorch 能看到 CUDA。
 
 ## 未完成工作
 
@@ -703,13 +888,14 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 2. 已有右手 `grasp-block` pick-place smoke test 状态机，但还不是稳定真实抓取专家。当前覆盖 `approach -> lower -> close -> lift -> move_to_plate -> place_lower -> release -> release_retreat -> done`；已有 `--grasp-pose current` pose IK 和 carry/place 姿态锁定，但还没有固化的侧抓/包络抓姿态模板。
 3. 当前用户已验证右手能抓起蓝色圆柱，但“放入盘子并稳定释放”的成功率还需要继续实机仿真验证。通过前不能用它生成训练数据。
 4. 右臂 reach 已切换到 IsaacLab 官方 `DifferentialIKController`，并加了 PhysX gravity compensation；现在执行链路已明显改善，但仍有约 `5cm` 收敛误差。下一步优先测试 `grasp-block`，判断误差是否足以闭合抓住物块；若不够，升级 pose IK/grasp frame。
-5. HDF5 writer 和 schema 已经落到本项目，但还没有接入运行中的 IsaacLab scene；`record-hdf5` 目前是 scaffold。
-6. LeRobotDataset 转换脚本已落到本项目，但还没有真实 HDF5 样本验证。
-7. 策略训练配置和入口已落到本项目，但还没有数据集，不能开始有效训练。
-8. 策略回放/评估入口只预留 scaffold，还没接入当前自建场景。
-9. 还没有 VR 数据采集接入当前场景。
-10. 还没有明确 success checker。
-11. 当前自建 `task_sence.usd` 没有被当前 `simulation.py` 默认使用，需要重新接入或明确放弃。
+5. HDF5 writer/schema 已接入当前 scripted 右臂流程，但还没有用实际 IsaacSim 运行结果验证 HDF5 是否完整可转换。
+6. 本项目还没有 HDF5 动作回放脚本。BenchHub 的 `replay_action_demo.py` 只能作为参考，后续需要新增 `run.sh replay-hdf5`，按本项目 26D action 和关节名映射回放。
+7. LeRobotDataset 转换脚本已落到本项目，但还没有用新录制的真实 HDF5 样本验证。
+8. 策略训练配置和入口已落到本项目，但还没有数据集，不能开始有效训练。
+9. 策略回放/评估入口只预留 scaffold，还没接入当前自建场景。
+10. 还没有 VR 数据采集接入当前场景。
+11. 还没有明确 success checker。
+12. 当前自建 `task_sence.usd` 没有被当前 `simulation.py` 默认使用，需要重新接入或明确放弃。
 
 中优先级未完成：
 
@@ -865,7 +1051,7 @@ max_action_dim: 32
 
 ```bash
 cd /home/zfy/smolVLA/my_isaaclab_project
-bash run.sh sim --print-layout --show-tcp-frames
+bash run.sh sim
 ```
 
 检查：
@@ -873,7 +1059,7 @@ bash run.sh sim --print-layout --show-tcp-frames
 - 桌子和物块在同一高度。
 - 红/蓝物块不是悬浮，也不掉穿桌子。
 - 机器人双臂 idle 不乱甩。
-- 右手 TCP frame 位置合理。
+- 默认不显示 TCP/目标箭头；如果要检查右手 TCP frame 位置，再运行 `bash run.sh sim --show-tcp-frames`。
 
 如果物块悬浮或穿桌：
 
@@ -1060,13 +1246,167 @@ cmd[6] -> pinky_mcp_pitch, pinky_dip = pinky_mcp_pitch * 0.89
 
 ## 近期建议执行清单
 
-下一次继续开发建议按这个顺序：
+### 训练完成后的策略查看
+
+当前训练输出已经生成：
+
+```text
+/home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0/checkpoints/
+├── 001000/pretrained_model/
+├── 002000/pretrained_model/
+└── 003000/pretrained_model/   # 当前最新 checkpoint
+```
+
+每个 `pretrained_model/` 目录里都有：
+
+- `config.json`：策略结构和数据特征。
+- `train_config.json`：训练配置。
+- `model.safetensors`：训练后的权重。
+- `policy_preprocessor*.safetensors` / `policy_postprocessor*.safetensors`：state/action 归一化和反归一化处理器。
+
+这次训练实际数据格式是：
+
+```text
+observation.state: 48D
+observation.images.chest_front_rgb: 3 x 240 x 320
+action: 26D
+```
+
+注意：这不是 BenchHub 示例里的 50D state + active-index 选择逻辑。后续评估本项目 checkpoint 时，不要照抄 BenchHub 的 `STATE_ACTIVE_IDX`，否则会把状态维度和关节语义搞错。
+
+新增离线策略预览入口：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh preview-smolvla
+```
+
+默认行为：
+
+- 自动选择最新 checkpoint：`outputs/train/smolvla_s4_bimanual_v0/checkpoints/003000/pretrained_model`。
+- 读取默认 LeRobotDataset：`/home/zfy/smolVLA/datasets/lerobot_data/s4_bimanual_red_blue_plate_v0`。
+- 从数据集中均匀抽样 20 帧。
+- 加载 `SmolVLAPolicy.from_pretrained(...)`。
+- 构造 `observation.state`、`observation.images.chest_front_rgb`、language tokens。
+- 调 `policy.select_action(batch)` 输出 26D action。
+- 和数据集里的 expert `action` 做 MAE/RMSE/max_abs 对比，并按 `left_arm/left_hand/right_arm/right_hand` 分组打印 MAE。
+- 保存 CSV 到：`/home/zfy/smolVLA/outputs/eval/offline_policy_preview.csv`。
+
+常用命令：
+
+```bash
+# 看最新 checkpoint 的 20 帧离线输出
+bash run.sh preview-smolvla
+
+# 指定 checkpoint
+bash run.sh preview-smolvla \
+  --checkpoint /home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0/checkpoints/003000/pretrained_model
+
+# 快速只看 5 帧
+bash run.sh preview-smolvla --num-frames 5
+
+# 如果当前终端 CUDA 异常，可强制 CPU，只适合小样本检查
+bash run.sh preview-smolvla --num-frames 1 --device cpu
+
+# 固定 seed 后可复现；默认 seed=42
+bash run.sh preview-smolvla --num-frames 20 --seed 42
+```
+
+已验证结果：
+
+```text
+bash run.sh preview-smolvla --num-frames 1 --device cpu
+```
+
+能正常加载 checkpoint、VLM、本地 LeRobotDataset，并输出 26D action。当前工具环境里 CUDA 不可用，所以验证使用 CPU；用户本机终端应优先用 `smolvla` 环境的 CUDA。
+
+评估解释：
+
+- SmolVLA 推理从随机噪声开始 denoise，若不固定 seed，同一帧每次 `pred` 都会不同。`07_preview_smolvla_policy.py` 现在默认 `--seed 42`，用来保证同一命令结果可复现。
+- action 顺序是 `left_arm(0:7), left_hand(7:13), right_arm(13:20), right_hand(20:26)`。右臂单任务数据里，前 7 维左臂基本保持 home；不要只看 `pred[:8]` 判断右臂策略。
+- 2026-07-27 用 `--num-frames 20 --device cpu --seed 42` 验证，平均误差大致为 `mean_mae≈0.55rad`、`mean_rmse≈0.69rad`；分组看右臂误差明显偏大。这说明当前 3000 step / 约 5 条 scripted demo 的 checkpoint 只能证明训练链路打通，不能认为已经学到可闭环执行的策略。
+- 若要真正判断策略质量，应至少扩大数据量、延长训练，并用 `preview-smolvla` 比较不同 checkpoint 的分组误差趋势，再做 IsaacLab 在线 rollout。
+
+本次修复的一个评估脚本细节：当前 LeRobot/SmolVLA attention 代码要求 language attention mask 是 bool，tokenizer 默认输出 LongTensor。`07_preview_smolvla_policy.py` 里必须 `.bool()`，否则会在 `torch.where(...)` 报：
+
+```text
+RuntimeError: where expected condition to be a boolean tensor, but got Long
+```
+
+### 离线预览怎么看
+
+离线预览只能回答这几个问题：
+
+- checkpoint 是否能正常加载。
+- 数据集字段名、图像 shape、state/action 维度是否和 checkpoint 对齐。
+- 策略输出是否是 26D 且数值范围不像完全发散。
+- 对训练集帧的 action MAE/RMSE 是否大致下降到可接受范围。
+
+离线误差不能直接代表仿真成功率。尤其这次只有少量 scripted demo，策略可能学到训练轨迹局部，但在线闭环仍可能因为状态分布偏移、手指接触、圆柱被碰倒而失败。
+
+### 下一步：在线 rollout
+
+当前 `bash run.sh eval-smolvla --checkpoint ...` 仍是 IsaacLab 在线评估脚手架，还没有真正执行策略。下一步应实现本项目自己的在线 rollout，而不是直接拷 BenchHub：
+
+1. 在 `env_isaaclab` 里加载本项目场景。
+2. 在 rollout 中实时读取：
+   - 48D `observation.state`
+   - 胸前 RGB `observation.images.chest_front_rgb`
+   - 固定 task language
+3. 在 `smolvla` 训练环境不可直接和 IsaacSim 共进程时，需要二选一：
+   - 在 `env_isaaclab` 里补齐 LeRobot/SmolVLA 依赖，直接进程内推理。
+   - 或者做一个轻量 policy server，让 IsaacLab 进程通过 socket/ZMQ 请求 action。
+4. 策略输出 26D action 后，用 `control_mapping.py` 映射到当前仿真关节目标。
+5. 录制 rollout 视频、success/failure、最终物体位置。
+6. 先右臂蓝色圆柱单任务评估，再扩展双臂红蓝同时任务。
+
+不建议马上把策略接到真实机器人。应该先完成 IsaacLab 在线 rollout，并至少确认：
+
+- policy 输出不会导致手臂打飞圆柱。
+- 放置后能稳定离开。
+- 相机输入和训练时一致。
+- action 频率、chunk 执行方式和训练数据一致。
+
+### 已完成的主线
+
+当前主线已经完成：
+
+1. 本项目 IsaacLab 场景能启动，默认不开 TCP 可视化箭头。
+2. 右臂 scripted grasp/place/retreat 流程已跑通，用户已能抓起蓝色圆柱并放置。
+3. HDF5 采集已跑通，并降低到 320x240、每 2 step 录 1 帧，避免一条数据过大。
+4. HDF5 -> LeRobotDataset 转换已跑通。
+5. 本地 SmolVLA 训练已跑通，并产生 1000/2000/3000 step checkpoint。
+6. 离线策略预览脚本已加入：`bash run.sh preview-smolvla`。
+
+### 仍未完成
+
+后续真正需要做的是：
+
+1. 实现 `scripts/06_eval_smolvla_in_isaaclab.py` 在线 rollout。
+2. 明确策略推理运行在哪个环境：`env_isaaclab` 内直接推理，或 `smolvla` 独立 policy server。
+3. 对齐在线 action 执行节奏和数据采集节奏，避免训练是 5 秒 episode、评估却用不同控制周期。
+4. 加 rollout 视频保存。
+5. 加自动 success 判断：圆柱最终在盘子/垫块区域内，且手已离开。
+6. 扩展到左臂红色圆柱，再扩展到双臂同时任务。
+
+### 历史 reach/IK 问题记录
+
+之前长时间调试过右臂 reach 往下掉、手臂乱甩的问题，结论必须保留：
+
+- 一开始不要把 `--z-offset` 的视觉箭头方向和手末端局部轴混为一谈。`--offset-frame world` 时，z offset 是世界/base 竖直方向，不是手腕局部 z。
+- 单纯看目标 frame 朝向不一致，不能说明 position IK 错。之前 reach 只控制位置，不控制姿态。
+- 最早的“往下掉”不是 Jacobian 符号本身导致的唯一问题；还混有 position drive 静态误差、目标/实际关节状态未同步、回 home 速度过快、手指在释放后再次干扰圆柱等问题。
+- 后续不要再用固定 `action_target_bias` 硬补，它会破坏小步 IK。
+- 当前路线是：position drive 稳定、必要时重力补偿、低速小步笛卡尔控制、释放后按世界坐标偏移离开，不再用突然回 home 的大动作。
+
+旧的 reach 调试 checklist 只作为历史参考，不再作为当前主线：
 
 1. 先解决右臂 reach 控制方向问题。启动：
 
 ```bash
 cd /home/zfy/smolVLA/my_isaaclab_project
-bash run.sh sim --print-layout --show-tcp-frames
+bash run.sh sim --show-tcp-frames
 ```
 
 然后另一个终端发送：

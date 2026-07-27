@@ -17,12 +17,23 @@ import numpy as np
 from . import hdf5_schema as schema
 
 
-def _create_nested_dataset(group: h5py.Group, path: str, data: np.ndarray) -> None:
+def _create_nested_dataset(group: h5py.Group, path: str, data: np.ndarray, **dataset_kwargs: Any) -> None:
     parent = group
     parts = path.split("/")
     for part in parts[:-1]:
         parent = parent.require_group(part)
-    parent.create_dataset(parts[-1], data=data)
+    parent.create_dataset(parts[-1], data=data, **dataset_kwargs)
+
+
+def _image_dataset_kwargs(data: np.ndarray) -> dict[str, Any]:
+    if data.ndim != 4:
+        return {}
+    return {
+        "compression": "gzip",
+        "compression_opts": 4,
+        "shuffle": True,
+        "chunks": (1, *data.shape[1:]),
+    }
 
 
 @dataclass
@@ -70,7 +81,8 @@ class Hdf5DemoWriter:
         _create_nested_dataset(group, schema.FULL_JOINT_POS, np.asarray(episode.full_joint_pos, dtype=np.float32))
         if episode.active_joint_pos:
             _create_nested_dataset(group, schema.ACTIVE_JOINT_POS, np.asarray(episode.active_joint_pos, dtype=np.float32))
-        _create_nested_dataset(group, schema.CHEST_FRONT_RGB, np.asarray(episode.chest_front_rgb, dtype=np.uint8))
+        rgb = np.asarray(episode.chest_front_rgb, dtype=np.uint8)
+        _create_nested_dataset(group, schema.CHEST_FRONT_RGB, rgb, **_image_dataset_kwargs(rgb))
         if episode.left_eef_pose:
             _create_nested_dataset(group, schema.LEFT_EEF_POSE, np.asarray(episode.left_eef_pose, dtype=np.float32))
         if episode.right_eef_pose:

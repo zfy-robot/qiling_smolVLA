@@ -52,19 +52,19 @@ grasp.add_argument("--grasp-yaw", type=float, default=-0.20, help="Local TCP yaw
 grasp.add_argument("--place-roll", type=float, default=0.40, help="Extra local TCP roll offset in radians for carry-to-place/release phases.")
 grasp.add_argument("--release-retreat-y", type=float, default=-0.20, help="World Y offset from release TCP target after opening the hand.")
 grasp.add_argument("--release-retreat-z", type=float, default=0.15, help="World Z offset from release TCP target after opening the hand.")
-grasp.add_argument("--retreat-steps", type=int, default=360, help="Max steps to move away after release while keeping the hand open.")
+grasp.add_argument("--retreat-steps", type=int, default=120, help="Max steps to move away after release while keeping the hand open.")
 grasp.add_argument("--tolerance", type=float, default=0.05, help="TCP distance threshold for phase transitions.")
-grasp.add_argument("--approach-steps", type=int, default=360, help="Max steps before leaving approach phase.")
+grasp.add_argument("--approach-steps", type=int, default=120, help="Max steps before leaving approach phase.")
 grasp.add_argument(
     "--lower-steps",
     type=int,
-    default=240,
+    default=120,
     help="Steps before warning while waiting for the lower target; closing requires TCP tolerance.",
 )
-grasp.add_argument("--close-steps", type=int, default=160, help="Steps to hold the close command before lifting.")
-grasp.add_argument("--lift-steps", type=int, default=120, help="Steps to hold the lifted block before moving to the plate.")
-grasp.add_argument("--place-steps", type=int, default=360, help="Max steps before warning while moving to the plate release target.")
-grasp.add_argument("--release-steps", type=int, default=120, help="Steps to hold open hand after placing.")
+grasp.add_argument("--close-steps", type=int, default=70, help="Steps to hold the close command before lifting.")
+grasp.add_argument("--lift-steps", type=int, default=60, help="Steps to hold the lifted block before moving to the plate.")
+grasp.add_argument("--place-steps", type=int, default=150, help="Max steps before warning while moving to the plate release target.")
+grasp.add_argument("--release-steps", type=int, default=50, help="Steps to hold open hand after placing.")
 
 hand = subparsers.add_parser("hand", help="Set right hand open/close target.")
 hand.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)

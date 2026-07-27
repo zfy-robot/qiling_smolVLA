@@ -10,7 +10,8 @@ output_dir: /home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0
 
 steps: 3000
 batch_size: 4
-num_workers: 4
+num_workers: 0
+device: cuda
 seed: 42
 save_freq: 1000
 resume: false
@@ -25,9 +26,8 @@ freeze_vision_encoder: true
 train_expert_only: true
 train_state_proj: true
 load_vlm_weights: true
-vlm_model_name: /home/zfy/.cache/modelscope/hub/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+vlm_model_name: /home/zfy/smolVLA/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 
 optimizer_lr: 1.0e-5
 optimizer_weight_decay: 0.0001
 optimizer_grad_clip_norm: 10.0
-

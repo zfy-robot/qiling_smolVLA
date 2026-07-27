@@ -98,6 +98,10 @@ class SceneBuildCfg:
     table_visual_z: float = 0.0
     table_scale: float = 1.0
     layout: TaskLayout = TaskLayout()
+    camera_eye: tuple[float, float, float] = (0.18, -0.62, 1.42)
+    camera_target: tuple[float, float, float] = (0.52, -0.12, 0.98)
+    camera_width: int = 640
+    camera_height: int = 480
 
 
 def create_simulation_context(device: str) -> SimulationContext:
@@ -117,7 +121,7 @@ def create_simulation_context(device: str) -> SimulationContext:
             ),
         )
     )
-    sim.set_camera_view([1.65, 0.0, 1.45], [0.82, 0.0, 0.78])
+    sim.set_camera_view([0.18, -0.62, 1.42], [0.52, -0.12, 0.98])
     return sim
 
 
@@ -286,8 +290,8 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         cfg=CameraCfg(
             prim_path="/World/DebugFrontCamera",
             update_period=0,
-            height=480,
-            width=640,
+            height=int(cfg.camera_height),
+            width=int(cfg.camera_width),
             data_types=["rgb"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=18.0,
@@ -341,10 +345,12 @@ def reset_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim: SimulationCon
     return init_pos[0].detach().cpu().numpy()
 
 
-def reset_camera(camera: Camera, sim: SimulationContext) -> None:
+def reset_camera(camera: Camera, sim: SimulationContext, cfg: SceneBuildCfg | None = None) -> None:
+    eye = cfg.camera_eye if cfg is not None else (0.18, -0.62, 1.42)
+    target = cfg.camera_target if cfg is not None else (0.52, -0.12, 0.98)
     camera.set_world_poses_from_view(
-        eyes=torch.tensor([[0.22, 0.0, 1.42]], device=sim.device),
-        targets=torch.tensor([[0.86, 0.0, 0.78]], device=sim.device),
+        eyes=torch.tensor([eye], dtype=torch.float32, device=sim.device),
+        targets=torch.tensor([target], dtype=torch.float32, device=sim.device),
     )
     camera.reset()
 

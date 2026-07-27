@@ -6,19 +6,23 @@
 #   bash run.sh record-hdf5
 #   bash run.sh convert-lerobot
 #   bash run.sh train-smolvla
+#   bash run.sh preview-smolvla
 #   bash run.sh control reach-block --block blue
 #   python scripts/set_joint_command.py right_elbow_joint=0.3
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# 确保使用 env_isaaclab 环境的 Python
-export CONDA_PREFIX=""
-export PATH="/home/zfy/miniconda3/envs/env_isaaclab/bin:$PATH"
-export PYTHONPATH="/home/zfy/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/cmeel.prefix/lib/python3.11/site-packages:${PYTHONPATH:-}"
-export LD_LIBRARY_PATH="/home/zfy/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/cmeel.prefix/lib:${LD_LIBRARY_PATH:-}"
-
 ISAACLAB="${HOME}/IsaacLab/isaaclab.sh"
+ISAACLAB_PY="/home/zfy/miniconda3/envs/env_isaaclab/bin"
+ISAACLAB_CMEEL="/home/zfy/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/cmeel.prefix"
+
+use_isaaclab_env() {
+    export CONDA_PREFIX=""
+    export PATH="${ISAACLAB_PY}:$PATH"
+    export PYTHONPATH="${ISAACLAB_CMEEL}/lib/python3.11/site-packages:${PYTHONPATH:-}"
+    export LD_LIBRARY_PATH="${ISAACLAB_CMEEL}/lib:${LD_LIBRARY_PATH:-}"
+}
 
 case "${1:-sim}" in
     inspect-config)
@@ -27,10 +31,12 @@ case "${1:-sim}" in
         ;;
     sim)
         shift
-        $ISAACLAB -p scripts/03_record_physics_dataset.py --enable_cameras --print-layout --show-tcp-frames "$@"
+        use_isaaclab_env
+        $ISAACLAB -p scripts/03_record_physics_dataset.py --enable_cameras --print-layout "$@"
         ;;
     record-hdf5)
         shift
+        use_isaaclab_env
         $ISAACLAB -p scripts/04_record_bimanual_hdf5.py --enable_cameras "$@"
         ;;
     convert-lerobot)
@@ -41,12 +47,18 @@ case "${1:-sim}" in
         shift
         bash scripts/train_smolvla_local.sh "$@"
         ;;
+    preview-smolvla)
+        shift
+        python3 scripts/07_preview_smolvla_policy.py "$@"
+        ;;
     eval-smolvla)
         shift
+        use_isaaclab_env
         $ISAACLAB -p scripts/06_eval_smolvla_in_isaaclab.py --enable_cameras "$@"
         ;;
     joint-debug)
         shift
+        use_isaaclab_env
         $ISAACLAB -p scripts/03_joint_debug.py --enable_cameras "$@"
         ;;
     control)
@@ -59,10 +71,11 @@ case "${1:-sim}" in
         ;;
     headless)
         script="$2"; shift 2
+        use_isaaclab_env
         $ISAACLAB -p "$script" --headless "$@"
         ;;
     *)
-        echo "用法: bash run.sh {inspect-config|sim|record-hdf5|convert-lerobot|train-smolvla|eval-smolvla|control|reach-block|joint-debug|headless <script>}"
+        echo "用法: bash run.sh {inspect-config|sim|record-hdf5|convert-lerobot|train-smolvla|preview-smolvla|eval-smolvla|control|reach-block|joint-debug|headless <script>}"
         exit 1
         ;;
 esac

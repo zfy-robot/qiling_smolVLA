@@ -25,6 +25,10 @@ parser.add_argument("--task-x", type=float, default=0.50, help="World X for bloc
 parser.add_argument("--task-y", type=float, default=-0.05, help="World Y center for table and task objects.")
 parser.add_argument("--block-y-offset", type=float, default=0.20, help="Half spacing between red and blue blocks.")
 parser.add_argument("--plate-x", type=float, default=0.50, help="World X for plate center.")
+parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.18, -0.62, 1.42], metavar=("X", "Y", "Z"))
+parser.add_argument("--camera-target", type=float, nargs=3, default=[0.52, -0.12, 0.98], metavar=("X", "Y", "Z"))
+parser.add_argument("--camera-width", type=int, default=640)
+parser.add_argument("--camera-height", type=int, default=480)
 parser.add_argument("--continuous", action="store_true", help="Run forever for debug.")
 parser.add_argument("--keyboard-jog", action="store_true", help="Enable live keyboard joint jogging.")
 parser.add_argument("--jog-step", type=float, default=0.03, help="Joint increment for keyboard jogging, in radians.")
@@ -34,11 +38,11 @@ parser.add_argument("--print-layout", action="store_true")
 parser.add_argument("--joint-stiffness", type=float, default=600.0)
 parser.add_argument("--joint-damping", type=float, default=80.0)
 parser.add_argument("--joint-effort-limit", type=float, default=300.0)
-parser.add_argument("--target-alpha", type=float, default=0.12)
-parser.add_argument("--max-joint-step", type=float, default=0.018)
-parser.add_argument("--hand-max-joint-step", type=float, default=0.004)
-parser.add_argument("--reach-max-cart-step", type=float, default=0.012)
-parser.add_argument("--reach-max-joint-delta", type=float, default=0.030)
+parser.add_argument("--target-alpha", type=float, default=0.18)
+parser.add_argument("--max-joint-step", type=float, default=0.030)
+parser.add_argument("--hand-max-joint-step", type=float, default=0.008)
+parser.add_argument("--reach-max-cart-step", type=float, default=0.020)
+parser.add_argument("--reach-max-joint-delta", type=float, default=0.050)
 parser.add_argument("--reach-damping", type=float, default=0.16)
 parser.add_argument("--reach-posture-gain", type=float, default=0.03)
 parser.add_argument("--reach-max-error", type=float, default=0.85)
@@ -72,6 +76,11 @@ parser.add_argument(
 )
 parser.add_argument("--gravity-comp-scale", type=float, default=1.0, help="Scale for gravity compensation feed-forward effort.")
 parser.add_argument("--show-tcp-frames", action="store_true", help="Visualize current hand TCP and target block TCP frames.")
+parser.add_argument("--record-output", type=Path, default=None, help="Write HDF5 episodes while running scripted grasp.")
+parser.add_argument("--record-episodes", type=int, default=1, help="Number of scripted grasp episodes to record.")
+parser.add_argument("--record-every-n", type=int, default=1, help="Record every N simulation steps.")
+parser.add_argument("--auto-grasp", action="store_true", help="Automatically start grasp-block when recording starts.")
+parser.add_argument("--auto-grasp-block", choices=["red", "blue"], default="blue")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -109,6 +118,7 @@ from s4_robot.simulation import (
     reset_camera,
     reset_scene,
 )
+from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -144,6 +154,10 @@ def make_scene_cfg() -> SceneBuildCfg:
         table_visual_z=float(args_cli.table_visual_z),
         table_scale=float(args_cli.table_scale),
         layout=layout,
+        camera_eye=tuple(float(x) for x in args_cli.camera_eye),
+        camera_target=tuple(float(x) for x in args_cli.camera_target),
+        camera_width=max(int(args_cli.camera_width), 1),
+        camera_height=max(int(args_cli.camera_height), 1),
     )
 
 
@@ -169,6 +183,71 @@ def control_action_from_full_target(full_target: np.ndarray, robot: Articulation
 def control_action_from_sim(robot: Articulation) -> np.ndarray:
     joint_pos = robot.data.joint_pos[0].detach().cpu().numpy()
     return extract_bimanual_state(joint_pos, robot.joint_names)
+
+
+def pose7_from_rigid_object(obj) -> np.ndarray:
+    pos = obj.data.root_pos_w[0].detach().cpu().numpy()
+    quat = obj.data.root_quat_w[0].detach().cpu().numpy()
+    return np.concatenate([pos, quat]).astype(np.float32)
+
+
+def camera_rgb_uint8(camera) -> np.ndarray:
+    rgb = camera.data.output["rgb"][0].detach().cpu().numpy()
+    if rgb.dtype != np.uint8:
+        rgb = np.clip(rgb, 0.0, 1.0)
+        rgb = (rgb * 255.0).astype(np.uint8)
+    if rgb.shape[-1] > 3:
+        rgb = rgb[..., :3]
+    return rgb
+
+
+def append_record_frame(
+    episode: EpisodeBuffer,
+    scene: dict[str, object],
+    robot: Articulation,
+    camera,
+    action: np.ndarray,
+    reach_controller: RightArmReachController | None,
+    tcp_offset_wrist: np.ndarray,
+) -> None:
+    episode.actions.append(np.asarray(action, dtype=np.float32).copy())
+    episode.full_joint_pos.append(robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32).copy())
+    episode.active_joint_pos.append(control_action_from_sim(robot).astype(np.float32).copy())
+    episode.chest_front_rgb.append(camera_rgb_uint8(camera))
+    if reach_controller is not None:
+        right_tcp = estimate_right_hand_tcp_pose(robot, reach_controller, tcp_offset_wrist)
+        if right_tcp is not None:
+            episode.right_eef_pose.append(np.concatenate([right_tcp[0], right_tcp[1]]).astype(np.float32))
+    episode.red_block_pose.append(pose7_from_rigid_object(scene["red"]))
+    episode.blue_block_pose.append(pose7_from_rigid_object(scene["blue"]))
+    episode.plate_pose.append(pose7_from_rigid_object(scene["plate"]))
+
+
+def default_grasp_payload(block: str) -> dict[str, object]:
+    return {
+        "mode": "grasp-block",
+        "block": block,
+        "base_offset": [-0.06, -0.05],
+        "approach_z": 0.10,
+        "grasp_z": 0.01,
+        "lift_z": 0.15,
+        "place_approach_z": 0.18,
+        "place_z": 0.10,
+        "tcp_offset_wrist": [0.0, 0.0, -0.10],
+        "offset_frame": "world",
+        "grasp_pose": "current",
+        "grasp_rpy": [0.0, 0.1, -0.20],
+        "place_rpy": [0.40, 0.0, 0.0],
+        "release_retreat_offset": [0.0, -0.20, 0.15],
+        "tolerance": 0.05,
+        "approach_steps": 120,
+        "lower_steps": 120,
+        "close_steps": 70,
+        "lift_steps": 60,
+        "place_steps": 150,
+        "release_steps": 50,
+        "retreat_steps": 120,
+    }
 
 
 def settle_scene_to_target(scene: dict[str, object], camera, full_target: np.ndarray, sim, steps: int) -> np.ndarray:
@@ -547,6 +626,34 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     gravity_comp_joint_ids = resolve_existing_joint_ids(robot, list(ALL_DRIVE_JOINTS))
     last_gravity_comp_stats = (0.0, 0.0)
     tcp_visualizer = None
+    writer = None
+    recording_episode = None
+    recorded_episodes = 0
+    record_step = 0
+    record_wall_start = None
+    auto_grasp_pending = bool(args_cli.auto_grasp or args_cli.record_output is not None)
+    max_record_episodes = max(int(args_cli.record_episodes), 1)
+    record_every_n = max(int(args_cli.record_every_n), 1)
+    if args_cli.record_output is not None:
+        writer = Hdf5DemoWriter(
+            args_cli.record_output,
+            env_args={
+                "task": "s4_right_blue_cylinder_plate_scripted",
+                "source": "scripted_ik",
+                "camera": {
+                    "eye": list(cfg.camera_eye),
+                    "target": list(cfg.camera_target),
+                    "width": int(cfg.camera_width),
+                    "height": int(cfg.camera_height),
+                },
+                "layout": {
+                    "task_x": float(cfg.layout.block_x),
+                    "task_y": float(cfg.layout.table_center_y),
+                    "block_y_offset": float(cfg.layout.block_y_offset),
+                    "plate_x": float(cfg.layout.plate_x),
+                },
+            },
+        )
     if args_cli.show_tcp_frames and not args_cli.headless:
         tcp_visualizer = TcpFrameVisualizer(sim.device)
         reach_controller = make_right_reach_controller(robot, sim.device)
@@ -588,6 +695,8 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     )
     print(f"Hand smoothing: max_joint_step={float(args_cli.hand_max_joint_step):.4f} rad/step")
     print("Reset command: bash run.sh control reset-scene")
+    if writer is not None:
+        print(f"HDF5 recording: {args_cli.record_output} episodes={max_record_episodes} every_n={record_every_n}")
     print()
 
     try:
@@ -597,6 +706,12 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
         last_control_mtime = None
         last_arm_control_mtime = None
         while simulation_app.is_running():
+            if auto_grasp_pending:
+                args_cli.arm_control_file.write_text(
+                    json.dumps(default_grasp_payload(args_cli.auto_grasp_block), indent=2),
+                    encoding="utf-8",
+                )
+                auto_grasp_pending = False
             try:
                 control_mtime = args_cli.control_file.stat().st_mtime_ns
             except OSError:
@@ -632,6 +747,9 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             action_target_bias = control_action_bias_from_target(full_command_target, robot)
                             target_tcp_quat = None
                             if mode == "grasp-block":
+                                if writer is not None:
+                                    recording_episode = EpisodeBuffer()
+                                    record_step = 0
                                 base_offset = np.asarray(payload.get("base_offset", [0.0, 0.0]), dtype=np.float32)
                                 if base_offset.shape != (2,):
                                     base_offset = np.array([0.0, 0.0], dtype=np.float32)
@@ -685,6 +803,8 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             hand_target = CLOSE_RIGHT_HAND.copy() if payload.get("hand") == "close" else OPEN_RIGHT_HAND.copy()
                             if mode == "grasp-block":
                                 hand_target = OPEN_RIGHT_HAND.copy()
+                                if writer is not None:
+                                    record_wall_start = time.monotonic()
                             if reach_controller is None:
                                 reach_controller = make_right_reach_controller(robot, sim.device)
                                 print(f"[ARM] reach resolution: {reach_controller.resolution_summary()}")
@@ -801,7 +921,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                 print("[ARM] idle: invalid test-right-arm target")
                         elif mode == "reset-scene":
                             default_target = reset_scene(scene, cfg, sim)
-                            reset_camera(camera, sim)
+                            reset_camera(camera, sim, cfg)
                             settle_scene_to_target(
                                 scene,
                                 camera,
@@ -1128,6 +1248,47 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
             scene["blue"].update(dt=sim_dt)
             scene["plate"].update(dt=sim_dt)
             camera.update(dt=sim_dt)
+            if recording_episode is not None:
+                if record_step % record_every_n == 0:
+                    append_record_frame(
+                        recording_episode,
+                        scene,
+                        robot,
+                        camera,
+                        commanded_action,
+                        reach_controller,
+                        reach_tcp_offset,
+                    )
+                record_step += 1
+                if arm_mode == "hold" and grasp_phase == "done":
+                    demo_name = writer.write_episode(recording_episode) if writer is not None else "demo"
+                    sim_seconds = record_step * sim_dt
+                    wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
+                    realtime_factor = sim_seconds / wall_seconds if wall_seconds > 1e-6 else float("nan")
+                    print(
+                        f"[RECORD] wrote {demo_name}: {len(recording_episode)} frames "
+                        f"sim_steps={record_step} sim_seconds={sim_seconds:.2f}s "
+                        f"wall_seconds={wall_seconds:.2f}s realtime_factor={realtime_factor:.2f}x"
+                    )
+                    recording_episode = None
+                    record_wall_start = None
+                    recorded_episodes += 1
+                    if writer is not None and recorded_episodes >= max_record_episodes:
+                        break
+                    default_target = reset_scene(scene, cfg, sim)
+                    reset_camera(camera, sim, cfg)
+                    settle_scene_to_target(scene, camera, default_target, sim, args_cli.reset_settle_steps)
+                    full_command_target = default_target.copy()
+                    action = control_action_from_sim(robot)
+                    commanded_action = action.copy()
+                    hold_action = action.copy()
+                    arm_mode = "idle"
+                    reach_block = None
+                    grasp_plan = None
+                    grasp_phase = None
+                    grasp_phase_steps = 0
+                    hand_target = OPEN_RIGHT_HAND.copy()
+                    auto_grasp_pending = True
             if tcp_visualizer is not None:
                 hand_tcp_pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
                 if target_tcp_pos is None and reach_block is not None:
@@ -1195,6 +1356,8 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     finally:
         if keyboard_jog is not None:
             keyboard_jog.stop()
+        if writer is not None:
+            writer.close()
 
 
 def main() -> None:
@@ -1206,7 +1369,7 @@ def main() -> None:
     sim = create_simulation_context(args_cli.device)
     scene = build_scene(cfg)
     sim.reset()
-    reset_camera(scene["camera"], sim)
+    reset_camera(scene["camera"], sim, cfg)
     run_debug(scene, cfg, sim)
 
 

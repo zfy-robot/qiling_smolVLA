@@ -15,8 +15,8 @@
   "features": {
     "observation.state": {
       "dtype": "float32",
-      "shape": [50],
-      "names": "full/padded robot joint state for SmolVLA compatibility"
+      "shape": [48],
+      "names": "full imported robot joint position"
     },
     "observation.active_state": {
       "dtype": "float32",
@@ -30,7 +30,7 @@
     },
     "observation.images.front": {
       "dtype": "video",
-      "shape": [480, 640, 3],
+      "shape": [240, 320, 3],
       "names": ["height", "width", "channels"]
     }
   },

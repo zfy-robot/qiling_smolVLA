@@ -1,269 +1,319 @@
-# S4 Isaac Lab 抓取调试项目说明
+# S4 SmolVLA IsaacLab Project
 
-这个文件是当前项目的唯一调试记录和继续开发入口。后续 AI 或人工接手时，先读这个文件，不要再从零猜控制链路。
+这个目录是当前自有项目。`../lerobot` 和 `../qi-studio-benchhub` 只作为参考，不在后续开发中直接修改。
 
-## 当前目标
+当前主线已经跑通：
 
-在 Isaac Lab 中稳定导入 S4 人形机器人，搭建桌面、红蓝物块、盘子场景，然后控制右臂移动到目标物块上方，继续完成真实接触抓取流程。
+```text
+IsaacLab scripted demo
+  -> HDF5 staging dataset
+  -> LeRobotDataset
+  -> SmolVLA training
+  -> offline policy preview
+```
 
-当前阶段已经做到：
+当前策略效果还不好，主要原因是成功数据太少。下一阶段重点不是继续改训练入口，而是稳定采集更多高质量 demo，然后再训练更久并做 IsaacLab 在线 rollout 可视化。
 
-- 仿真和控制命令分离。
-- 机器人启动后双臂基本稳定。
-- 物块、盘子能稳定生成在桌面上。
-- 右臂可以通过简单笛卡尔小步控制移动 TCP 到物块目标点附近。
-- 可以可视化手部 TCP 和目标 TCP。
-- 已加入关节限位、失稳保护、TCP 偏移修正。
+## 环境
 
-下一阶段重点是：把 `reach-block` 扩展成 `approach -> lower -> close -> lift` 的抓取状态机，并继续调手腕姿态和手指闭合策略。
+使用两个 conda 环境，职责不要混：
 
-## 当前目录框架
+```text
+env_isaaclab
+  IsaacSim / IsaacLab 仿真、场景调试、HDF5 采集
+
+smolvla
+  LeRobotDataset 转换、SmolVLA 训练、checkpoint 离线预览
+```
+
+`run.sh` 只会在仿真相关命令里切到 `env_isaaclab` 的 Python 路径。`convert-lerobot`、`train-smolvla`、`preview-smolvla` 使用当前 shell 环境，所以运行前要手动 `conda activate smolvla`。
+
+## 目录
 
 ```text
 my_isaaclab_project/
-├── README.md                         # 唯一项目说明、踩坑记录、后续计划
-├── run.sh                            # 统一入口
+├── README.md
+├── run.sh
 ├── configs/
-│   └── s4_bimanual_dataset.json      # 桌面高度/场景资产参数
+│   ├── s4_bimanual_dataset.json      # 数据/场景/特征约定
+│   └── smolvla_s4_bimanual.yaml      # 本地 SmolVLA 训练配置
+├── data/
+│   ├── hdf5_schema.py                # HDF5 字段名
+│   ├── dataset_writer.py             # HDF5 writer
+│   └── lerobot_conversion.py         # HDF5 -> LeRobotDataset
+├── s4_pipeline/
+│   ├── paths.py
+│   └── config.py
 ├── s4_robot/
-│   ├── __init__.py
-│   ├── s4_robot_cfg.py               # URDF 路径、关节分组、默认姿态、URDF 限位
-│   ├── simulation.py                 # Isaac Lab 场景、机器人、桌子、物块、盘子、reset
-│   ├── arm_control.py                # 右臂 TCP 控制、手部命令、键盘 jog、JSON 工具
-│   └── control_mapping.py            # 26 维动作和仿真关节顺序映射
+│   ├── s4_robot_cfg.py               # URDF、关节分组、默认姿态、限位
+│   ├── simulation.py                 # IsaacLab 场景、机器人、物体、相机
+│   ├── arm_control.py                # 右臂 TCP 控制、手部目标、JSON 控制命令
+│   └── control_mapping.py            # 26D action <-> 机器人关节映射
+├── tasks/
+│   └── bimanual_red_blue_plate.py
 └── scripts/
-    ├── 03_joint_debug.py             # joint-debug 入口
-    ├── 03_record_physics_dataset.py  # 主仿真入口，轮询控制 JSON 并写入仿真
-    ├── control_arm.py                # 非 Isaac 进程，只负责写 /tmp/s4_arm_control.json
-    └── set_joint_command.py          # 写 /tmp/s4_joint_command.json 的手动关节工具
+    ├── 00_inspect_project.py
+    ├── 03_joint_debug.py
+    ├── 03_record_physics_dataset.py  # 主仿真/采集循环
+    ├── 04_record_bimanual_hdf5.py    # HDF5 采集 wrapper
+    ├── 05_convert_hdf5_to_lerobot.py
+    ├── 06_eval_smolvla_in_isaaclab.py # 在线 rollout 待实现
+    ├── 07_preview_smolvla_policy.py  # 离线策略预览
+    ├── control_arm.py
+    ├── set_joint_command.py
+    └── train_smolvla_local.sh
 ```
 
-## 启动流程
+生成数据、模型和输出不进 git：
 
-先启动仿真：
+```text
+/home/zfy/smolVLA/datasets/
+/home/zfy/smolVLA/models/
+/home/zfy/smolVLA/outputs/
+```
+
+## 当前任务
+
+当前已经稳定的是右臂 scripted smoke test：
+
+```text
+右手抓蓝色圆柱 -> 放到盘子 -> 张手 -> 世界坐标 Y-0.20m / Z+0.15m 退避并保持
+```
+
+场景默认：
+
+- S4 机器人固定 base，腿部不作为策略动作。
+- 桌面上有红色圆柱、蓝色圆柱、盘子和三个 5cm 垫块。
+- 默认布局整体向机器人右侧偏移 `task_y=-0.05`。
+- 默认相机为右前上方视角，覆盖右臂抓取、移动、放置和退避过程。
+- 默认不显示 TCP/目标箭头，避免影响相机数据。
+
+策略接口：
+
+```text
+observation.state: 48D full robot joint position
+observation.images.chest_front_rgb: 3 x 240 x 320 in converted dataset
+action: 26D
+```
+
+26D action 顺序：
+
+```text
+0:7    left_arm
+7:13   left_hand
+13:20  right_arm
+20:26  right_hand
+```
+
+手部仍是每只手 6 个主动控制量，mimic joints 在 `s4_robot/control_mapping.py` 里展开。不要让策略直接输出所有手指物理关节。
+
+## 常用命令
+
+检查配置：
 
 ```bash
 cd /home/zfy/smolVLA/my_isaaclab_project
-bash run.sh sim --print-layout --show-tcp-frames
+bash run.sh inspect-config
 ```
 
-`--show-tcp-frames` 会显示：
+启动仿真窗口：
 
-- `/World/Visuals/RightHandTCP`：估算右手 TCP，位置为 `right_wrist_yaw_link + wrist-frame TCP offset`，姿态跟随 `right_wrist_yaw_link`。
-- `/World/Visuals/TargetBlockTCP`：当前物块目标 TCP，位置为 `block_pos + reach offset`，姿态为世界坐标对齐。
+```bash
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh sim
+```
 
-另开终端发送右臂控制命令：
+调试 TCP 坐标系时显示箭头：
+
+```bash
+bash run.sh sim --show-tcp-frames
+```
+
+另一个终端控制右臂抓放：
 
 ```bash
 cd /home/zfy/smolVLA/my_isaaclab_project
-bash run.sh control reach-block --block blue --z-offset 0.20
+bash run.sh control grasp-block
 ```
 
-停止自动右臂控制：
-
-```bash
-bash run.sh control stop
-```
-
-手部开合：
+只开合右手，不改变手臂目标：
 
 ```bash
 bash run.sh control hand open
 bash run.sh control hand close
-bash run.sh control reach-block --block blue --hand close
 ```
 
-右臂直接关节目标测试，用来确认执行器链路是否正常：
+重置场景和任务：
 
 ```bash
-bash run.sh control test-right-arm
+bash run.sh control reset-scene
 ```
 
-键盘/JSON 手动调关节：
+## 数据采集
+
+先用 1 条 episode 确认动作和相机都正常：
 
 ```bash
-bash run.sh joint-debug --print-layout
-python scripts/set_joint_command.py right_elbow_joint=-0.8 rh_index_mcp_pitch=1.0
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh record-hdf5 --num-episodes 1 --block blue
 ```
 
-## 控制链路
+默认输出：
 
 ```text
-bash run.sh control reach-block
-  -> scripts/control_arm.py
-  -> 写 /tmp/s4_arm_control.json
-  -> 正在运行的 scripts/03_record_physics_dataset.py 轮询这个 JSON
-  -> s4_robot/arm_control.py 计算右臂目标
-  -> scripts/03_record_physics_dataset.py 把 right_arm/right_hand 覆盖到 full simulator-order joint target
-  -> robot.set_joint_position_target(...)
+/home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5
 ```
 
-重要点：
-
-- 仿真启动时会把 `/tmp/s4_arm_control.json` 重置成 `idle`。
-- `idle` 时保持 `reset_scene()` 返回的完整仿真关节目标，不再每帧从 26 维 action 重映射。
-- 只有收到 `mode: reach-block` 后才启用右臂笛卡尔控制。
-- 控制只覆盖 `RIGHT_ARM_JOINTS + RIGHT_HAND_JOINTS`，其余关节保持 reset 姿态。
-- 最终写入仿真的关节目标会按 URDF limit clamp。
-
-## 当前控制方法
-
-`reach-block` 不使用 Isaac Lab `DifferentialIKController`。之前用过 IK，出现过手臂回零、卡住、不按预期移动的问题，所以现在不用。
-
-当前方法在 `s4_robot/arm_control.py`：
-
-1. 读取目标物块世界坐标。
-2. 目标 TCP = `block_pos + reach offset`。
-3. 当前 TCP = `right_wrist_yaw_link` 位置 + wrist 坐标系 TCP offset 旋转到世界系后的偏移。
-4. 用目标 TCP 和当前 TCP 的误差，计算目标 wrist 位置。
-5. 取右臂 7 个关节对应的 wrist 位置 Jacobian。
-6. 用 damped least squares 算一个小的 `dq`。
-7. 加一个 nullspace posture 项，把 7 自由度冗余轻微拉回默认折臂姿态。
-8. 右臂目标按 URDF 关节限位 clamp。
-9. `smooth_command()` 再做每帧目标平滑。
-
-当前 TCP 偏移结论：
-
-```python
-DEFAULT_TCP_OFFSET_WRIST = np.array([0.0, 0.0, -0.10], dtype=np.float32)
-```
-
-也就是：最后一个手腕坐标系沿 z 负方向偏移 `0.1m` 近似为手掌 TCP。这个结论来自 `--show-tcp-frames` 可视化检查。之前误以为是 x 方向，导致手看起来去物块前方而不是正上方。
-
-可调 TCP 长度：
-
-```bash
-bash run.sh control reach-block --block blue --z-offset 0.20 --tcp-z-offset -0.12
-```
-
-## 当前关键参数
-
-这些是用户已经调过、当前比较合适的参数。不要在没有明确要求时改代码默认值。
-
-`scripts/03_record_physics_dataset.py`：
-
-- `--robot-base-z 0.98`
-- `--task-x 0.50`
-- `--task-y -0.05`
-- `--block-y-offset 0.20`
-- `--plate-x 0.50`
-- `--joint-stiffness 140.0`
-- `--joint-damping 28.0`
-- `--target-alpha 0.08`
-- `--max-joint-step 0.012`
-
-`s4_robot/arm_control.py`：
-
-- `DEFAULT_TCP_OFFSET_WRIST = (0.0, 0.0, -0.10)`
-- `max_cart_step = 0.008`
-- DLS damping 当前为 `0.08`
-- 右臂每帧 `dq` clamp 到 `[-0.025, 0.025]`
-
-`s4_robot/s4_robot_cfg.py` 默认手臂姿态：
-
-- left shoulder pitch `-0.12`
-- left shoulder roll `0.28`
-- left elbow `-1.35`
-- right shoulder pitch `-0.12`
-- right shoulder roll `-0.28`
-- right elbow `-1.35`
-
-## 场景位置说明
-
-世界坐标里机器人固定在原点附近，桌子和物块在正 X 方向。
-
-当前代码中 `--task-x` 同时传给：
-
-- `TaskLayout.table_center_x`
-- `TaskLayout.block_x`
-
-所以现在改 `--task-x` 会同时移动桌子视觉中心和物块 X。
-
-如果只想让物块离机器人近一点、桌子位置不变，需要改 `scripts/03_record_physics_dataset.py` 的 `make_scene_cfg()`，把：
-
-```python
-table_center_x=float(args_cli.task_x)
-block_x=float(args_cli.task_x)
-```
-
-拆成两个参数，例如新增 `--block-x`，或者固定：
-
-```python
-table_center_x=0.55
-block_x=float(args_cli.task_x)
-```
-
-注意：用户明确说过“代码里面的位置参数是我调的，不要再改”。除非用户明确要求实现“只移动物块不移动桌子”，否则不要主动改默认位置参数。
-
-## 已解决的问题和踩坑记录
-
-1. 项目曾经混有 LeRobot、teleop、旧环境、缓存等无关文件，已清理到当前最小调试链路。
-2. 仿真和控制必须分开。一个命令启动 Isaac 仿真，一个命令写控制 JSON。不要把控制器做成另一个 Isaac 进程。
-3. 物块和盘子跑到机器人脚下/世界原点的问题，是 task object spawn/reset 坐标没处理好。现在通过 `RigidObjectCfg.init_state` 和 reset pose 修复。
-4. 启动时 `/tmp/s4_arm_control.json` 必须重置成 `idle`，否则上一次控制命令会在新仿真启动时立刻生效。
-5. idle 模式必须保持完整 simulator-order reset target，不能从 26 维 action 每帧重映射，否则容易导致导入后双臂乱甩。
-6. actuators 不能用 `.*` 控制所有导入关节，应只控制 `ALL_DRIVE_JOINTS`。
-7. 固定 base 时检查过脚和地面关系。URDF base 到 foot 大约 `0.909m`，当前 `--robot-base-z 0.98` 是用户调过的值，不要随便改。
-8. 旧 IK 控制会让手臂回零或卡住，所以当前 reach 不再用 Isaac Lab IK。
-9. 只控制 `right_wrist_yaw_link` 会让可见手掌偏离目标。现在控制估算 TCP。
-10. TCP 方向曾经设错。可视化后确认应该是 wrist 坐标系负 z 方向 `0.1m`，不是 x 方向。
-11. reach 时不能强制 wrist roll/pitch/yaw 每帧归零。这样会改变 TCP offset 方向，和位置控制打架。
-12. 3D 位置控制 7 自由度手臂时，如果没有关节限位和姿态正则，接近目标可能让冗余关节绕飞。现在加入：
-    - URDF limit clamp
-    - NaN/Inf sanitize
-    - nullspace 回默认折臂姿态
-    - 更小的 Cartesian step
-    - catastrophic state reset：如果右臂 `NaN/Inf` 或 `abs(q) > 20 rad`，写回当前安全目标并清零速度
-13. `right_arm_cmd_lag` 爆到巨大值，而 `right_arm_q_err` 仍很小时，说明不是每帧 DLS 增量过大，而是实际关节状态已经炸了。
-
-## 手部控制现状
-
-右手 6 个主动控制量：
+默认采集参数已经为数据体积做过压缩：
 
 ```text
-rh_thumb_cmc_yaw
-rh_thumb_cmc_pitch
-rh_index_mcp_pitch
-rh_middle_mcp_pitch
-rh_ring_mcp_pitch
-rh_pinky_mcp_pitch
+camera_width=320
+camera_height=240
+record_every_n=2
+obs/chest_front_rgb 使用 gzip 压缩
 ```
 
-当前开合目标在 `s4_robot/arm_control.py`：
+采集日志里会打印：
 
-```python
-OPEN_RIGHT_HAND = [0.5, 0.12, 0.05, 0.05, 0.05, 0.05]
-CLOSE_RIGHT_HAND = [0.8, 0.48, 1.05, 1.05, 1.05, 1.05]
+```text
+[RECORD] wrote ... frames=... sim_steps=... sim_seconds=... wall_seconds=... realtime_factor=...
 ```
 
-当前只是设置手指目标，还没有完整抓取状态机，也没有基于接触/物块是否抬起的判定。
+目标是一个 scripted 回合约 5 秒仿真时间。若 `lower` 或 `place_lower` 没到 tolerance，回合会变长，这是为了避免空抓或高处放置。
 
-## 推荐下一步
+扩大数据量时建议逐步来：
 
-优先顺序：
+```bash
+bash run.sh record-hdf5 --num-episodes 10 --block blue
+bash run.sh record-hdf5 --num-episodes 50 --block blue
+```
 
-1. 重启仿真，确认现在 `reach-block` 不再在接近目标时乱甩。
-2. 用 `--show-tcp-frames` 确认 `RightHandTCP` 能稳定接近 `TargetBlockTCP`。
-3. 如果需要只移动物块不移动桌子，先新增独立参数 `--block-x`，不要复用 `--task-x`。
-4. 调整右手接近姿态。现在只做 TCP 位置控制，尚未真正控制手掌朝向。手腕姿态应作为单独目标加入，而不是直接把 wrist 关节硬写成固定值。
-5. 在 `s4_robot/arm_control.py` 增加抓取状态机：
-   - `approach`: 到物块上方，例如 `z_offset=0.18~0.20`
-   - `lower`: 慢慢下降到接触高度，例如 `z_offset=0.04~0.08`
-   - `close`: 闭合右手
-   - `lift`: TCP 上移，观察物块是否被带起
-6. 加日志输出：
-   - 当前阶段
-   - TCP 距离
-   - 右臂最大关节误差
-   - 是否触发失稳保护
-   - 物块高度变化
-7. 只有物块能被真实接触抬起后，再恢复数据录制或训练代码。
+当前 scripted 数据只是右臂蓝色圆柱任务。后续需要：
 
-## 后续开发原则
+- 增加更多成功 demo。
+- 加入物体位置扰动。
+- 扩展左臂红色圆柱。
+- 再扩展双臂同时抓放。
+- 最后接 VR/真机采集。
 
-- 不要随便改用户调好的位置默认值：`robot-base-z/task-x/plate-x/block-y-offset`。
-- 控制链路出问题时，先看 `/tmp/s4_arm_control.json` 是否正确，再看仿真端是否读取到 mode。
-- 手臂不动时，先跑 `bash run.sh control test-right-arm`，确认执行器路径没断。
-- 手臂去错方向时，优先打开 `--show-tcp-frames` 看 TCP frame，而不是盲目改关节。
-- 手臂乱甩时，先看 `right_arm_cmd_lag`、关节限位、是否有 NaN/Inf，不要先改物块位置。
-- 后续文档只维护这个 `README.md`，不要再新建多个调试记录文件。
+## 转换
+
+使用 `smolvla` 环境：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh convert-lerobot \
+  --root-path /home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5
+```
+
+默认输出：
+
+```text
+/home/zfy/smolVLA/datasets/lerobot_data/s4_bimanual_red_blue_plate_v0
+```
+
+命令换行不要把目录和文件名拆成两个 shell 命令。错误写法会导致 `s4_right_blue_cylinder_plate_scripted.hdf5：未找到命令`。
+
+## 训练
+
+使用 `smolvla` 环境：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh train-smolvla
+```
+
+配置文件：
+
+```text
+configs/smolvla_s4_bimanual.yaml
+```
+
+当前默认输出：
+
+```text
+/home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0
+```
+
+已生成过的 checkpoint：
+
+```text
+outputs/train/smolvla_s4_bimanual_v0/checkpoints/001000/pretrained_model
+outputs/train/smolvla_s4_bimanual_v0/checkpoints/002000/pretrained_model
+outputs/train/smolvla_s4_bimanual_v0/checkpoints/003000/pretrained_model
+```
+
+当前训练能跑通，但数据太少。3000 step / 约 5 条 scripted demo 的 checkpoint 只能证明链路通了，不能作为可部署策略。
+
+## 离线看策略
+
+使用 `smolvla` 环境：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh preview-smolvla
+```
+
+默认会：
+
+- 自动加载最新 checkpoint。
+- 读取默认 LeRobotDataset。
+- 均匀抽样 20 帧。
+- 调 `SmolVLAPolicy.from_pretrained(...)` 和 `policy.select_action(...)`。
+- 打印总体 MAE/RMSE/max_abs。
+- 按 `left_arm/left_hand/right_arm/right_hand` 打印分组 MAE。
+- 写出：
+
+```text
+/home/zfy/smolVLA/outputs/eval/offline_policy_preview.csv
+```
+
+常用：
+
+```bash
+bash run.sh preview-smolvla --num-frames 20
+bash run.sh preview-smolvla --checkpoint /home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0/checkpoints/003000/pretrained_model
+bash run.sh preview-smolvla --num-frames 1 --device cpu
+```
+
+SmolVLA 推理从随机噪声 denoise 出 action。预览脚本默认 `--seed 42`，同一命令应可复现。不要只看 `pred[:8]`，因为右臂单任务的关键动作在 `right_arm(13:20)` 和 `right_hand(20:26)`。
+
+当前离线预览结论：
+
+- checkpoint 能加载。
+- 数据字段和 checkpoint 对齐。
+- 策略能输出 26D action。
+- 右臂分组误差仍偏大，说明数据/训练不足。
+
+## 在线策略可视化
+
+`bash run.sh eval-smolvla --checkpoint ...` 目前仍是待实现入口。下一步要把策略真正接回 IsaacLab：
+
+1. IsaacLab 进程实时读取 48D state 和胸前 RGB。
+2. 加载 SmolVLA checkpoint 或连接独立 policy server。
+3. 构造 language tokens。
+4. 输出 26D action。
+5. 通过 `control_mapping.py` 写入仿真关节目标。
+6. 保存 rollout 视频和成功率。
+
+由于 `env_isaaclab` 和 `smolvla` 是两个环境，在线 rollout 要先决定：
+
+- 在 `env_isaaclab` 里补齐 LeRobot/SmolVLA 依赖，直接进程内推理。
+- 或保留环境隔离，做一个 `smolvla` policy server，IsaacLab 通过 socket/ZMQ 请求 action。
+
+短期建议先做 policy server，避免污染 IsaacSim 环境。
+
+## 必须保留的经验
+
+- 后续只改 `my_isaaclab_project`，不要改 `../lerobot` 或 `../qi-studio-benchhub`。
+- `--offset-frame world` 的 z 是世界/base 竖直方向，不是手腕局部 z。
+- 目标 frame 朝向不一致不代表 position reach 错；姿态控制是单独问题。
+- 不要再用固定 `action_target_bias` 硬补关节位置误差。
+- 放置后不要突然回 home，之前会把圆柱带飞；当前用 release 后世界坐标退避。
+- 右手 6D 控制和实际 mimic joints 的映射必须保留。
+- 当前任务先专注右臂蓝色圆柱，把数据采集和策略可视化做扎实，再扩展双臂。

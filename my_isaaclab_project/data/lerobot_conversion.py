@@ -92,7 +92,7 @@ def convert_hdf5_to_lerobot(
         fps=fps,
         robot_type=robot_type,
         features=features,
-        vcodec="h264",
+        video_backend="pyav",
     )
 
     for hdf5_path in hdf5_files:
@@ -118,4 +118,3 @@ def convert_hdf5_to_lerobot(
                     dataset.add_frame(frame)
                 dataset.save_episode()
     return dataset_root
-

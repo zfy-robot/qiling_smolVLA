@@ -15,6 +15,8 @@ DATASET_ROOT=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['d
 OUTPUT_DIR=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")
 STEPS=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['steps'])")
 BATCH_SIZE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['batch_size'])")
+NUM_WORKERS=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG')).get('num_workers', 0))")
+DEVICE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG')).get('device', 'cuda'))")
 CHUNK_SIZE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['chunk_size'])")
 MAX_STATE_DIM=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['max_state_dim'])")
 MAX_ACTION_DIM=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['max_action_dim'])")
@@ -39,6 +41,12 @@ fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export HUGGINGFACE_HUB_OFFLINE="${HUGGINGFACE_HUB_OFFLINE:-1}"
+PROJECT_CACHE="${PROJECT_CACHE:-/home/zfy/smolVLA/.cache}"
+export HF_HOME="${HF_HOME:-$PROJECT_CACHE/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
+export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
+mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE"
 
 lerobot-train \
     --policy.type=smolvla \
@@ -49,10 +57,12 @@ lerobot-train \
     --steps="$STEPS" \
     --batch_size="$BATCH_SIZE" \
     --log_freq=100 \
-    --eval_freq=0 \
+    --env_eval_freq=0 \
     --save_freq="$SAVE_FREQ" \
-    --num_workers=4 \
+    --num_workers="$NUM_WORKERS" \
+    --persistent_workers=false \
     --resume="$RESUME" \
+    --policy.device="$DEVICE" \
     --policy.chunk_size="$CHUNK_SIZE" \
     --policy.n_action_steps="$CHUNK_SIZE" \
     --policy.n_obs_steps=1 \
