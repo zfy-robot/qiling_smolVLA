@@ -8,6 +8,7 @@ without the training environment installed.
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import h5py
 import numpy as np
@@ -15,13 +16,14 @@ import numpy as np
 from . import hdf5_schema as schema
 
 
-VIDEO_INFO = {
-    "video.fps": 30.0,
-    "video.codec": "h264",
-    "video.pix_fmt": "yuv420p",
-    "video.is_depth_map": False,
-    "has_audio": False,
-}
+def video_info(fps: int) -> dict:
+    return {
+        "video.fps": float(fps),
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.is_depth_map": False,
+        "has_audio": False,
+    }
 
 
 def discover_hdf5_files(root_path: Path) -> list[Path]:
@@ -46,7 +48,13 @@ def inspect_first_demo(hdf5_path: Path, camera_path: str) -> tuple[int, int, tup
     raise ValueError(f"No valid demo found in {hdf5_path}")
 
 
-def build_lerobot_features(camera_paths: list[str], state_dim: int, action_dim: int, camera_shape: tuple[int, ...]) -> dict:
+def build_lerobot_features(
+    camera_paths: list[str],
+    state_dim: int,
+    action_dim: int,
+    camera_shape: tuple[int, ...],
+    fps: int,
+) -> dict:
     features = {
         "observation.state": {"dtype": "float32", "shape": (state_dim,), "names": None},
         "action": {"dtype": "float32", "shape": (action_dim,), "names": None},
@@ -61,7 +69,7 @@ def build_lerobot_features(camera_paths: list[str], state_dim: int, action_dim: 
             "dtype": "video",
             "shape": camera_shape,
             "names": ["height", "width", "channel"],
-            "video_info": VIDEO_INFO,
+            "video_info": video_info(fps),
         }
     return features
 
@@ -74,6 +82,7 @@ def convert_hdf5_to_lerobot(
     robot_type: str,
     camera_paths: list[str] | None = None,
     fps: int = 30,
+    overwrite: bool = False,
 ) -> Path:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -83,8 +92,15 @@ def convert_hdf5_to_lerobot(
         raise FileNotFoundError(f"No .hdf5 files found under {root_path}")
 
     state_dim, action_dim, camera_shape = inspect_first_demo(hdf5_files[0], camera_paths[0])
-    features = build_lerobot_features(camera_paths, state_dim, action_dim, camera_shape)
+    features = build_lerobot_features(camera_paths, state_dim, action_dim, camera_shape, fps=fps)
     dataset_root = Path(output_root) / repo_id
+    if dataset_root.exists():
+        if not overwrite:
+            raise FileExistsError(
+                f"LeRobotDataset already exists: {dataset_root}\n"
+                "Use --overwrite to rebuild it, or pass --repo-id/--output-root to write a new dataset."
+            )
+        shutil.rmtree(dataset_root)
 
     dataset = LeRobotDataset.create(
         repo_id=repo_id,

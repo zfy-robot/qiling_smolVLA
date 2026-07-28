@@ -1,6 +1,6 @@
 # S4 双臂 SmolVLA + IsaacLab 工作流路线图
 
-更新时间：2026-07-27  
+更新时间：2026-07-28  
 当前目标：用 S4 人形机器人在 IsaacLab 中完成双臂桌面任务，采集可训练数据，转换为 LeRobotDataset，并用 SmolVLA 训练/评估策略。任务第一版是：左手抓红色物块放入盘子，右手抓蓝色物块放入盘子，腿部不作为策略控制对象。
 
 ## 接手规则
@@ -393,7 +393,7 @@ HDF5 字段包括：
 - `obs/right_arm_eef_pose`：右手估算 TCP pose。
 - `states/rigid_object/red_block/root_pose`、`blue_block/root_pose`、`plate/root_pose`：任务物体 pose。
 
-注意：当前采集只是 scripted 右臂 smoke-test 数据，用于先打通相机、HDF5、LeRobotDataset、SmolVLA 训练链路。它还不是最终双臂 VR/真机数据。`eval-smolvla` 仍是 scaffold，需等转换和训练验证后再接回放。
+注意：当前采集只是 scripted 右臂 smoke-test 数据，用于先打通相机、HDF5、LeRobotDataset、SmolVLA 训练链路。它还不是最终双臂 VR/真机数据。`eval-smolvla` 已有第一版在线 rollout，会用独立 `smolvla` policy server 输出 26D action 并接回 IsaacLab，但策略质量仍取决于数据量和训练效果。
 
 ### 当前数据到训练流程
 
@@ -430,7 +430,7 @@ cd /home/zfy/smolVLA/my_isaaclab_project
 bash run.sh record-hdf5 --num-episodes 1 --block blue
 ```
 
-`record-hdf5` 默认和 `sim` 不完全一样：为了避免单条 demo 过大，录制入口默认使用 `320x240` 相机、`record_every_n=2`，并对 RGB 图像 HDF5 dataset 使用 gzip 压缩。需要高分辨率调试或正式采集时再显式传：
+`record-hdf5` 默认和 `sim` 不完全一样：为了避免单条 demo 过大，并和 LeRobotDataset `fps=20` 对齐，录制入口默认使用 `320x240` 相机、`record_every_n=6`，并对 RGB 图像 HDF5 dataset 使用 gzip 压缩。需要高分辨率调试或正式采集时再显式传：
 
 ```bash
 bash run.sh record-hdf5 --num-episodes 1 --block blue \
@@ -504,7 +504,7 @@ bash run.sh train-smolvla
 
 6. 策略评估/回放：
 
-`bash run.sh eval-smolvla --checkpoint <checkpoint>` 目前只是入口 scaffold，还没有把 SmolVLA 输出动作稳定接回当前 IsaacLab 场景。等 HDF5 采集、HDF5 回放、LeRobot 转换和一次小步数训练都验证后，再实现本项目的 policy rollout。不要直接改 BenchHub 的 `eval_smolvla_policy.py`；只参考它的加载 checkpoint、读图像、输出 action、按频率执行 action 的流程。
+`bash run.sh eval-smolvla --checkpoint <checkpoint>` 已经实现第一版在线 rollout：IsaacLab 进程采集 48D state 和 RGB，独立 `smolvla` policy server 加载 checkpoint 并返回 26D action，仿真端通过 `control_mapping.py` 写入机器人关节目标并保存 MP4。不要直接改 BenchHub 的 `eval_smolvla_policy.py`；只参考它的 checkpoint 加载、图像输入和 action 输出流程。
 
 ### 当前场景实现
 
@@ -843,13 +843,31 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 58. 调整默认相机到右前上方视角，覆盖蓝色圆柱、盘子、右手抓取和放置过程；相机位姿和分辨率已通过命令行参数暴露。
 59. 实现 scripted HDF5 采集入口：`bash run.sh record-hdf5 --num-episodes 1 --block blue` 会自动启动当前右臂 `grasp-block` 流程并写出 HDF5。
 60. 关闭默认可视化箭头：`bash run.sh sim` 不再自动传 `--show-tcp-frames`。采集前默认画面更接近真实相机输入；调 TCP 坐标时仍可手动运行 `bash run.sh sim --show-tcp-frames`。
-61. 录制数据体积优化：单条 demo 录到 1GB 的主要原因是 `640x480 RGB * 每步一帧 * 未压缩 HDF5`。现在 `record-hdf5` 默认改为 `320x240`、`record_every_n=2`，并给 `obs/chest_front_rgb` 加 gzip 压缩；`run.sh sim` 可视化默认分辨率不变。
+61. 录制数据体积优化历史记录：单条 demo 录到 1GB 的主要原因是 `640x480 RGB * 每步一帧 * 未压缩 HDF5`。当时 `record-hdf5` 默认改为 `320x240`、`record_every_n=2`，并给 `obs/chest_front_rgb` 加 gzip 压缩；后来为对齐 LeRobotDataset `fps=20`，当前新采集默认已改为 `record_every_n=6`。
 62. 录制节奏改为约 5 秒档：仿真步长仍为 `1/120s`，目标 episode 约 `600 step`。默认阶段改为 `approach=120, lower_warn=120, close=70, lift=60, place=150, release=50, retreat=120`，并把 IK/关节平滑速度提高到 `target_alpha=0.18, max_joint_step=0.030, hand_max_joint_step=0.008, reach_max_cart_step=0.020, reach_max_joint_delta=0.050`。注意 `lower` 和 `place_lower` 仍必须到 tolerance 才切阶段，所以如果控制不到位，真实 episode 会超过 5 秒，这是为了避免空抓或高处放置。
 63. HDF5 采集结束日志新增 `sim_steps/sim_seconds/wall_seconds/realtime_factor`。以后判断“一个回合是否 5 秒左右”优先看 `[RECORD] wrote ... sim_seconds=...`，不要只看现实等待时间，因为 IsaacSim 渲染和写盘可能慢于实时。
 64. 修复 `run.sh` 环境切换问题：旧版在脚本开头无条件把 `PATH` 改到 `env_isaaclab`，导致用户即使 `conda activate smolvla` 后运行 `bash run.sh convert-lerobot`，实际也会用 IsaacLab Python，从而报 `ModuleNotFoundError: No module named 'lerobot'`。现在只有 `sim/record-hdf5/eval-smolvla/joint-debug/headless` 会调用 `use_isaaclab_env`；`convert-lerobot/train-smolvla/control/inspect-config` 保留当前 shell 环境。转换和训练必须先 `conda activate smolvla`。
-65. 当前 `README.md` 已重写为主流程文档，明确“采集 -> HDF5 -> LeRobotDataset -> SmolVLA 训练 -> 离线预览”已经走通，当前瓶颈是成功数据不足和在线 rollout 尚未实现。
+65. 当前 `README.md` 已重写为主流程文档，明确“采集 -> HDF5 -> LeRobotDataset -> SmolVLA 训练 -> 离线预览”已经走通；后续又补上第一版 `eval-smolvla` 在线 rollout。当前瓶颈是成功数据不足、策略质量不足，以及在线 rollout 还需要更多 smoke test。
 66. 清理无关空壳和缓存：删除 `my_isaaclab_project/evaluation/`、`training/`、`teleop/` 三个仅含 `__init__.py` 的空占位目录，并删除所有 `__pycache__`。后续需要 teleop/evaluation/training 模块时，再按实际功能重新创建。
 67. 修正 `configs/s4_bimanual_dataset.json` 当前特征描述：`observation.state` 从旧的 50D 预留描述改为当前 48D，默认图像 shape 从 480x640 改为录制/训练用的 240x320。
+68. 2026-07-28 在 `my_isaaclab_project/README.md` 增加“完整流程命令”章节，按顺序记录配置检查、仿真检查、HDF5 采集、LeRobotDataset 转换、SmolVLA 训练、离线策略预览和在线 rollout 的命令。后续用户要跑全流程时优先看 README 这一节。
+69. 2026-07-28 给 `convert-lerobot` 增加 `--overwrite`。默认仍保护已有 LeRobotDataset 输出目录；明确传 `--overwrite` 时会删除 `/home/zfy/smolVLA/datasets/lerobot_data/<repo_id>` 后重建。README 已记录正确命令和“不要把目录/文件名拆成两条 shell 命令”的错误示例。
+70. 2026-07-28 `convert-lerobot` 增加容错 positional path fragments：如果用户把 `--root-path /path/to/staging/ dataset/file.hdf5` 错误拆成两个 shell 参数，脚本会尝试把额外 path fragment 拼回 `root_path`。这只是容错，推荐命令仍是传完整 `.hdf5` 路径。
+71. 2026-07-28 给 `train-smolvla` 增加命令行控制：`--resume` 继续已有输出目录，`--overwrite-output` 删除旧输出目录后从头训练。LeRobot 默认会保护已有 output_dir；若 `resume=false` 且目录存在，会报 `FileExistsError`，这是正常保护机制。
+72. 2026-07-28 将默认 SmolVLA 训练步数从 `3000` 提到 `20000`，`save_freq` 从 `1000` 改为 `2000`，作为 50 条左右成功 demo 的第一轮训练基线。`train-smolvla` 增加 `--steps/--batch-size/--save-freq` 覆盖参数；README 已说明 `steps` 是 optimizer update 次数，不会随 episode 数量自动变化。
+73. 2026-07-28 新增 `scripts/08_visualize_smolvla_policy.py` 和 `bash run.sh visualize-smolvla`：在 LeRobotDataset 录制相机帧上叠加 policy vs expert 的 right_arm/right_hand action 条形图、MAE 指标，并输出 `/home/zfy/smolVLA/outputs/eval/policy_visualization.mp4`。这是离线策略可视化，不是 IsaacLab 在线闭环 rollout。
+74. 2026-07-28 实现第一版 `eval-smolvla` 在线 rollout：`06_eval_smolvla_in_isaaclab.py` 启动 IsaacLab 场景、相机和机器人；`09_smolvla_policy_server.py` 在 `smolvla` Python 中加载 checkpoint，通过 JSON-lines 接收 48D state + RGB 图像并返回 26D action。仿真端用 `control_mapping.py` 将 action 写回机器人，并用 OpenCV 保存 `/home/zfy/smolVLA/outputs/eval/smolvla_rollout.mp4`。当前环境因无可用 GPU/NVML 无法完整 smoke test，需在用户正常 IsaacLab 终端验证。
+75. 2026-07-28 修复 `eval-smolvla` 启动后“没有反应”的可诊断性：`06_eval_smolvla_in_isaaclab.py` 的 policy server 握手新增启动日志、`--policy-startup-timeout`、`--policy-request-timeout` 和超时错误提示；`09_smolvla_policy_server.py` 会在 stderr 打印 checkpoint loaded、moving policy、policy on device、ready。若日志停在 `Loading weights: 100%` 后不继续，优先用 `--policy-device cpu --steps 20` 做 smoke test，排除 CUDA/显存竞争或 server 初始化卡住。
+76. 2026-07-28 进一步修复 `eval-smolvla` policy server 环境污染风险：IsaacLab 主进程运行前会设置 `env_isaaclab` 的 `PYTHONPATH/LD_LIBRARY_PATH`，如果子进程继承这些变量，即使用的是 `smolvla/bin/python` 也可能混入 IsaacLab/cmeel 动态库，导致 SmolVLA 权重加载卡在 `Loading weights: 0%` 或 ready 前无输出。现在 `PolicyServer` 会显式构造隔离环境：`CONDA_PREFIX=/home/zfy/miniconda3/envs/smolvla`，`PATH=smolvla/bin:/usr/bin:/bin`，`PYTHONPATH` unset，`LD_LIBRARY_PATH=smolvla/lib`，并在 server 日志打印 `python=` 和 `conda_prefix=`。以后在线 rollout 首先确认这两行是 smolvla 环境。
+77. 2026-07-28 修正在线 rollout 默认执行策略：当前 50 条训练数据是右臂蓝色圆柱任务，左臂/左手几乎为常量。如果在线 eval 直接执行 policy 的完整 26D 输出，左臂/左手预测噪声会导致“手臂明显乱动”。现在 `eval-smolvla` 默认 `--policy-control-groups right_arm right_hand`，只执行右臂/右手；默认 `--action-clip dataset_minmax`，按 LeRobotDataset `meta/stats.json` 中的 action min/max 裁剪输出；默认 task 文本读取 `configs/s4_bimanual_dataset.json`，避免在线语言条件和训练数据转换时不一致。日志会打印 `raw_policy/clipped_policy/desired` 的右臂右手值，后续判断乱动先看这三行。
+78. 2026-07-28 发现采集/转换/训练/评估时间尺度不一致：旧 HDF5 用 `record_every_n=2` 在约 120Hz 仿真里抽帧，等价 60Hz；但 LeRobotDataset 配置写 `fps=20`，导致真实约 5-6 秒的回合在 dataset 里变成约 17 秒。这样训练出来的 checkpoint 如果按新 20Hz 默认执行，action 时间尺度不对。已把新采集默认改为 `record-hdf5 --record-every-n 6`，和 dataset `fps=20` 对齐；`eval-smolvla` 默认 `--policy-every-n-steps 0` 表示自动推断，旧 50-demo checkpoint 会用 `2`，新 20Hz 数据会用 `6`。`03_record_physics_dataset.py` 的 HDF5 `env_args` 现在记录 `sim_dt`、`record_every_n`、`record_fps`，便于以后审计。
+79. 2026-07-28 修正当前任务文本：`configs/s4_bimanual_dataset.json` 的 task 从旧“双臂红蓝方块/tray”改为“Use the right hand to put the blue cylinder into the plate.”。注意：已经转换出的 LeRobotDataset 和已经训练的 checkpoint 仍然使用旧文本，必须重新 `convert-lerobot --overwrite` 和 `train-smolvla --overwrite-output` 后才生效。
+80. 2026-07-28 为当前已采集的 50 条旧数据增加 eval 兼容模式：用户当前要测试的是已经训练好的 50-demo/020000 checkpoint，不能用新 task 文本和新 20Hz 默认强行评估。`eval-smolvla --policy-every-n-steps 0` 现在表示自动推断：优先从 HDF5 `env_args.record_every_n` 读旧采集步距；旧 HDF5 没写该字段时，如果检测到当前 LeRobotDataset 是 50 episodes 且平均每集大于 250 帧，则判定为 legacy 50-demo dataset，使用 `policy_every_n_steps=2` 和旧 task 文本 `Use the left hand to put the red block into the tray and the right hand to put the blue block into the tray.`。这只是为了公平测试当前已训练 checkpoint，不是后续新数据推荐配置。
+81. 2026-07-28 发现并修复最关键的 SmolVLA 推理链路 bug：训练时 `lerobot_train.py` 会执行 `batch = preprocessor(batch)`，并保存 `policy_preprocessor.json` / `policy_postprocessor.json`；SmolVLA checkpoint 的 `normalization_mapping` 是 `STATE=MEAN_STD`、`ACTION=MEAN_STD`、`VISUAL=IDENTITY`。旧版 `preview-smolvla`、`visualize-smolvla` 和 `09_smolvla_policy_server.py` 手工构造 token/image/state 后直接调用 `policy.select_action(batch)`，绕过了 preprocessor/postprocessor，导致 state 未归一化、action 未反归一化，在线 raw action 落在错误空间并造成乱抖。已改为官方流程：`prepare_observation_for_inference -> preprocessor -> policy.select_action -> postprocessor`。修复后当前 50-demo/020000 checkpoint 的 CPU preview 抽样 `mean_mae≈0.034`，之前绕过 processor 时约 `0.38+`。以后任何 eval/rollout 都不能绕过 checkpoint 自带 processor。
+82. 2026-07-28 对照官方 `lerobot/examples/tutorial/smolvla/using_smolvla_example.py` 后确认，本项目当前对应关系应为：官方 `build_inference_frame` 的作用由 `prepare_observation_for_inference` 完成，因为本项目仿真端已经直接提供 dataset key `observation.state` 和 `observation.images.chest_front_rgb`；官方 `make_robot_action` 的作用由 `s4_robot/control_mapping.py` 完成，把 26D action 映射到 IsaacLab 机器人关节目标。`06_eval_smolvla_in_isaaclab.py` 现在新增右手跟踪诊断：日志/视频会同时显示 `raw_policy RH`、`cmd_right_hand` 和 `act_right_hand`。若 `cmd` 变而 `actual` 不变，查手部 actuator/关节命名/映射；若 `raw/cmd` 本身不变，查训练数据、policy 输出或 action clipping。
+83. 2026-07-28 修正 `configs/s4_bimanual_dataset.json` 的说明性 feature key：实际 HDF5/LeRobot/checkpoint 使用的是 `observation.images.chest_front_rgb`，不是旧说明里的 `observation.images.front`；`action` 说明也改为真实 26D 顺序 `left_arm_7, left_hand_6, right_arm_7, right_hand_6`，避免后续排查时误以为 action 和 48D full joint state 同序。
+84. 2026-07-28 再次对照 LeRobot 源码确认链路边界：本项目的 HDF5 采集在 `env_isaaclab` 中执行；`convert-lerobot` 在当前 `smolvla` shell 里调用 `LeRobotDataset.create/add_frame/save_episode`；`train-smolvla` 只是包装 `lerobot-train`，真正的训练、dataset stats、processor 创建和 checkpoint 保存都发生在 `lerobot/src/lerobot/scripts/lerobot_train.py`。本次修复只影响 `preview-smolvla`、`visualize-smolvla`、`eval-smolvla` 推理/评估路径，不改变已经保存的 LeRobotDataset，也不改变已经训练出的 checkpoint 权重，因此不需要因为这个修复而重新训练。只有当重新采集、重新转换、改 task 文本、改 action/state 定义、改 fps/record_every_n 后，才需要重新训练。
+85. 2026-07-28 对照 `SmolVLAPolicy.select_action` 确认 action chunk 行为：`select_action` 内部维护 action queue，队列空时预测一个 chunk，之后每次调用吐出一个 action。本项目 `09_smolvla_policy_server.py` 只在场景 reset 时 `policy.reset()`，不会每次请求都 reset，所以和官方同步 rollout 行为一致。不要在每个 policy request 前 reset，否则会导致每次都只用 chunk 第一帧，破坏时序。
 
 命令换行注意：下面这种写法会把第三行的文件名当成 shell 命令执行，产生 `s4_right_blue_cylinder_plate_scripted.hdf5：未找到命令`：
 
@@ -892,7 +910,7 @@ bash run.sh convert-lerobot \
 6. 本项目还没有 HDF5 动作回放脚本。BenchHub 的 `replay_action_demo.py` 只能作为参考，后续需要新增 `run.sh replay-hdf5`，按本项目 26D action 和关节名映射回放。
 7. LeRobotDataset 转换脚本已落到本项目，但还没有用新录制的真实 HDF5 样本验证。
 8. 策略训练配置和入口已落到本项目，但还没有数据集，不能开始有效训练。
-9. 策略回放/评估入口只预留 scaffold，还没接入当前自建场景。
+9. 策略在线评估已有第一版入口，但仍缺少充分 smoke test、自动 success 判断和 action chunk 执行节奏对齐验证。
 10. 还没有 VR 数据采集接入当前场景。
 11. 还没有明确 success checker。
 12. 当前自建 `task_sence.usd` 没有被当前 `simulation.py` 默认使用，需要重新接入或明确放弃。
@@ -1345,23 +1363,32 @@ RuntimeError: where expected condition to be a boolean tensor, but got Long
 
 离线误差不能直接代表仿真成功率。尤其这次只有少量 scripted demo，策略可能学到训练轨迹局部，但在线闭环仍可能因为状态分布偏移、手指接触、圆柱被碰倒而失败。
 
-### 下一步：在线 rollout
+### 在线 rollout 状态
 
-当前 `bash run.sh eval-smolvla --checkpoint ...` 仍是 IsaacLab 在线评估脚手架，还没有真正执行策略。下一步应实现本项目自己的在线 rollout，而不是直接拷 BenchHub：
+当前 `bash run.sh eval-smolvla --checkpoint ...` 已是本项目自己的第一版 IsaacLab 在线 rollout，而不是 BenchHub 的直接拷贝：
 
 1. 在 `env_isaaclab` 里加载本项目场景。
 2. 在 rollout 中实时读取：
    - 48D `observation.state`
    - 胸前 RGB `observation.images.chest_front_rgb`
    - 固定 task language
-3. 在 `smolvla` 训练环境不可直接和 IsaacSim 共进程时，需要二选一：
-   - 在 `env_isaaclab` 里补齐 LeRobot/SmolVLA 依赖，直接进程内推理。
-   - 或者做一个轻量 policy server，让 IsaacLab 进程通过 socket/ZMQ 请求 action。
+3. 通过独立 `smolvla` policy server 加载 checkpoint，避免污染 IsaacSim/IsaacLab 环境。
 4. 策略输出 26D action 后，用 `control_mapping.py` 映射到当前仿真关节目标。
 5. 录制 rollout 视频、success/failure、最终物体位置。
 6. 先右臂蓝色圆柱单任务评估，再扩展双臂红蓝同时任务。
 
-不建议马上把策略接到真实机器人。应该先完成 IsaacLab 在线 rollout，并至少确认：
+当前建议先用 CPU smoke test 排除启动/通信问题：
+
+```bash
+cd /home/zfy/smolVLA/my_isaaclab_project
+bash run.sh eval-smolvla \
+  --checkpoint /home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0/checkpoints/020000/pretrained_model \
+  --steps 20 \
+  --policy-device cpu \
+  --output-video /home/zfy/smolVLA/outputs/eval/smolvla_rollout_smoke.mp4
+```
+
+通过后再用 CUDA 跑 900 step。若停在 `Loading weights: 100%` 后不继续，看 `09_smolvla_policy_server.py` 的 stderr 是否打印到 `checkpoint loaded / moving policy / ready`。不建议马上把策略接到真实机器人。应该先在 IsaacLab 在线 rollout 中至少确认：
 
 - policy 输出不会导致手臂打飞圆柱。
 - 放置后能稳定离开。
@@ -1376,19 +1403,20 @@ RuntimeError: where expected condition to be a boolean tensor, but got Long
 2. 右臂 scripted grasp/place/retreat 流程已跑通，用户已能抓起蓝色圆柱并放置。
 3. HDF5 采集已跑通，并降低到 320x240、每 2 step 录 1 帧，避免一条数据过大。
 4. HDF5 -> LeRobotDataset 转换已跑通。
-5. 本地 SmolVLA 训练已跑通，并产生 1000/2000/3000 step checkpoint。
+5. 本地 SmolVLA 训练已跑通，当前用户已有 20000 step checkpoint 可用于 rollout smoke test。
 6. 离线策略预览脚本已加入：`bash run.sh preview-smolvla`。
+7. 离线策略视频可视化已加入：`bash run.sh visualize-smolvla`。
+8. 第一版 IsaacLab 在线 rollout 已加入：`bash run.sh eval-smolvla`，通过独立 policy server 返回 26D action。
 
 ### 仍未完成
 
 后续真正需要做的是：
 
-1. 实现 `scripts/06_eval_smolvla_in_isaaclab.py` 在线 rollout。
-2. 明确策略推理运行在哪个环境：`env_isaaclab` 内直接推理，或 `smolvla` 独立 policy server。
-3. 对齐在线 action 执行节奏和数据采集节奏，避免训练是 5 秒 episode、评估却用不同控制周期。
-4. 加 rollout 视频保存。
-5. 加自动 success 判断：圆柱最终在盘子/垫块区域内，且手已离开。
-6. 扩展到左臂红色圆柱，再扩展到双臂同时任务。
+1. 在用户正常 IsaacLab 终端完成 `eval-smolvla --policy-device cpu --steps 20` smoke test。
+2. 对齐在线 action 执行节奏和数据采集节奏，避免训练是 5 秒 episode、评估却用不同控制周期。
+3. 加自动 success 判断：圆柱最终在盘子/垫块区域内，且手已离开。
+4. 评估不同 checkpoint 的 rollout 视频和成功率，而不是只看离线 MAE。
+5. 扩展到左臂红色圆柱，再扩展到双臂同时任务。
 
 ### 历史 reach/IK 问题记录
 

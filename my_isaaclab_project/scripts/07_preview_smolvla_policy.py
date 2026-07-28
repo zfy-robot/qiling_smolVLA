@@ -85,18 +85,12 @@ def _format_head(values: Any, limit: int = 8) -> str:
     return ",".join(f"{x:.4f}" for x in values[:limit].detach().cpu().tolist())
 
 
-def _to_batch(item: dict[str, Any], image_key: str, task: str, tokenizer: Any, device: Any) -> dict[str, Any]:
-    import torch
-    from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
-
-    state = item["observation.state"].to(device=device, dtype=torch.float32).unsqueeze(0)
-    image = item[image_key].to(device=device, dtype=torch.float32).unsqueeze(0)
-    tokens = tokenizer(task, return_tensors="pt", padding=True, truncation=True)
+def _to_observation(item: dict[str, Any], image_key: str, task: str) -> dict[str, Any]:
     return {
-        "observation.state": state,
-        image_key: image,
-        OBS_LANGUAGE_TOKENS: tokens["input_ids"].to(device),
-        OBS_LANGUAGE_ATTENTION_MASK: tokens["attention_mask"].to(device).bool(),
+        "observation.state": item["observation.state"],
+        image_key: item[image_key],
+        "task": task,
+        "robot_type": "S4-Bimanual",
     }
 
 
@@ -116,6 +110,7 @@ def main() -> None:
 
     import torch
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.policies import make_pre_post_processors
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
     ckpt = _resolve_checkpoint(args.checkpoint)
@@ -144,7 +139,12 @@ def main() -> None:
     policy = SmolVLAPolicy.from_pretrained(str(ckpt), local_files_only=True)
     policy = policy.to(requested_device)
     policy.eval()
-    tokenizer = policy.model.vlm_with_expert.processor.tokenizer
+    preprocessor, postprocessor = make_pre_post_processors(
+        policy.config,
+        pretrained_path=str(ckpt),
+        preprocessor_overrides={"device_processor": {"device": str(requested_device)}},
+        postprocessor_overrides={"device_processor": {"device": "cpu"}},
+    )
 
     rows: list[dict[str, Any]] = []
     if args.mode == "sequential":
@@ -155,10 +155,11 @@ def main() -> None:
         task = item.get("task") or dataset.meta.tasks[0]
         if args.mode == "single-step":
             policy.reset()
-        batch = _to_batch(item, image_key, task, tokenizer, requested_device)
-        expert = item["action"].to(device=requested_device, dtype=torch.float32)
+        observation = preprocessor(_to_observation(item, image_key, task))
+        expert = item["action"].to(dtype=torch.float32)
         with torch.inference_mode():
-            predicted = policy.select_action(batch).squeeze(0)
+            predicted = policy.select_action(observation)
+            predicted = postprocessor(predicted).squeeze(0)
 
         diff = predicted - expert
         mae, rmse, max_abs = _metrics(diff)

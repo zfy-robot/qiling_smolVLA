@@ -20,6 +20,12 @@ parser.add_argument("--output-root", type=Path, default=None, help="Parent direc
 parser.add_argument("--repo-id", type=str, default=None)
 parser.add_argument("--camera-path", action="append", default=None)
 parser.add_argument("--robot-type", type=str, default="S4-Bimanual")
+parser.add_argument("--overwrite", action="store_true", help="Delete an existing output dataset before converting.")
+parser.add_argument(
+    "extra_root_path_parts",
+    nargs="*",
+    help="Optional path fragments appended to --root-path, for accidental shell-split paths.",
+)
 
 
 def main() -> None:
@@ -27,6 +33,8 @@ def main() -> None:
     cfg = load_project_config()
     repo_id = args.repo_id or cfg.dataset.repo_id.split("/")[-1]
     root_path = args.root_path or cfg.dataset.staging_root
+    if args.extra_root_path_parts:
+        root_path = Path(root_path, *args.extra_root_path_parts)
     output_root = args.output_root or cfg.dataset.lerobot_root
     camera_paths = args.camera_path or [CHEST_FRONT_RGB]
     dataset_root = convert_hdf5_to_lerobot(
@@ -37,10 +45,10 @@ def main() -> None:
         robot_type=args.robot_type,
         camera_paths=camera_paths,
         fps=cfg.dataset.fps,
+        overwrite=args.overwrite,
     )
     print(f"LeRobotDataset written to: {dataset_root}")
 
 
 if __name__ == "__main__":
     main()
-

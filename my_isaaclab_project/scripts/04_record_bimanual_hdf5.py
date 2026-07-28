@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser(description="Record S4 scripted grasp demos to 
 parser.add_argument("--output", type=Path, default=None)
 parser.add_argument("--num-episodes", type=int, default=1)
 parser.add_argument("--block", choices=["red", "blue"], default="blue")
-parser.add_argument("--record-every-n", type=int, default=2)
+parser.add_argument("--record-every-n", type=int, default=6)
 parser.add_argument("--camera-width", type=int, default=320)
 parser.add_argument("--camera-height", type=int, default=240)
 

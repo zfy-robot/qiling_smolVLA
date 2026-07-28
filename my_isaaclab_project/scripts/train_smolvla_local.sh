@@ -4,6 +4,54 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-configs/smolvla_s4_bimanual.yaml}"
+if [[ "${1:-}" == "--"* || -z "${1:-}" ]]; then
+    CONFIG="configs/smolvla_s4_bimanual.yaml"
+else
+    shift
+fi
+
+OVERWRITE_OUTPUT=false
+RESUME_OVERRIDE=""
+STEPS_OVERRIDE=""
+BATCH_SIZE_OVERRIDE=""
+SAVE_FREQ_OVERRIDE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --resume)
+            RESUME_OVERRIDE="true"
+            shift
+            ;;
+        --no-resume)
+            RESUME_OVERRIDE="false"
+            shift
+            ;;
+        --overwrite-output)
+            OVERWRITE_OUTPUT=true
+            shift
+            ;;
+        --steps)
+            STEPS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --batch-size)
+            BATCH_SIZE_OVERRIDE="$2"
+            shift 2
+            ;;
+        --save-freq)
+            SAVE_FREQ_OVERRIDE="$2"
+            shift 2
+            ;;
+        --config)
+            CONFIG="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown train-smolvla option: $1" >&2
+            echo "Usage: bash run.sh train-smolvla [config] [--resume|--no-resume] [--overwrite-output] [--steps N] [--batch-size N] [--save-freq N]" >&2
+            exit 2
+            ;;
+    esac
+done
 
 if [ ! -f "$CONFIG" ]; then
     echo "Missing config: $CONFIG" >&2
@@ -21,7 +69,19 @@ CHUNK_SIZE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['chu
 MAX_STATE_DIM=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['max_state_dim'])")
 MAX_ACTION_DIM=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['max_action_dim'])")
 SAVE_FREQ=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['save_freq'])")
+if [ -n "$STEPS_OVERRIDE" ]; then
+    STEPS="$STEPS_OVERRIDE"
+fi
+if [ -n "$BATCH_SIZE_OVERRIDE" ]; then
+    BATCH_SIZE="$BATCH_SIZE_OVERRIDE"
+fi
+if [ -n "$SAVE_FREQ_OVERRIDE" ]; then
+    SAVE_FREQ="$SAVE_FREQ_OVERRIDE"
+fi
 RESUME=$(python3 -c "import yaml; print(str(yaml.safe_load(open('$CONFIG')).get('resume', False)).lower())")
+if [ -n "$RESUME_OVERRIDE" ]; then
+    RESUME="$RESUME_OVERRIDE"
+fi
 VLM_PATH=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['vlm_model_name'])")
 OPT_LR=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['optimizer_lr'])")
 OPT_WD=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['optimizer_weight_decay'])")
@@ -31,12 +91,27 @@ echo "  Local S4 SmolVLA training"
 echo "  Config:  $CONFIG"
 echo "  Dataset: $DATASET_ROOT/$DATASET"
 echo "  Output:  $OUTPUT_DIR"
+echo "  Resume:  $RESUME"
+echo "  Steps:   $STEPS"
+echo "  Batch:   $BATCH_SIZE"
+echo "  Save:    every $SAVE_FREQ steps"
 echo "========================================"
 
 if [ ! -d "$DATASET_ROOT/$DATASET" ]; then
     echo "Dataset does not exist yet: $DATASET_ROOT/$DATASET" >&2
     echo "Run: bash run.sh convert-lerobot --root-path <hdf5 file or dir>" >&2
     exit 2
+fi
+
+if [ "$OVERWRITE_OUTPUT" = true ]; then
+    if [ "$RESUME" = true ]; then
+        echo "--overwrite-output cannot be used together with --resume" >&2
+        exit 2
+    fi
+    if [ -d "$OUTPUT_DIR" ]; then
+        echo "[INFO] Removing existing training output: $OUTPUT_DIR"
+        rm -rf "$OUTPUT_DIR"
+    fi
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"

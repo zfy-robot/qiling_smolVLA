@@ -5,7 +5,7 @@
     "root": "/home/zfy/smolVLA/datasets/s4_bimanual_red_blue_plate_v0",
     "lerobot_root": "/home/zfy/smolVLA/datasets/lerobot_data",
     "fps": 20,
-    "task": "Use the left hand to put the red block into the tray and the right hand to put the blue block into the tray."
+    "task": "Use the right hand to put the blue cylinder into the plate."
   },
   "scene": {
     "scene_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd",
@@ -26,9 +26,9 @@
     "action": {
       "dtype": "float32",
       "shape": [26],
-      "names": "same order as observation.state"
+      "names": "left_arm_7, left_hand_6, right_arm_7, right_hand_6"
     },
-    "observation.images.front": {
+    "observation.images.chest_front_rgb": {
       "dtype": "video",
       "shape": [240, 320, 3],
       "names": ["height", "width", "channels"]

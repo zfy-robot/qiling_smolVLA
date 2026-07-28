@@ -8,12 +8,12 @@ dataset: s4_bimanual_red_blue_plate_v0
 dataset_root: /home/zfy/smolVLA/datasets/lerobot_data
 output_dir: /home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0
 
-steps: 3000
+steps: 20000
 batch_size: 4
 num_workers: 0
 device: cuda
 seed: 42
-save_freq: 1000
+save_freq: 2000
 resume: false
 
 chunk_size: 50

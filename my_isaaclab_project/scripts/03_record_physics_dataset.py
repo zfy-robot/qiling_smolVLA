@@ -640,6 +640,9 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
             env_args={
                 "task": "s4_right_blue_cylinder_plate_scripted",
                 "source": "scripted_ik",
+                "sim_dt": float(sim.get_physics_dt()),
+                "record_every_n": int(record_every_n),
+                "record_fps": float(1.0 / (sim.get_physics_dt() * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),
                     "target": list(cfg.camera_target),

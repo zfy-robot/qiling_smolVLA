@@ -7,6 +7,7 @@
 #   bash run.sh convert-lerobot
 #   bash run.sh train-smolvla
 #   bash run.sh preview-smolvla
+#   bash run.sh visualize-smolvla
 #   bash run.sh control reach-block --block blue
 #   python scripts/set_joint_command.py right_elbow_joint=0.3
 
@@ -51,6 +52,10 @@ case "${1:-sim}" in
         shift
         python3 scripts/07_preview_smolvla_policy.py "$@"
         ;;
+    visualize-smolvla)
+        shift
+        python3 scripts/08_visualize_smolvla_policy.py "$@"
+        ;;
     eval-smolvla)
         shift
         use_isaaclab_env
@@ -75,7 +80,7 @@ case "${1:-sim}" in
         $ISAACLAB -p "$script" --headless "$@"
         ;;
     *)
-        echo "用法: bash run.sh {inspect-config|sim|record-hdf5|convert-lerobot|train-smolvla|preview-smolvla|eval-smolvla|control|reach-block|joint-debug|headless <script>}"
+        echo "用法: bash run.sh {inspect-config|sim|record-hdf5|convert-lerobot|train-smolvla|preview-smolvla|visualize-smolvla|eval-smolvla|control|reach-block|joint-debug|headless <script>}"
         exit 1
         ;;
 esac
