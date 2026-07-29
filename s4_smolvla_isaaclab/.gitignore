@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+.cache/
+.pytest_cache/
+
+*.log
+*.tmp
+
+# Keep generated datasets, model weights, and rollout videos out of git.
+datasets/
+models/
+outputs/
+*.hdf5
+*.mp4
+*.avi

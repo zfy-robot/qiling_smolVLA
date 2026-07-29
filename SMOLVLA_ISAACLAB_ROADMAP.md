@@ -9,10 +9,36 @@
 
 当前事实以本地文件系统为准：
 
-- 旧的 `my_isaaclab_project/scripts/02_bimanual_plate_scene.py` 不存在，旧的 `bash run.sh bimanual --mode scripted_demo` 路线废弃。
-- 旧的 `my_isaaclab_project/scripts/04_check_dataset_setup.py` 不存在，`bash run.sh check-dataset` 也不是当前入口。
-- 当前 IsaacLab 调试入口是 `my_isaaclab_project/scripts/03_record_physics_dataset.py`，通过 `cd /home/zfy/smolVLA/my_isaaclab_project && bash run.sh sim ...` 启动。
+- 当前唯一主项目是 `/home/zfy/smolVLA/s4_smolvla_isaaclab`。后续采集、转换、训练、eval 都优先在这里做。
+- 旧的 `my_isaaclab_project/` 已按用户要求删除，不再作为入口。旧文档中出现的 `my_isaaclab_project` 路径只作为历史记录，不要照着运行。
+- 当前 IsaacLab 调试入口是 `s4_smolvla_isaaclab/scripts/03_record_physics_dataset.py`，通过 `cd /home/zfy/smolVLA/s4_smolvla_isaaclab && bash run.sh sim ...` 启动。
+- 当前 HDF5 采集入口是 `cd /home/zfy/smolVLA/s4_smolvla_isaaclab && bash run.sh record-hdf5 ...`。
+- 当前 LeRobotDataset 转换、SmolVLA 训练、离线预览和在线 rollout 也都通过 `s4_smolvla_isaaclab/run.sh` 调用；上游 `lerobot/` 和 `qi-studio-benchhub/` 只作为参考，不直接改。
 - 新拉下来的 `qi-studio-benchhub/` 已有 S4 的 SmolVLA 简单闭环，入口是 `qi-studio-benchhub/train_smolvla.sh`。后续数据和训练链路优先参考它，而不是旧 MuJoCo 教程。
+
+## 最新状态：2026-07-28
+
+本次清理和默认场景调整已经完成：
+
+1. 已删除项目内缓存采集、转换数据和训练/eval 输出：
+   - `s4_smolvla_isaaclab/datasets/staging`
+   - `s4_smolvla_isaaclab/datasets/lerobot_data`
+   - `s4_smolvla_isaaclab/outputs/train`
+   - `s4_smolvla_isaaclab/outputs/eval`
+   - `s4_smolvla_isaaclab/.cache`
+2. 保留 `s4_smolvla_isaaclab/models/`，这里是基础 SmolVLM 权重，不是训练后的模型；删除它会导致后续训练/eval 重新下载或找不到模型。
+3. 默认场景保留 `PackingTable` 桌子本体，但加载后会停用已确认的桌面/桌下物料 prim：`/World/TaskTableVisual/container_h20`。当前 `inspect-config` 应显示桌子 USD 路径，不应是 `None`。
+4. 桌面任务支撑物已从三个独立垫块改成一个固定大垫块 `task_platform`。红/蓝圆柱和盘子都在同一个固定平台上。
+5. 泛化采集默认只随机蓝色圆柱初始位置，x/y 方向独立采样 `uniform(-0.03m, +0.03m)`。垫块和盘子固定不动。
+6. `record-hdf5` 新增 `--no-render`，用于批量采集：
+
+```bash
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+conda activate env_isaaclab
+bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render
+```
+
+`--no-render` 会把录制脚本转成 IsaacLab headless 运行；相机帧仍会写入 HDF5，只是不渲染交互视窗。
 
 ## 顶层仓库分工
 
@@ -20,13 +46,11 @@
 /home/zfy/smolVLA/
 ├── lerobot/                    # 上游 LeRobot/SmolVLA 代码，训练 API 的最终来源
 ├── qi-studio-benchhub/         # 已跑通 S4 数据采集、HDF5、LeRobotDataset、SmolVLA 训练/评估的参考仓库
-├── my_robot/                   # 当前自有 S4 机器人 URDF/mesh
-├── my_isaaclab_project/        # 当前最小 IsaacLab 调试项目，先在这里把任务物理链路做稳
-├── datasets/                   # 本项目后续数据输出位置
+├── s4_smolvla_isaaclab/        # 当前干净主项目目录，后续采集/转换/训练/eval 都优先改这里
 └── SMOLVLA_ISAACLAB_ROADMAP.md # 当前路线图
 ```
 
-`qi-studio-benchhub/` 的价值是生产线参考；`my_isaaclab_project/` 的价值是可控、可删改的最小实验场。不要把两个项目无脑合并。推荐先在 `my_isaaclab_project` 做稳物理和任务，再复用 BenchHub 的数据格式、转换脚本和训练参数。
+`qi-studio-benchhub/` 的价值是生产线参考；`s4_smolvla_isaaclab/` 是当前可控、可删改的主项目目录。不要把两个参考项目无脑合并。后续优先在 `s4_smolvla_isaaclab` 做任务、数据、转换、训练和 eval。
 
 ## 环境职责
 
@@ -35,7 +59,7 @@
 ```text
 env_isaaclab
   用途：IsaacSim/IsaacLab 仿真、场景调试、控制调试、后续录 HDF5/staging 数据
-  当前入口：cd my_isaaclab_project && bash run.sh sim ...
+  当前入口：cd /home/zfy/smolVLA/s4_smolvla_isaaclab && bash run.sh sim ...
 
 smolvla
   用途：LeRobotDataset 检查、SmolVLA 训练、checkpoint 管理
@@ -337,15 +361,20 @@ bash run.sh control grasp-block --block blue --grasp-pose current --grasp-yaw -0
 - `--lift-z`：lift 阶段 TCP 相对物块中心的 Z 偏移，默认 `0.15m`，闭合手后抬起。
 - `--place-approach-z`：移动到盘子上方阶段 TCP 相对盘子中心的 Z 偏移，默认 `0.18m`。
 - `--place-z`：放置/张手阶段 TCP 相对盘子中心的 Z 偏移，默认 `0.10m`。
-- `--release-retreat-y`：release 张手后，继续用同一套 Cartesian IK 在世界坐标系 Y 方向移动的偏移，默认 `-0.20m`。
-- `--release-retreat-z`：release 张手后，继续用同一套 Cartesian IK 在世界坐标系 Z 方向移动的偏移，默认 `+0.15m`。
-- `--retreat-steps`：release 后 world Y/Z 退避阶段最大步数，默认 `120`。
+- `--place-x-offset/--place-y-offset`：放置/张手阶段 TCP 相对盘子中心的 world/base 水平偏移，默认 `[0.00m, -0.05m]`。当前布局中世界 `Y` 负方向是机器人右侧，所以默认会把释放点从盘子中心往右移 `5cm`。
+- `--release-lift-y`：release 张手后第一段抬手时的世界坐标系 Y 偏移，默认 `-0.05m`。
+- `--release-lift-z`：release 张手后第一段抬手时的世界坐标系 Z 偏移，默认 `+0.18m`。这一步先让手离开盘子边缘，再进入主退避。
+- `--release-retreat-x`：竖直抬高完成后，继续用同一套 Cartesian IK 在世界坐标系 X 方向移动的偏移，默认 `-0.12m`，用于让手往机器人后方退。
+- `--release-retreat-y`：竖直抬高完成后，继续用同一套 Cartesian IK 在世界坐标系 Y 方向移动的偏移，默认 `-0.24m`，用于让手往机器人右侧退。
+- `--release-retreat-z`：竖直抬高完成后，继续用同一套 Cartesian IK 在世界坐标系 Z 方向额外移动的偏移，默认 `+0.06m`。
+- `--release-lift-steps`：release 后竖直抬高手的最大步数，默认 `70`。
+- `--retreat-steps`：竖直抬高后右后方退避阶段最大步数，默认 `120`。
 - `--x-offset/--y-offset`：所有阶段共用的水平偏移，用于微调手指相对物块的位置。
 - `--tolerance`：阶段切换的 TCP 距离阈值，默认 `0.05m`。这是当前抓取/放置 smoke test 的正常阈值；如果状态机卡在 lower/place_lower，再结合日志微调。
 - `--approach-steps`：approach 阶段最大步数，默认 `120`；到达 tolerance 或超过最大步数都会进入 lower。
 - `--lower-steps`：lower 阶段等待到位的告警步数，默认 `120`；不再允许靠超时进入 close。lower 必须达到 `--tolerance` 才能闭合手，避免 reset 后第一次命令在物块上方空抓。
 - `--close-steps`：close 阶段保持闭合命令的步数，默认 `70`，之后进入 lift。
-- `--lift-steps/--place-steps/--release-steps/--retreat-steps`：抓起后移动到盘子、等待释放、张手、释放后 world Y/Z 退避的阶段步数，当前默认分别为 `60/150/50/120`。`place_lower -> release` 和 `lower -> close` 一样必须到 tolerance，避免高处张手。
+- `--lift-steps/--place-steps/--release-steps/--release-lift-steps/--retreat-steps`：抓起后移动到盘子、等待释放、张手、竖直抬手、右后方退避的阶段步数，当前默认分别为 `60/150/50/70/120`。`place_lower -> release` 和 `lower -> close` 一样必须到 tolerance，避免高处张手。
 - 当前默认目标是约 `600 step`，也就是 `600 / 120Hz = 5s` 的仿真时间。若 lower 或 place_lower 没到 tolerance，实际回合会超过 5s，优先检查目标是否可达和 TCP 误差，而不是继续硬缩 step。
 - `--grasp-pose none|current`：`none` 只控位置；`current` 在 approach/lower/close 前使用命令开始时锁定的 TCP 姿态；进入 lift 时再锁定“实际抓住时”的 TCP 姿态，搬运、放置、松手、回撤都保持这个 carry/place 姿态，避免放置阶段继续改变末端姿态。
 - `--grasp-roll/--grasp-pitch/--grasp-yaw`：在锁定的当前 TCP 姿态上叠加局部 RPY 微调，单位 rad。当前默认 `grasp_pitch=0.10`、`grasp_yaw=-0.20`；yaw 用来让右肘更向外打开，搬运/放置时减少手臂挡住盘子或内收挤压圆柱。
@@ -736,12 +765,11 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
   - 新增 `/World/RecordTask/TaskPlatform`，几何最初为 `0.48m x 0.60m x 0.10m`，后因和桌面 `container_h20` 嵌入，改为 `0.48m x 0.60m x 0.05m` 的 kinematic cuboid，有碰撞和高摩擦材质。
   - 新增 `TaskLayout.task_surface_z(table_top_z) = table_top_z + platform_height`。红/蓝圆柱和盘子都基于这个新 surface 高度计算位置，因此 reset 后也会保持在垫板上。
   - `format_layout()` 现在打印 `task_surface_z` 和 `platform` 位置/尺寸，后续看日志时不要再只看旧的 `table_top_z`。
-  - 用户最终决定不在代码中删除桌面上的筐子。`container_h20` 仍作为 PackingTable 视觉资产的一部分存在；后续不再维护 `--remove-table-clutter/--no-remove-table-clutter` 参数，也不再自动改桌子 USD prim active 状态。
+  - 历史已废弃：当时曾决定不删除桌面筐子。2026-07-28 已按新要求改为保留 PackingTable 桌子本体，但运行时停用已确认的 `/World/TaskTableVisual/container_h20` 物料 prim。
   - 用户看到的 `CCD is not supported on GPU, ignoring request to enable it` 是 IsaacSim/PhysX warning，不是致命启动错误。若启动失败，必须继续看后面的 Python traceback 或 Kit error；不要把这行当根因。
-- 2026-07-27 用户反馈垫高后右手末端可能被垫块挡住，已继续修正：
-  - 废弃单块大垫板 `/World/RecordTask/TaskPlatform`，改为三个独立小垫块：`/World/RecordTask/RedPlatform`、`/World/RecordTask/BluePlatform`、`/World/RecordTask/PlatePlatform`。
-  - 红/蓝圆柱小垫块尺寸为 `0.11m x 0.11m x 0.05m`，只支撑圆柱底部，减少手从侧面接近时被大板边缘挡住的概率。
-  - 盘子垫块尺寸为 `0.30m x 0.30m x 0.05m`。
+- 2026-07-27 用户反馈垫高后右手末端可能被垫块挡住，曾改为三个独立小垫块：
+  - 历史已废弃：`/World/RecordTask/RedPlatform`、`/World/RecordTask/BluePlatform`、`/World/RecordTask/PlatePlatform` 这组三垫块结构已经在 2026-07-28 删除。
+  - 当前最新结构重新使用一个固定大垫块 `/World/RecordTask/TaskPlatform`，尺寸见 `s4_robot/simulation.py` 的 `TASK_PLATFORM_SIZE`。
   - `grasp-block --grasp-z` 默认从 `-0.04m` 改为 `+0.02m`，让 lower TCP 目标在圆柱中上部，而不是离垫块表面只有约 `2cm`。如果需要更低抓取，再显式传 `--grasp-z 0.00` 或负值，但要注意手指/手掌可能先碰到垫块。
   - 用户 15:10 的 `/tmp/isaaclab/logs/isaaclab_2026-07-27_15-10-15.log` 是空文件；只出现 `CCD is not supported on GPU` 仍不能说明启动失败根因。
 - 2026-07-27 用户已验证当前默认配置可用：
@@ -763,7 +791,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
   - 默认 `tolerance` 改为 `0.05m`，用于当前抓取/放置 smoke test。注意不要误设为 `0.5m`，否则会导致 TCP 尚未到位就切阶段。
   - 局部 `post_place_retreat` 方案已废弃：实测放置后往旁边退时，手指仍在圆柱附近运动，可能因接触/平滑开合把圆柱再次带起。
   - `release -> home -> done` 方案也已废弃：用户实测直接回 home 的关节空间路径会在刚离开圆柱时加速/乱甩并把圆柱带飞。
-  - 最新放置后流程改为 `release -> release_retreat -> done`。release 保持张手足够步数后，不再回 home；继续用抓取/放置过程中同一套 Cartesian IK，在固定 plate anchor 上设置 release 目标的世界坐标偏移：`Y=-0.20m, Z=+0.15m`。即退避 TCP 目标为 `plate + [0, -0.20, place_z + 0.15]`。退避完成后进入 `hold`，保持当前手臂姿态和打开的右手。
+  - 最新放置后流程改为 `release -> release_lift -> release_retreat -> done`。release 保持张手足够步数后，不再回 home；先以实际 release TCP 为锚点竖直抬高手，再以抬高后的实际 TCP 为锚点向右后方退避。退避完成后进入 `hold`，保持当前手臂姿态和打开的右手。
 - 2026-07-27 开始接数据链路：
   - 默认相机改为右前上方视角：`eye=(0.18,-0.62,1.42)`、`target=(0.52,-0.12,0.98)`，用于覆盖当前右臂抓蓝色圆柱、移动到盘子、release、退避全过程。
   - `03_record_physics_dataset.py` 增加 `--camera-eye/--camera-target/--camera-width/--camera-height`，相机 reset 会使用同一组配置。
@@ -827,7 +855,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 42. 新增手部单独速度限制 `--hand-max-joint-step=0.004`，并把 `grasp-block --close-steps` 默认提高到 `160`，降低 position-controlled 手指夹飞圆柱的概率。
 43. 新增 `grasp-block --grasp-pose current` 姿态锁定和 pose IK：抓取 approach/lower/close 使用命令开始时锁定的 TCP 姿态，并可通过 `--grasp-roll/--grasp-pitch/--grasp-yaw` 微调。日志新增 `rot_err`，目标 TCP marker 显示目标姿态。
 44. 修复 `grasp-block` 第一次空抓问题：`lower` 阶段不再按 `lower_steps` 超时自动闭合，必须 TCP 进入 tolerance 后才进入 `close`。同时圆柱质量降到 `0.08kg`，提高当前手指夹持后抬起的可能性。
-45. 新增任务垫块，当前高度 `0.05m`；单块大垫板已拆成 `RedPlatform/BluePlatform/PlatePlatform` 三个小垫块，红/蓝圆柱和盘子整体抬高到对应垫块表面。删除桌面筐子的逻辑和参数已移除，`container_h20` 不再由代码自动隐藏。
+45. 新增任务垫块，当前高度 `0.05m`。历史上曾拆成 `RedPlatform/BluePlatform/PlatePlatform` 三个小垫块；当前最新结构已改回一个固定大垫块 `TaskPlatform`。PackingTable 桌子本体保留，但 `/World/TaskTableVisual/container_h20` 会由代码停用。
 46. 为避免垫高后手末端被垫块挡住，`grasp-block --grasp-z` 默认改为 `+0.02m`，默认抓圆柱中上部；低位抓取必须显式调参并观察是否撞垫块。
 47. 固化当前可用默认入口：`bash run.sh sim` 默认等价于带 `--print-layout` 且不显示 TCP/目标箭头，`bash run.sh control grasp-block` 默认等价于右手抓蓝色圆柱并使用 `grasp-pose=current, grasp-pitch=0.1`，后续加入默认 `grasp-yaw=-0.20`。
 48. 扩展 `grasp-block` 为右手 pick-place smoke test：抓起圆柱后移动到盘子 anchor，上方下降到 release 目标，张手释放。
@@ -839,7 +867,7 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 54. 修正旧的放置结束逻辑：之前 `done` 会进入 `hold`，所以用户看到“放置完没有回原点”是符合旧代码的。
 55. 废弃 `post_place_retreat` 局部退避方案：放置后往旁边退会让手指在圆柱附近继续扰动，可能再次抓到圆柱。
 56. 废弃 `release -> home -> done` 方案：直接回 home 的关节空间路径在放置后可能加速/乱甩并打飞圆柱。
-57. 最新默认流程为 `release -> release_retreat -> done`：release 后继续使用同一套 Cartesian IK，在世界坐标系下相对 release TCP 目标移动 `Y=-0.20m, Z=+0.15m`，右手保持打开，退避完成后 hold 当前姿态。
+57. 最新默认流程为 `release -> release_lift -> release_retreat -> done`：release 后继续使用同一套 Cartesian IK。`release_lift` 的参考点是手张开完成瞬间的实际 TCP 世界坐标，先竖直上抬；`release_retreat` 的参考点是竖直上抬完成后的实际 TCP 世界坐标，再向右后方退避，右手保持打开，退避完成后 hold 当前姿态。
 58. 调整默认相机到右前上方视角，覆盖蓝色圆柱、盘子、右手抓取和放置过程；相机位姿和分辨率已通过命令行参数暴露。
 59. 实现 scripted HDF5 采集入口：`bash run.sh record-hdf5 --num-episodes 1 --block blue` 会自动启动当前右臂 `grasp-block` 流程并写出 HDF5。
 60. 关闭默认可视化箭头：`bash run.sh sim` 不再自动传 `--show-tcp-frames`。采集前默认画面更接近真实相机输入；调 TCP 坐标时仍可手动运行 `bash run.sh sim --show-tcp-frames`。
@@ -868,6 +896,22 @@ J_tcp_linear = J_wrist_linear + cross(J_wrist_angular, tcp_offset_world)
 83. 2026-07-28 修正 `configs/s4_bimanual_dataset.json` 的说明性 feature key：实际 HDF5/LeRobot/checkpoint 使用的是 `observation.images.chest_front_rgb`，不是旧说明里的 `observation.images.front`；`action` 说明也改为真实 26D 顺序 `left_arm_7, left_hand_6, right_arm_7, right_hand_6`，避免后续排查时误以为 action 和 48D full joint state 同序。
 84. 2026-07-28 再次对照 LeRobot 源码确认链路边界：本项目的 HDF5 采集在 `env_isaaclab` 中执行；`convert-lerobot` 在当前 `smolvla` shell 里调用 `LeRobotDataset.create/add_frame/save_episode`；`train-smolvla` 只是包装 `lerobot-train`，真正的训练、dataset stats、processor 创建和 checkpoint 保存都发生在 `lerobot/src/lerobot/scripts/lerobot_train.py`。本次修复只影响 `preview-smolvla`、`visualize-smolvla`、`eval-smolvla` 推理/评估路径，不改变已经保存的 LeRobotDataset，也不改变已经训练出的 checkpoint 权重，因此不需要因为这个修复而重新训练。只有当重新采集、重新转换、改 task 文本、改 action/state 定义、改 fps/record_every_n 后，才需要重新训练。
 85. 2026-07-28 对照 `SmolVLAPolicy.select_action` 确认 action chunk 行为：`select_action` 内部维护 action queue，队列空时预测一个 chunk，之后每次调用吐出一个 action。本项目 `09_smolvla_policy_server.py` 只在场景 reset 时 `policy.reset()`，不会每次请求都 reset，所以和官方同步 rollout 行为一致。不要在每个 policy request 前 reset，否则会导致每次都只用 chunk 第一帧，破坏时序。
+86. 2026-07-28 新建干净主项目目录 `/home/zfy/smolVLA/s4_smolvla_isaaclab`，从 `my_isaaclab_project` 迁移当前可用代码并排除 `__pycache__`。新目录 README 改为主流程文档，新增 `docs/ARCHITECTURE.md` 和 `docs/WORKFLOW.md`，后续默认只改新目录。旧 `my_isaaclab_project` 后续已按用户要求删除，不再作为入口。
+87. 2026-07-28 修复配置读取兼容性：`s4_pipeline/config.py` 不再硬编码 `observation.images.front`，而是自动读取第一个 `observation.images.*` feature。当前实际 key 是 `observation.images.chest_front_rgb`。此修复同时落到新旧两个目录，避免临时使用旧入口时转换报错。
+88. 2026-07-28 在线 rollout 默认视频从 `.mp4` 改成 `.avi`，`VideoWriter` 对 `.avi` 使用 `MJPG`，对 `.mp4` 仍使用 `mp4v`。原因是本机 OpenCV 生成的 `.mp4` 用户侧无法稳定播放；后续默认命令优先输出 `/home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/eval/smolvla_rollout.avi`。
+89. 2026-07-28 按用户要求清理顶层目录：`datasets/`、`models/`、`outputs/` 移入 `/home/zfy/smolVLA/s4_smolvla_isaaclab/`，`my_robot/` 移入 `s4_smolvla_isaaclab/assets/my_robot/`，`task_sence.usd` 移入 `s4_smolvla_isaaclab/assets/scenes/task_sence.usd`。新项目配置和默认脚本路径已改为项目内自包含路径。旧 `my_isaaclab_project/` 和不再使用的 `lerobot-mujoco-tutorial/` 已删除；顶层只保留 `lerobot/`、`qi-studio-benchhub/`、`s4_smolvla_isaaclab/` 和仓库元文件。
+90. 2026-07-28 为重新采集泛化数据增加蓝色圆柱初始位置随机化：`bash run.sh record-hdf5` 默认传 `--randomize-blue-xy 0.03 --random-seed 42`，每个 episode 只将蓝色圆柱在世界 x/y 方向均匀扰动 ±0.03m。抓取脚本在每个 grasp plan 开始时从仿真真实 `scene[blue].data.root_pos_w` 锁定圆柱位置，因此 approach/lower/grasp/lift 都跟随真实随机化位置；盘子位置保持固定。随机化参数会写入 HDF5 `data.attrs["env_args"].randomization`。
+91. 2026-07-28 清理当前项目内生成物并调整默认任务场景：删除 `s4_smolvla_isaaclab/datasets/staging`、`datasets/lerobot_data`、`outputs/train`、`outputs/eval` 和 `.cache`，重建为空目录；保留 `models/` 中的基础 SmolVLM 权重。默认继续加载 `PackingTable` 桌子本体，但在 `spawn_background_and_table()` 里停用已确认的 `/World/TaskTableVisual/container_h20`，避免桌面和桌下框子干扰任务。三个独立垫块改成一个固定大垫块 `task_platform`；后续泛化采集只随机蓝色圆柱，垫块和盘子固定。`record-hdf5` 新增 `--no-render`，批量采集时可运行 `bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render`。
+92. 2026-07-28 修正“不要桌子”的误解：桌子必须保留，只清理桌上和桌下自带物料。用户确认桌子上的框子 prim path 是 `/World/TaskTableVisual/container_h20`。`remove_table_clutter()` 已从“模式遍历并停用”改成“只停用精确 top-level prim path”，避免遍历 stage 时修改 active 状态引起 USD 重组问题。新增诊断开关 `bash run.sh sim --print-layout --no-clean-table-clutter`，如果默认启动失败，先用它确认是清理逻辑问题还是桌子资产本身/IsaacSim 启动问题。
+93. 2026-07-28 按用户要求扩大固定大垫块并收敛日志：`TASK_PLATFORM_SIZE` 从 `(0.42, 0.56, 0.05)` 改为 `(0.56, 0.72, 0.05)`，覆盖更长的圆柱随机范围和盘子区域。`record-hdf5` 默认蓝色圆柱随机范围改为 ±0.03m。`03_record_physics_dataset.py` 新增 `--verbose-status`，默认关闭每 2 秒一次的大段 TCP/Jacobian/关节误差状态日志；默认只保留启动布局、关键状态机事件、warning 和采集完成摘要。
+94. 2026-07-28 优化 scripted grasp/place 阶段切换：不再只靠 `close_steps/release_steps` 到时就移动手臂。`close` 阶段必须满足最小等待步数且 smoothed 6D 右手命令接近 `CLOSE_RIGHT_HAND` 后才进入 `lift`；`release` 阶段必须满足最小等待步数且右手命令接近 `OPEN_RIGHT_HAND` 后才进入 `release_retreat`。默认 `hand_complete_tolerance=0.015rad`，手动命令可用 `bash run.sh control grasp-block --hand-complete-tolerance ...` 覆盖。注意这里检查的是 commanded hand action 是否完成，避免抓住圆柱时实际关节因接触不到闭合目标而永久卡住。
+95. 2026-07-28 调整放置后退避方向：用户反馈放置后手臂往圆柱右前方拿开，目标改为右后方。按当前世界/base 坐标约定，前方是 `+X`，后方是 `-X`，右方是 `-Y`；默认 `release_retreat_offset` 从 `[0.0, -0.20, +0.15]` 改为 `[-0.12, -0.20, +0.15]`。`control_arm.py` 新增 `--release-retreat-x`，默认 `-0.12`。
+96. 2026-07-28 继续调整放置后退避：按用户要求把 Z 调高、X 再小一点。默认 `release_retreat_offset` 从 `[-0.12, -0.20, +0.15]` 改为 `[-0.18, -0.20, +0.20]`；`control_arm.py` 的 `--release-retreat-x` 默认改为 `-0.18`，`--release-retreat-z` 默认改为 `0.20`。
+97. 2026-07-28 修正放置后退避参考系：旧逻辑的 `release_retreat` 目标是 `plate_anchor + [x, y, place_z + z]`，也就是相对固定盘子坐标；如果实际 release TCP 或圆柱最终位置因接触有偏差，手可能沿固定目标路径扫过圆柱并碰倒。现在在 `release -> release_retreat` 切换时记录实际 TCP 世界坐标 `release_retreat_anchor_pos_w`，退避目标改为 `actual_release_tcp + release_retreat_offset`。坐标系仍是 world/base，偏移默认 `[-0.18, -0.20, +0.20]`。
+98. 2026-07-28 按用户反馈“放置位置偏左”调整默认释放点：新增 `grasp-block --place-x-offset/--place-y-offset`，放置阶段 `move_to_plate/place_lower/release` 的目标从 `plate_anchor + [0,0,z]` 改为 `plate_anchor + [place_x, place_y, z]`。默认 `place_offset=[0.00, -0.03]m`，即在当前 world/base 坐标下往机器人右侧移动 `3cm`；如果还偏左可测试 `--place-y-offset -0.05`，如果视觉方向相反则测试正值。同步把脚本入口和仿真端 `release_retreat_offset` 默认统一为 `[-0.20, -0.22, +0.25]`，避免 `record-hdf5` 自动抓取和 `control grasp-block` 手动抓取使用不同退避默认值。
+99. 2026-07-28 针对“放置后小拇指与盘子摩擦、变形并勾倒圆柱”继续修正退避路径：旧 `release_retreat` 是从张手位置直接斜向走到右后上方，初段就有水平分量，手还贴近盘子时小拇指容易扫过盘沿。状态机改为 `release -> release_lift -> release_retreat -> done`：张手完成后先记录实际 TCP 世界坐标，`release_lift` 先沿 world `-Y/+Z` 移动 `[0.0, -0.05, +0.18]m`；到位后再次记录当前 TCP，再执行右后方退避 `[-0.12, -0.24, +0.06]m`。同时默认放置偏移从 `[0.00, -0.03]m` 改为 `[0.00, -0.05]m`，让圆柱更靠盘子右侧/中心区域。若仍偏左，下一步优先调 `--place-y-offset -0.07`，不要先改退避。
+100. 2026-07-28 按用户要求在放置后第一段上抬过程中加入 world/base Y 偏移，并随后改为负方向：新增 `grasp-block --release-lift-y`，默认 `-0.05m`。当前第一段释放后抬手目标为 `actual_release_tcp + [0.0, -0.05, +0.18]m`，第二段主退避仍以抬手后的实际 TCP 为锚点。
+101. 2026-07-28 为批量采集增加 episode 超时丢弃重试机制：`record-hdf5` 新增 `--episode-timeout-s`，仿真端对应 `--record-episode-timeout-s`，默认 `500s`。如果一个 scripted attempt 从开始 recording 到完成超过 timeout，当前 `EpisodeBuffer` 直接丢弃、不写 HDF5、不增加 `recorded_episodes`，随后 reset 场景、重新随机蓝色圆柱位置，并重试同一个 episode index。这样即使中途有任务卡住，最终 HDF5 保存的 demo 数仍等于 `--num-episodes`。默认采集命令：`bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render`；显式超时命令：`bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render --episode-timeout-s 500`。
 
 命令换行注意：下面这种写法会把第三行的文件名当成 shell 命令执行，产生 `s4_right_blue_cylinder_plate_scripted.hdf5：未找到命令`：
 
@@ -903,7 +947,7 @@ bash run.sh convert-lerobot \
 高优先级未完成：
 
 1. 双臂控制还没有接通。当前自动 reach 只控制右臂，左臂还没有 `LeftArmReachController` 或统一 bimanual controller。
-2. 已有右手 `grasp-block` pick-place smoke test 状态机，但还不是稳定真实抓取专家。当前覆盖 `approach -> lower -> close -> lift -> move_to_plate -> place_lower -> release -> release_retreat -> done`；已有 `--grasp-pose current` pose IK 和 carry/place 姿态锁定，但还没有固化的侧抓/包络抓姿态模板。
+2. 已有右手 `grasp-block` pick-place smoke test 状态机，但还不是稳定真实抓取专家。当前覆盖 `approach -> lower -> close -> lift -> move_to_plate -> place_lower -> release -> release_lift -> release_retreat -> done`；已有 `--grasp-pose current` pose IK 和 carry/place 姿态锁定，但还没有固化的侧抓/包络抓姿态模板。
 3. 当前用户已验证右手能抓起蓝色圆柱，但“放入盘子并稳定释放”的成功率还需要继续实机仿真验证。通过前不能用它生成训练数据。
 4. 右臂 reach 已切换到 IsaacLab 官方 `DifferentialIKController`，并加了 PhysX gravity compensation；现在执行链路已明显改善，但仍有约 `5cm` 收敛误差。下一步优先测试 `grasp-block`，判断误差是否足以闭合抓住物块；若不够，升级 pose IK/grasp frame。
 5. HDF5 writer/schema 已接入当前 scripted 右臂流程，但还没有用实际 IsaacSim 运行结果验证 HDF5 是否完整可转换。

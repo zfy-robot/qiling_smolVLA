@@ -116,7 +116,7 @@ fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export HUGGINGFACE_HUB_OFFLINE="${HUGGINGFACE_HUB_OFFLINE:-1}"
-PROJECT_CACHE="${PROJECT_CACHE:-/home/zfy/smolVLA/.cache}"
+PROJECT_CACHE="${PROJECT_CACHE:-/home/zfy/smolVLA/s4_smolvla_isaaclab/.cache}"
 export HF_HOME="${HF_HOME:-$PROJECT_CACHE/huggingface}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"

@@ -1,12 +1,12 @@
-# Local SmolVLA training config for S4 bimanual red/blue plate task.
-# This file is owned by my_isaaclab_project. BenchHub configs are reference only.
+# Local SmolVLA training config for the S4 IsaacLab manipulation task.
+# This file is owned by s4_smolvla_isaaclab. BenchHub configs are reference only.
 
 task: s4_bimanual_red_blue_plate
 robot: S4-Bimanual
 
 dataset: s4_bimanual_red_blue_plate_v0
-dataset_root: /home/zfy/smolVLA/datasets/lerobot_data
-output_dir: /home/zfy/smolVLA/outputs/train/smolvla_s4_bimanual_v0
+dataset_root: /home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data
+output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_s4_bimanual_v0
 
 steps: 20000
 batch_size: 4
@@ -26,7 +26,7 @@ freeze_vision_encoder: true
 train_expert_only: true
 train_state_proj: true
 load_vlm_weights: true
-vlm_model_name: /home/zfy/smolVLA/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+vlm_model_name: /home/zfy/smolVLA/s4_smolvla_isaaclab/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 
 optimizer_lr: 1.0e-5
 optimizer_weight_decay: 0.0001

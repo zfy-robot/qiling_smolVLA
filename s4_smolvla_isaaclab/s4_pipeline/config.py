@@ -73,7 +73,11 @@ def load_project_config(path: Path = DATASET_CONFIG_PATH) -> ProjectConfig:
     state_shape = _required(features_raw["observation.state"], "shape")
     active_state_shape = features_raw.get("observation.active_state", {}).get("shape", [26])
     action_shape = _required(features_raw["action"], "shape")
-    camera_shape = _required(features_raw["observation.images.front"], "shape")
+    camera_keys = [key for key in features_raw if key.startswith("observation.images.")]
+    if not camera_keys:
+        raise KeyError("Missing required config key: observation.images.*")
+    camera_key = camera_keys[0]
+    camera_shape = _required(features_raw[camera_key], "shape")
 
     dataset = DatasetSpec(
         repo_id=str(_required(dataset_raw, "repo_id")),
@@ -93,7 +97,7 @@ def load_project_config(path: Path = DATASET_CONFIG_PATH) -> ProjectConfig:
         state_dim=int(state_shape[0]),
         active_state_dim=int(active_state_shape[0]),
         action_dim=int(action_shape[0]),
-        camera_key="observation.images.front",
+        camera_key=camera_key,
         camera_shape=tuple(int(x) for x in camera_shape),
     )
     training = TrainingSpec(

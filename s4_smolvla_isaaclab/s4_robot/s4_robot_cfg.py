@@ -1,7 +1,7 @@
 """
 S4 38DOF 全尺寸人形机器人配置 (新版 linkerhand_o6 手)
 
-基于 URDF: my_robot/urdf/s4_40dof_merged.urdf
+基于 URDF: assets/my_robot/urdf/s4_40dof_merged.urdf
 
 关节结构:
   下肢 (6 DOF × 2):   hip_roll → hip_yaw → hip_pitch → knee → foot_pitch → foot_roll
@@ -15,8 +15,8 @@ from pathlib import Path
 
 # ----- 路径 -----
 PROJECT_ROOT = Path(__file__).parent.parent
-URDF_PATH = PROJECT_ROOT.parent / "my_robot" / "urdf" / "s4_40dof_merged.urdf"
-MESHES_DIR = PROJECT_ROOT.parent / "my_robot" / "meshes"
+URDF_PATH = PROJECT_ROOT / "assets" / "my_robot" / "urdf" / "s4_40dof_merged.urdf"
+MESHES_DIR = PROJECT_ROOT / "assets" / "my_robot" / "meshes"
 
 # ============================================================
 #  关节分组 & 名称

@@ -22,8 +22,7 @@ import torch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = PROJECT_ROOT.parent
-DEFAULT_HF_HOME = REPO_ROOT / ".cache/huggingface"
+DEFAULT_HF_HOME = PROJECT_ROOT / ".cache/huggingface"
 
 
 def _set_local_hf_cache() -> None:

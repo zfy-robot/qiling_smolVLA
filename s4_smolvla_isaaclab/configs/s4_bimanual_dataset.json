@@ -1,9 +1,9 @@
 {
   "dataset": {
     "repo_id": "local/s4_bimanual_red_blue_plate_v0",
-    "staging_root": "/home/zfy/smolVLA/datasets/staging/s4_bimanual_red_blue_plate_v0",
-    "root": "/home/zfy/smolVLA/datasets/s4_bimanual_red_blue_plate_v0",
-    "lerobot_root": "/home/zfy/smolVLA/datasets/lerobot_data",
+    "staging_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/staging/s4_bimanual_red_blue_plate_v0",
+    "root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/s4_bimanual_red_blue_plate_v0",
+    "lerobot_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data",
     "fps": 20,
     "task": "Use the right hand to put the blue cylinder into the plate."
   },
@@ -38,7 +38,7 @@
     "env_name": "s4_bimanual_plate",
     "policy_type": "smolvla",
     "pretrained_policy": "lerobot/smolvla_base",
-    "output_dir": "/home/zfy/smolVLA/outputs/s4_smolvla_bimanual_v0",
+    "output_dir": "/home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/s4_smolvla_bimanual_v0",
     "target_episodes_first_pass": 20,
     "target_episodes_training_pass": 100
   }

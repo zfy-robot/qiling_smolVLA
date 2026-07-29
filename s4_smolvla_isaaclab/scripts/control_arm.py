@@ -36,6 +36,13 @@ grasp.add_argument("--grasp-z", type=float, default=0.01, help="Lower TCP world/
 grasp.add_argument("--lift-z", type=float, default=0.15, help="Lift TCP world/wrist Z offset from block center.")
 grasp.add_argument("--place-approach-z", type=float, default=0.18, help="TCP Z offset above plate center before placing.")
 grasp.add_argument("--place-z", type=float, default=0.10, help="TCP Z offset from plate center for release.")
+grasp.add_argument("--place-x-offset", type=float, default=0.0, help="World/base X offset from plate center for place/release.")
+grasp.add_argument(
+    "--place-y-offset",
+    type=float,
+    default=-0.05,
+    help="World/base Y offset from plate center for place/release; negative moves to robot right.",
+)
 grasp.add_argument("--tcp-x-offset", type=float, default=0.0, help="Hand TCP offset in wrist frame.")
 grasp.add_argument("--tcp-y-offset", type=float, default=0.0, help="Hand TCP offset in wrist frame.")
 grasp.add_argument("--tcp-z-offset", type=float, default=-0.10, help="Hand TCP offset in wrist frame.")
@@ -50,8 +57,11 @@ grasp.add_argument("--grasp-roll", type=float, default=0.0, help="Local TCP roll
 grasp.add_argument("--grasp-pitch", type=float, default=0.1, help="Local TCP pitch offset in radians, applied to the locked grasp pose.")
 grasp.add_argument("--grasp-yaw", type=float, default=-0.20, help="Local TCP yaw offset in radians, applied to the locked grasp pose.")
 grasp.add_argument("--place-roll", type=float, default=0.40, help="Extra local TCP roll offset in radians for carry-to-place/release phases.")
-grasp.add_argument("--release-retreat-y", type=float, default=-0.20, help="World Y offset from release TCP target after opening the hand.")
-grasp.add_argument("--release-retreat-z", type=float, default=0.15, help="World Z offset from release TCP target after opening the hand.")
+grasp.add_argument("--release-lift-y", type=float, default=-0.05, help="World Y offset during the first lift after opening the hand.")
+grasp.add_argument("--release-lift-z", type=float, default=0.18, help="World Z lift after opening the hand, before the main retreat.")
+grasp.add_argument("--release-retreat-x", type=float, default=-0.12, help="World X offset after the vertical release lift.")
+grasp.add_argument("--release-retreat-y", type=float, default=-0.24, help="World Y offset after the vertical release lift.")
+grasp.add_argument("--release-retreat-z", type=float, default=0.06, help="Extra world Z offset after the vertical release lift.")
 grasp.add_argument("--retreat-steps", type=int, default=120, help="Max steps to move away after release while keeping the hand open.")
 grasp.add_argument("--tolerance", type=float, default=0.05, help="TCP distance threshold for phase transitions.")
 grasp.add_argument("--approach-steps", type=int, default=120, help="Max steps before leaving approach phase.")
@@ -62,9 +72,16 @@ grasp.add_argument(
     help="Steps before warning while waiting for the lower target; closing requires TCP tolerance.",
 )
 grasp.add_argument("--close-steps", type=int, default=70, help="Steps to hold the close command before lifting.")
+grasp.add_argument(
+    "--hand-complete-tolerance",
+    type=float,
+    default=0.015,
+    help="Max 6D right-hand command error before arm motion may continue after close/open.",
+)
 grasp.add_argument("--lift-steps", type=int, default=60, help="Steps to hold the lifted block before moving to the plate.")
 grasp.add_argument("--place-steps", type=int, default=150, help="Max steps before warning while moving to the plate release target.")
 grasp.add_argument("--release-steps", type=int, default=50, help="Steps to hold open hand after placing.")
+grasp.add_argument("--release-lift-steps", type=int, default=70, help="Max steps for the vertical lift after release.")
 
 hand = subparsers.add_parser("hand", help="Set right hand open/close target.")
 hand.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)
@@ -120,6 +137,7 @@ def main() -> None:
             "lift_z": float(args.lift_z),
             "place_approach_z": float(args.place_approach_z),
             "place_z": float(args.place_z),
+            "place_offset": [float(args.place_x_offset), float(args.place_y_offset)],
             "tcp_offset_wrist": [
                 float(args.tcp_x_offset),
                 float(args.tcp_y_offset),
@@ -129,14 +147,22 @@ def main() -> None:
             "grasp_pose": args.grasp_pose,
             "grasp_rpy": [float(args.grasp_roll), float(args.grasp_pitch), float(args.grasp_yaw)],
             "place_rpy": [float(args.place_roll), 0.0, 0.0],
-            "release_retreat_offset": [0.0, float(args.release_retreat_y), float(args.release_retreat_z)],
+            "release_lift_y": float(args.release_lift_y),
+            "release_lift_z": float(args.release_lift_z),
+            "release_retreat_offset": [
+                float(args.release_retreat_x),
+                float(args.release_retreat_y),
+                float(args.release_retreat_z),
+            ],
             "tolerance": float(args.tolerance),
             "approach_steps": int(args.approach_steps),
             "lower_steps": int(args.lower_steps),
             "close_steps": int(args.close_steps),
+            "hand_complete_tolerance": float(args.hand_complete_tolerance),
             "lift_steps": int(args.lift_steps),
             "place_steps": int(args.place_steps),
             "release_steps": int(args.release_steps),
+            "release_lift_steps": int(args.release_lift_steps),
             "retreat_steps": int(args.retreat_steps),
         }
     elif args.command == "hand":

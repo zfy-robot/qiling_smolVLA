@@ -18,11 +18,10 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = PROJECT_ROOT.parent
-DEFAULT_CHECKPOINT_ROOT = REPO_ROOT / "outputs/train/smolvla_s4_bimanual_v0/checkpoints"
-DEFAULT_DATASET_ROOT = REPO_ROOT / "datasets/lerobot_data/s4_bimanual_red_blue_plate_v0"
-DEFAULT_OUTPUT = REPO_ROOT / "outputs/eval/offline_policy_preview.csv"
-DEFAULT_HF_HOME = REPO_ROOT / ".cache/huggingface"
+DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs/train/smolvla_s4_bimanual_v0/checkpoints"
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets/lerobot_data/s4_bimanual_red_blue_plate_v0"
+DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/eval/offline_policy_preview.csv"
+DEFAULT_HF_HOME = PROJECT_ROOT / ".cache/huggingface"
 ACTION_GROUPS = {
     "left_arm": slice(0, 7),
     "left_hand": slice(7, 13),

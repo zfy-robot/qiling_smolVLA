@@ -27,9 +27,10 @@ BLOCK_CYLINDER_RADIUS = 0.035
 BLOCK_CYLINDER_HEIGHT = 0.12
 BLOCK_MASS = 0.08
 TASK_PLATFORM_HEIGHT = 0.05
-BLOCK_PLATFORM_SIZE = (0.11, 0.11, TASK_PLATFORM_HEIGHT)
-PLATE_PLATFORM_SIZE = (0.30, 0.30, TASK_PLATFORM_HEIGHT)
+TASK_PLATFORM_SIZE = (0.56, 0.72, TASK_PLATFORM_HEIGHT)
 TABLE_YAW_90_QUAT = (0.7071068, 0.0, 0.0, 0.7071068)
+TASK_OBJECT_KEYS = ("task_platform", "red", "blue", "plate")
+TABLE_CLUTTER_RELATIVE_PRIMS = ("container_h20",)
 
 
 @dataclass(frozen=True)
@@ -50,21 +51,9 @@ class TaskLayout:
     def task_surface_z(self, table_top_z: float) -> float:
         return table_top_z + TASK_PLATFORM_HEIGHT
 
-    def red_platform_pos(self, table_top_z: float) -> np.ndarray:
+    def task_platform_pos(self, table_top_z: float) -> np.ndarray:
         return np.array(
-            [self.block_x, self.table_center_y + self.block_y_offset, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
-            dtype=np.float32,
-        )
-
-    def blue_platform_pos(self, table_top_z: float) -> np.ndarray:
-        return np.array(
-            [self.block_x, self.table_center_y - self.block_y_offset, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
-            dtype=np.float32,
-        )
-
-    def plate_platform_pos(self, table_top_z: float) -> np.ndarray:
-        return np.array(
-            [self.plate_x, self.table_center_y, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
+            [self.block_x, self.table_center_y, table_top_z + TASK_PLATFORM_HEIGHT * 0.5],
             dtype=np.float32,
         )
 
@@ -94,9 +83,10 @@ class SceneBuildCfg:
     joint_effort_limit: float
     robot_base_z: float = 1.08
     scene_usd: Path = DEFAULT_SCENE_USD
-    table_usd: Path = DEFAULT_TABLE_USD
+    table_usd: Path | None = DEFAULT_TABLE_USD
     table_visual_z: float = 0.0
     table_scale: float = 1.0
+    clean_table_clutter: bool = True
     layout: TaskLayout = TaskLayout()
     camera_eye: tuple[float, float, float] = (0.18, -0.62, 1.42)
     camera_target: tuple[float, float, float] = (0.52, -0.12, 0.98)
@@ -170,11 +160,14 @@ def build_robot(
 def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
     if not cfg.scene_usd.is_file():
         raise FileNotFoundError(f"Scene USD not found: {cfg.scene_usd}")
-    if not cfg.table_usd.is_file():
-        raise FileNotFoundError(f"Table USD not found: {cfg.table_usd}")
 
     scene_cfg = sim_utils.UsdFileCfg(usd_path=str(cfg.scene_usd))
     scene_cfg.func("/World/BackgroundScene", scene_cfg)
+
+    if cfg.table_usd is None:
+        return
+    if not cfg.table_usd.is_file():
+        raise FileNotFoundError(f"Table USD not found: {cfg.table_usd}")
 
     table_cfg = sim_utils.UsdFileCfg(
         usd_path=str(cfg.table_usd),
@@ -187,6 +180,38 @@ def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
         translation=(cfg.layout.table_center_x, cfg.layout.table_center_y, cfg.table_visual_z),
         orientation=TABLE_YAW_90_QUAT,
     )
+    if cfg.clean_table_clutter:
+        remove_table_clutter("/World/TaskTableVisual")
+
+
+def remove_table_clutter(table_root_path: str) -> None:
+    """Deactivate known top-level PackingTable clutter while keeping the table body visible."""
+    try:
+        import omni.usd
+    except Exception as exc:
+        print(f"[WARN] could not import omni.usd to remove table clutter: {exc}")
+        return
+
+    stage = omni.usd.get_context().get_stage()
+    table_root = stage.GetPrimAtPath(table_root_path)
+    if not table_root.IsValid():
+        print(f"[WARN] table root not found for clutter cleanup: {table_root_path}")
+        return
+
+    removed: list[str] = []
+    for rel_path in TABLE_CLUTTER_RELATIVE_PRIMS:
+        path = f"{table_root_path}/{rel_path}"
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            print(f"[WARN] table clutter prim not found: {path}")
+            continue
+        try:
+            prim.SetActive(False)
+            removed.append(path)
+        except Exception as exc:
+            print(f"[WARN] could not deactivate table clutter prim {path}: {exc}")
+    if removed:
+        print(f"[INFO] Removed PackingTable clutter prims: {', '.join(removed)}")
 
 
 def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
@@ -216,20 +241,10 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
             ),
         )
 
-    red_platform_cfg = make_platform_cfg(
-        "RedPlatform",
-        cfg.layout.red_platform_pos(cfg.table_top_z),
-        BLOCK_PLATFORM_SIZE,
-    )
-    blue_platform_cfg = make_platform_cfg(
-        "BluePlatform",
-        cfg.layout.blue_platform_pos(cfg.table_top_z),
-        BLOCK_PLATFORM_SIZE,
-    )
-    plate_platform_cfg = make_platform_cfg(
-        "PlatePlatform",
-        cfg.layout.plate_platform_pos(cfg.table_top_z),
-        PLATE_PLATFORM_SIZE,
+    task_platform_cfg = make_platform_cfg(
+        "TaskPlatform",
+        cfg.layout.task_platform_pos(cfg.table_top_z),
+        TASK_PLATFORM_SIZE,
     )
     red_cfg = RigidObjectCfg(
         prim_path="/World/RecordTask/RedBlock",
@@ -274,9 +289,7 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
         ),
     )
     return {
-        "red_platform": RigidObject(cfg=red_platform_cfg),
-        "blue_platform": RigidObject(cfg=blue_platform_cfg),
-        "plate_platform": RigidObject(cfg=plate_platform_cfg),
+        "task_platform": RigidObject(cfg=task_platform_cfg),
         "red": RigidObject(cfg=red_cfg),
         "blue": RigidObject(cfg=blue_cfg),
         "plate": RigidObject(cfg=plate_cfg),
@@ -309,9 +322,7 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
             cfg.joint_effort_limit,
             cfg.robot_base_z,
         ),
-        "red_platform": task_objects["red_platform"],
-        "blue_platform": task_objects["blue_platform"],
-        "plate_platform": task_objects["plate_platform"],
+        "task_platform": task_objects["task_platform"],
         "red": task_objects["red"],
         "blue": task_objects["blue"],
         "plate": task_objects["plate"],
@@ -336,9 +347,7 @@ def reset_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim: SimulationCon
     robot.write_joint_state_to_sim(init_pos, torch.zeros_like(init_pos))
     robot.reset()
 
-    write_object_pose(scene["red_platform"], cfg.layout.red_platform_pos(cfg.table_top_z), sim.device)
-    write_object_pose(scene["blue_platform"], cfg.layout.blue_platform_pos(cfg.table_top_z), sim.device)
-    write_object_pose(scene["plate_platform"], cfg.layout.plate_platform_pos(cfg.table_top_z), sim.device)
+    write_object_pose(scene["task_platform"], cfg.layout.task_platform_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["red"], cfg.layout.red_block_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["blue"], cfg.layout.blue_block_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["plate"], cfg.layout.plate_pos(cfg.table_top_z), sim.device)
@@ -359,19 +368,13 @@ def format_layout(cfg: SceneBuildCfg) -> str:
     red = cfg.layout.red_block_pos(cfg.table_top_z)
     blue = cfg.layout.blue_block_pos(cfg.table_top_z)
     plate = cfg.layout.plate_pos(cfg.table_top_z)
-    red_platform = cfg.layout.red_platform_pos(cfg.table_top_z)
-    blue_platform = cfg.layout.blue_platform_pos(cfg.table_top_z)
-    plate_platform = cfg.layout.plate_platform_pos(cfg.table_top_z)
+    task_platform = cfg.layout.task_platform_pos(cfg.table_top_z)
     return (
         "Task layout:\n"
         f"  robot_base_z={cfg.robot_base_z:.3f}\n"
         f"  task_surface_z={cfg.layout.task_surface_z(cfg.table_top_z):.3f}\n"
-        f"  red_platform=({red_platform[0]:.3f}, {red_platform[1]:.3f}, {red_platform[2]:.3f}) "
-        f"size=({BLOCK_PLATFORM_SIZE[0]:.3f}, {BLOCK_PLATFORM_SIZE[1]:.3f}, {BLOCK_PLATFORM_SIZE[2]:.3f})\n"
-        f"  blue_platform=({blue_platform[0]:.3f}, {blue_platform[1]:.3f}, {blue_platform[2]:.3f}) "
-        f"size=({BLOCK_PLATFORM_SIZE[0]:.3f}, {BLOCK_PLATFORM_SIZE[1]:.3f}, {BLOCK_PLATFORM_SIZE[2]:.3f})\n"
-        f"  plate_platform=({plate_platform[0]:.3f}, {plate_platform[1]:.3f}, {plate_platform[2]:.3f}) "
-        f"size=({PLATE_PLATFORM_SIZE[0]:.3f}, {PLATE_PLATFORM_SIZE[1]:.3f}, {PLATE_PLATFORM_SIZE[2]:.3f})\n"
+        f"  task_platform=({task_platform[0]:.3f}, {task_platform[1]:.3f}, {task_platform[2]:.3f}) "
+        f"size=({TASK_PLATFORM_SIZE[0]:.3f}, {TASK_PLATFORM_SIZE[1]:.3f}, {TASK_PLATFORM_SIZE[2]:.3f})\n"
         f"  table_center=({cfg.layout.table_center_x:.3f}, {cfg.layout.table_center_y:.3f})\n"
         f"  red_block=({red[0]:.3f}, {red[1]:.3f}, {red[2]:.3f})\n"
         f"  blue_block=({blue[0]:.3f}, {blue[1]:.3f}, {blue[2]:.3f})\n"

@@ -11,9 +11,10 @@ CONFIG_DIR = PROJECT_DIR / "configs"
 DATASET_CONFIG_PATH = CONFIG_DIR / "s4_bimanual_dataset.json"
 SMOLVLA_CONFIG_PATH = CONFIG_DIR / "smolvla_s4_bimanual.yaml"
 
-DATASETS_DIR = WORKSPACE_DIR / "datasets"
-OUTPUTS_DIR = WORKSPACE_DIR / "outputs"
+ASSETS_DIR = PROJECT_DIR / "assets"
+DATASETS_DIR = PROJECT_DIR / "datasets"
+MODELS_DIR = PROJECT_DIR / "models"
+OUTPUTS_DIR = PROJECT_DIR / "outputs"
 
 REFERENCE_BENCHHUB_DIR = WORKSPACE_DIR / "qi-studio-benchhub"
 REFERENCE_LEROBOT_DIR = WORKSPACE_DIR / "lerobot"
-

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+PROJECT_DIR_FOR_DEFAULTS = Path(__file__).resolve().parents[1]
 
 from isaaclab.app import AppLauncher
 
@@ -23,8 +24,8 @@ parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--steps", type=int, default=900)
 parser.add_argument("--policy-every-n-steps", type=int, default=0, help="Policy query period in simulation steps. 0 means infer from the dataset/HDF5 used for training.")
 parser.add_argument("--video-every-n-steps", type=int, default=2)
-parser.add_argument("--output-video", type=Path, default=Path("/home/zfy/smolVLA/outputs/eval/smolvla_rollout.mp4"))
-parser.add_argument("--dataset-root", type=Path, default=Path("/home/zfy/smolVLA/datasets/lerobot_data/s4_bimanual_red_blue_plate_v0"))
+parser.add_argument("--output-video", type=Path, default=PROJECT_DIR_FOR_DEFAULTS / "outputs/eval/smolvla_rollout.avi")
+parser.add_argument("--dataset-root", type=Path, default=PROJECT_DIR_FOR_DEFAULTS / "datasets/lerobot_data/s4_bimanual_red_blue_plate_v0")
 parser.add_argument("--task-description", default=None)
 parser.add_argument("--policy-python", default="/home/zfy/miniconda3/envs/smolvla/bin/python")
 parser.add_argument("--policy-device", default="cuda", choices=["cuda", "cpu"])
@@ -68,6 +69,7 @@ from s4_robot.simulation import (
     DEFAULT_SCENE_USD,
     DEFAULT_TABLE_USD,
     SceneBuildCfg,
+    TASK_OBJECT_KEYS,
     TaskLayout,
     build_scene,
     create_simulation_context,
@@ -77,8 +79,8 @@ from s4_robot.simulation import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = PROJECT_ROOT / "my_isaaclab_project" / "configs" / "s4_bimanual_dataset.json"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+CONFIG_PATH = PROJECT_DIR / "configs" / "s4_bimanual_dataset.json"
 SERVER_PATH = Path(__file__).resolve().parent / "09_smolvla_policy_server.py"
 GROUP_SLICES = {
     "left_arm": ACTION_SLICES.left_arm,
@@ -87,7 +89,7 @@ GROUP_SLICES = {
     "right_hand": ACTION_SLICES.right_hand,
 }
 LEGACY_RIGHT_BLUE_TASK = "Use the left hand to put the red block into the tray and the right hand to put the blue block into the tray."
-DEFAULT_STAGING_HDF5 = PROJECT_ROOT / "datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5"
+DEFAULT_STAGING_HDF5 = PROJECT_DIR / "datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5"
 
 
 def load_table_top_z() -> float:
@@ -250,7 +252,7 @@ def settle_scene(scene: dict[str, object], camera, full_target: np.ndarray, sim,
         robot.write_data_to_sim()
         sim.step(render=not args_cli.headless)
         robot.update(dt=sim.get_physics_dt())
-        for key in ["red_platform", "blue_platform", "plate_platform", "red", "blue", "plate"]:
+        for key in TASK_OBJECT_KEYS:
             scene[key].update(dt=sim.get_physics_dt())
         camera.update(dt=sim.get_physics_dt())
 
@@ -259,8 +261,7 @@ def make_policy_server_env() -> dict[str, str]:
     env = os.environ.copy()
     policy_python = Path(args_cli.policy_python).expanduser().resolve()
     policy_prefix = policy_python.parent.parent
-    repo_root = PROJECT_ROOT
-    hf_home = repo_root / ".cache" / "huggingface"
+    hf_home = PROJECT_DIR / ".cache" / "huggingface"
 
     env["CONDA_PREFIX"] = str(policy_prefix)
     env["PATH"] = f"{policy_prefix / 'bin'}:/usr/bin:/bin"
@@ -376,7 +377,9 @@ class VideoWriter:
     def __init__(self, path: Path, fps: int, frame_shape: tuple[int, int, int]):
         path.parent.mkdir(parents=True, exist_ok=True)
         h, w = frame_shape[:2]
-        self.writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
+        suffix = path.suffix.lower()
+        fourcc_name = "MJPG" if suffix == ".avi" else "mp4v"
+        self.writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*fourcc_name), float(fps), (w, h))
         if not self.writer.isOpened():
             raise RuntimeError(f"Failed to open video writer: {path}")
         self.path = path
@@ -522,7 +525,7 @@ def main() -> None:
             robot.write_data_to_sim()
             sim.step(render=not args_cli.headless)
             robot.update(dt=sim_dt)
-            for key in ["red_platform", "blue_platform", "plate_platform", "red", "blue", "plate"]:
+            for key in TASK_OBJECT_KEYS:
                 scene[key].update(dt=sim_dt)
             camera.update(dt=sim_dt)
 
