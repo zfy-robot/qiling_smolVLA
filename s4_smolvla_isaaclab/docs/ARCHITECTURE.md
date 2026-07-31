@@ -98,11 +98,39 @@ The online rollout uses a subprocess policy server so IsaacLab Python 3.11 and S
 
 Start with:
 
-- `configs/s4_bimanual_dataset.json`
-- `configs/smolvla_s4_bimanual.yaml`
-- `scripts/04_record_bimanual_hdf5.py`
-- `s4_robot/simulation.py`
 - `tasks/`
+- `configs/tasks/<task_id>.dataset.json`
+- `configs/tasks/<task_id>.smolvla.yaml`
+- task-specific scene/controller modules
+
+Then run:
+
+```bash
+bash run.sh activate-task <task_id>
+bash run.sh inspect-config
+```
+
+The stable active config paths remain `configs/s4_bimanual_dataset.json` and
+`configs/smolvla_s4_bimanual.yaml` so conversion/training commands do not need
+to change for every task.
+
+`record_dataset.py` and `eval_policy.py` must load the active project config
+for scene/table paths. Do not hard-code `DEFAULT_SCENE_USD` or
+`DEFAULT_TABLE_USD` in task-agnostic entrypoints; otherwise task activation
+will appear to work while IsaacLab still runs the previous task scene.
+
+Prefer semantic script names:
+
+```text
+scripts/record_dataset.py
+scripts/convert_lerobot.py
+scripts/eval_policy.py
+scripts/preview_policy.py
+scripts/record_parallel.py
+scripts/pipeline_collect_convert_train.sh
+```
+
+The older numbered scripts are compatibility entrypoints only.
 
 Avoid editing:
 

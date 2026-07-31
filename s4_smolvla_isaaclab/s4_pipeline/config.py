@@ -12,6 +12,7 @@ from .paths import DATASET_CONFIG_PATH
 
 @dataclass(frozen=True)
 class DatasetSpec:
+    task_id: str
     repo_id: str
     staging_root: Path
     root: Path
@@ -80,6 +81,7 @@ def load_project_config(path: Path = DATASET_CONFIG_PATH) -> ProjectConfig:
     camera_shape = _required(features_raw[camera_key], "shape")
 
     dataset = DatasetSpec(
+        task_id=str(raw.get("task_id", dataset_raw.get("task_id", "right_blue_cylinder_plate"))),
         repo_id=str(_required(dataset_raw, "repo_id")),
         staging_root=Path(_required(dataset_raw, "staging_root")),
         root=Path(_required(dataset_raw, "root")),

@@ -4,14 +4,26 @@ This is the repeatable loop for a task.
 
 ## 1. Define the Task
 
-Edit:
+Start from the task registry:
+
+```bash
+bash run.sh list-tasks
+```
+
+Activate the task you want to run:
+
+```bash
+bash run.sh activate-task right_blue_cylinder_plate
+```
+
+This copies the registered task configs from `configs/tasks/` into the stable active paths:
 
 ```text
 configs/s4_bimanual_dataset.json
 configs/smolvla_s4_bimanual.yaml
 ```
 
-Use a new dataset repo id and output dir when starting a genuinely different task.
+For a genuinely different task, create a new `task_id`, dataset repo id, staging path, LeRobot dataset path, and training output dir. The next planned task is registered as `drawer_insert_close`; its scene/controller implementation is still a placeholder.
 
 ## 2. Verify Simulation
 
@@ -25,6 +37,8 @@ Check:
 
 - Robot starts stable.
 - Camera sees the task.
+- Isaac asset root is local. `run.sh` overrides IsaacLab Kit settings to `/home/zfy/isaacsim_assets/Assets/Isaac/5.1`; the default scene/table files are under that root's `Isaac/...` subdirectory.
+- IsaacSim asset-browser folders are also overridden to local `file:/home/zfy/isaacsim_assets/Assets/Isaac/5.1/...` folders when launched through this project. This covers `isaacsim.asset.browser`, `isaacsim.gui.content_browser`, and `omni.kit.browser.asset`. Defaults are narrowed to `Isaac/Environments`, `Isaac/Props`, and `Isaac/Robots` instead of scanning the whole `Isaac` or `Isaac/IsaacLab` tree, because local thumbnail validation on those large trees can still take a long time. If the GUI still logs `https://omniverse-content-production...` thumbnail warnings, close all existing IsaacSim windows and restart; an already-open window keeps its old browser model/cache.
 - Default recorded camera is `/World/DebugFrontCamera` in look-at mode: `eye=(0.18, -0.62, 1.42)` -> `target=(0.52, -0.12, 0.98)`, `680x480`.
 - Object/platform heights are correct.
 - The visual packing table is loaded, but table clutter/crates should not appear. The cleanup keeps the table body and deactivates known clutter prims such as `container_h20`, crates, and corrugated boxes.
@@ -125,13 +139,13 @@ Scene load and every reset settle for `2.0s` of simulated time before the script
 bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render --reset-settle-s 2.0
 ```
 
-Default collection is scripted. The blue cylinder starts with per-episode x/y randomization:
+Default collection is scripted. The current training target is still the blue cylinder. The red task slot is a fixed pill bottle loaded directly from `assets/scenes/Pill_Bottle.usdz`, while the blue cylinder starts with per-episode x/y randomization:
 
 ```text
 uniform(-0.03m, +0.03m)
 ```
 
-Only the blue cylinder is randomized. The fixed task platform and plate stay fixed. The scripted grasp reads the actual randomized cylinder pose before planning approach/lower/grasp/lift, so the hand target follows the true object position. For future VR/teleop data, keep the same HDF5 field names so conversion and training stay unchanged.
+Only the blue cylinder is randomized. The red bottle, fixed task platform, and plate stay fixed. The scripted grasp reads the actual randomized cylinder pose before planning approach/lower/grasp/lift, so the hand target follows the true object position. For future VR/teleop data, keep the same HDF5 field names so conversion and training stay unchanged. The red bottle still writes to the legacy `red_block` HDF5 key for script compatibility.
 
 The scripted state machine waits for the smoothed 6D right-hand command to finish closing before lift, and waits for the hand command to finish opening before ending.
 

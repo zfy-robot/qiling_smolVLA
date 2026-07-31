@@ -15,13 +15,15 @@ This project is the only directory that should be edited for the local S4 IsaacL
 s4_smolvla_isaaclab/
 ├── configs/
 │   ├── s4_bimanual_dataset.json      # active task/dataset/feature config
-│   └── smolvla_s4_bimanual.yaml      # local SmolVLA training config
+│   ├── smolvla_s4_bimanual.yaml      # active SmolVLA training config
+│   └── tasks/                        # reusable per-task config templates
 ├── data/
 │   ├── hdf5_schema.py                # canonical HDF5 field names
 │   ├── dataset_writer.py             # HDF5 writer helpers
 │   └── lerobot_conversion.py         # HDF5 -> LeRobotDataset
 ├── docs/
 │   ├── ARCHITECTURE.md
+│   ├── TASKS.md
 │   └── WORKFLOW.md
 ├── s4_pipeline/
 │   ├── config.py                     # typed config loader
@@ -32,16 +34,157 @@ s4_smolvla_isaaclab/
 │   ├── control_mapping.py            # active action -> robot joint targets
 │   └── arm_control.py                # scripted arm/hand helpers
 ├── scripts/
-│   ├── 03_record_physics_dataset.py  # IsaacLab scene/debug/scripted control
-│   ├── 04_record_bimanual_hdf5.py    # scripted HDF5 data collection
-│   ├── 05_convert_hdf5_to_lerobot.py # LeRobotDataset conversion
-│   ├── 06_eval_smolvla_in_isaaclab.py# online SmolVLA rollout
-│   ├── 07_preview_smolvla_policy.py  # offline checkpoint preview
-│   ├── 08_visualize_smolvla_policy.py# offline policy/expert video
-│   ├── 09_smolvla_policy_server.py   # smolvla env policy server
-│   └── train_smolvla_local.sh        # lerobot-train wrapper
+│   ├── record_dataset.py             # IsaacLab scene/debug/scripted recording
+│   ├── convert_lerobot.py            # LeRobotDataset conversion
+│   ├── eval_policy.py                # online SmolVLA rollout
+│   ├── preview_policy.py             # offline checkpoint preview
+│   ├── visualize_policy.py           # offline policy/expert video
+│   ├── record_parallel.py            # multi-process HDF5 recording
+│   ├── pipeline_collect_convert_train.sh
+│   ├── train_smolvla_local.sh        # lerobot-train wrapper
+│   └── 0X_*.py / 1X_*.py             # compatibility wrappers/legacy entries
+├── tasks/
+│   ├── base.py                       # task metadata contract
+│   ├── right_blue_cylinder_plate.py  # current validated task
+│   └── drawer_insert_close.py        # next task placeholder
 └── run.sh                            # stable command entrypoint
 ```
+
+## Reusable Task Structure
+
+Task-specific scene and control code should live behind the task registry in `tasks/`, while data conversion, SmolVLA training, and policy eval stay reusable. Inspect registered tasks:
+
+```bash
+bash run.sh list-tasks
+```
+
+Switch active configs:
+
+```bash
+bash run.sh activate-task right_blue_cylinder_plate
+bash run.sh activate-task drawer_insert_close
+```
+
+The active config files remain `configs/s4_bimanual_dataset.json` and `configs/smolvla_s4_bimanual.yaml`, so the normal collect -> convert -> train commands do not change when the task changes. See [TASKS.md](docs/TASKS.md) for the new-task checklist.
+
+After activation, `sim`, `record-hdf5`, and `eval-smolvla` all read the active task's `scene.scene_usd`, `scene.table_usd`, and `scene.table_top_z`. Conversion and training remain task-agnostic unless a task changes the state/action feature contract.
+
+The drawer task currently has a scene preview but not a scripted data-collection controller:
+
+```bash
+bash run.sh activate-task drawer_insert_close
+bash run.sh sim --print-layout
+```
+
+This currently loads the base warehouse, adds two aligned Sektion cabinets and only `005_tomato_soup_can.usd`, removes stale old-task prims if present, and adds the S4 robot plus DebugFrontCamera. It intentionally does not load the old PackingTable or the other three YCB objects. Current placement is explicit: drawers at `(0.80, 0.30, 0.70)` and `(0.80, -0.30, 0.70)`, tomato can root `(0.57, 0.00, 1.16)`.
+
+GUI preview mode renders without advancing physics. Use it for scene placement checks; drawer open/close should be implemented through the task controller instead of manually dragging articulation joints while the sim is running.
+After a live arm-control command is received through `/tmp/s4_arm_control.json`, the preview starts stepping physics so joint targets and Pinocchio DLS TCP targets move the robot.
+Drawer preview now uses the same PhysX joint-space gravity compensation path as the scripted cylinder task. The sim terminal prints `[SCENE] drawer preview gravity_compensation=...` on startup and `[ARMDBG] ... gravity_comp=max/mean` while a command is active. If the arm still feels soft, tune `--joint-stiffness`, `--joint-damping`, `--joint-effort-limit`, or `--gravity-comp-scale`.
+
+To test drawer motion in preview, drive the drawer joint programmatically:
+
+```bash
+bash run.sh sim --print-layout --drawer-open --drawer-joint-filter drawer_top_joint --drawer-target 0.35
+```
+
+If the drawer moves in the wrong direction, rerun with `--drawer-target -0.35`.
+This preview automatically uses CPU PhysX when driving the drawer, because
+runtime articulation drive targets are rejected by PhysX direct GPU API.
+
+To tune arm poses for pulling the drawer handle, print both hand TCP poses and
+the drawer handle frame:
+
+```bash
+bash run.sh sim \
+  --print-layout \
+  --show-tcp-frames \
+  --show-drawer-handle-frame \
+  --print-tcp-pose \
+  --tcp-print-period 0.5
+```
+
+The log includes both world-frame and robot `base_link` TCP position,
+quaternion `wxyz`, and XYZ Euler angles in degrees. The hand TCP estimates are
+`left_wrist_yaw_link` / `right_wrist_yaw_link` plus the current wrist-frame
+offset `(0, 0, -0.10)m`.
+
+The debug frames are shown at `/World/Visuals/LeftHandTCP`,
+`/World/Visuals/RightHandTCP`, and `/World/Visuals/DrawerHandleTop`. The handle
+frame defaults to `/World/DrawerTask/DrawerCabinet/drawer_handle_frame`;
+override it with `--drawer-handle-frame-prim <prim_path>` if the USD hierarchy
+changes.
+
+For live joint tuning in the drawer preview, add `--keyboard-jog` and use
+`[`/`]` to select a 26D arm/hand entry, `u`/`j` to increase/decrease it, `p` to
+print it, and `r` to reset. For a reproducible right-arm target while the sim is
+running:
+
+```bash
+bash run.sh control test-right-arm \
+  --shoulder-pitch -0.40 \
+  --shoulder-roll -0.15 \
+  --shoulder-yaw 0.00 \
+  --elbow -0.90 \
+  --wrist-roll 0.10 \
+  --wrist-pitch -0.20 \
+  --wrist-yaw 0.05
+```
+
+Left arm and bimanual joint targets are also supported:
+
+```bash
+bash run.sh control test-left-arm --shoulder-pitch -0.40 --shoulder-roll 0.15 --elbow -0.90
+bash run.sh control test-bimanual-arm \
+  --left -0.40 0.15 0.00 -0.90 0.00 -0.20 0.05 \
+  --right -0.40 -0.15 0.00 -0.90 0.00 -0.20 0.05
+```
+
+For TCP pose control, keep the drawer preview running and send targets in the
+robot `base_link` frame. The current solver is a Pinocchio damped least-squares
+fallback, because Pink/IsaacLab Pink hits Pinocchio C++ vector binding errors
+inside this IsaacSim process. The command target is the TCP; internally the code
+converts it to the wrist frame using the current `(0, 0, -0.10)m` TCP offset and
+solves continuously while the command is active. It also adds a null-space home
+posture bias, `dq = dq_task + (I - J#J) * k * (q_home - q)`, so redundant arm
+motion tends to keep the elbows out and away from the body without directly
+overwriting the TCP task. The default is now `--tcp-posture-gain 0.30`, matching
+the current reach-controller posture default. Lower it if TCP tracking gets
+worse.
+
+```bash
+bash run.sh control tcp-pose \
+  --right-pos 0.45 -0.25 0.25 \
+  --right-rpy 0.0 0.0 0.0
+
+bash run.sh control tcp-pose \
+  --left-pos 0.45 0.25 0.25 --left-rpy 0.0 0.0 0.0 \
+  --right-pos 0.45 -0.25 0.25 --right-rpy 0.0 0.0 0.0
+```
+
+Recommended drawer TCP debug startup. These are the current defaults for the
+posture bias, DLS damping and max joint delta, so the gain arguments are shown
+only to make the active values explicit:
+
+```bash
+bash run.sh sim \
+  --print-layout \
+  --show-tcp-frames \
+  --show-drawer-handle-frame \
+  --print-tcp-pose \
+  --tcp-posture-gain 0.30 \
+  --tcp-ik-damping 0.08 \
+  --tcp-max-joint-delta 0.025
+```
+
+Equivalent shorter command using defaults:
+
+```bash
+bash run.sh sim --print-layout --show-tcp-frames --show-drawer-handle-frame --print-tcp-pose
+```
+
+If the posture bias fights the TCP target too much, relaunch with
+`--tcp-posture-gain 0.10` or `--tcp-posture-gain 0.05`.
 
 ## Environments
 
@@ -79,7 +222,20 @@ cd /home/zfy/smolVLA/s4_smolvla_isaaclab
 bash run.sh sim --print-layout
 ```
 
-Default scene construction loads the warehouse background, the visual packing table, robot, one fixed large task platform, the red/blue cylinders, the plate, and the chest camera. The table body is kept, but the known clutter prim `/World/TaskTableVisual/container_h20` from the `PackingTable` asset is deactivated after loading.
+`run.sh sim` now passes `--continuous` by default, so the IsaacSim window should stay open for visual inspection.
+
+The local Isaac asset root is expected at `/home/zfy/isaacsim_assets/Assets/Isaac/5.1`. `run.sh` passes this path to IsaacLab through Kit settings for `persistent.isaac.asset_root.default/cloud/nvidia`, because the stock IsaacLab app files still default those settings to NVIDIA S3. It also overrides the IsaacSim asset browsers (`isaacsim.asset.browser`, `isaacsim.gui.content_browser`, and `omni.kit.browser.asset`) to local `file:/...` paths. To keep browsing responsive, the default Isaac folders are intentionally narrowed to `Isaac/Environments`, `Isaac/Props`, and `Isaac/Robots`; the huge `Isaac/IsaacLab` tree is not scanned by default. The scene and table paths below intentionally include the extra `/Isaac` subdirectory under that root:
+
+```text
+/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd
+/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Props/PackingTable/packing_table.usd
+```
+
+If IsaacSim is opened manually outside this project, stale asset-browser caches or already-open windows can still show cloud URLs. Close all IsaacSim windows after changing these settings, then reopen. For selecting assets locally, prefer the Content Browser or file picker pointed at `/home/zfy/isaacsim_assets/Assets/Isaac/5.1`; cloud thumbnail warnings are not part of the project scene-loading path.
+
+Default scene construction loads the warehouse background, the visual packing table, robot, one fixed large task platform, the red pill bottle, the blue cylinder, the plate, and the chest camera. The table body is kept, but the known clutter prim `/World/TaskTableVisual/container_h20` from the `PackingTable` asset is deactivated after loading.
+
+The red task slot uses `assets/scenes/Pill_Bottle.usdz` directly. Its prim path and HDF5 key intentionally remain `/World/RecordTask/RedBlock` and `states/rigid_object/red_block/root_pose` for compatibility with the existing scripts. The asset is Y-up, so it is rotated into Isaac's Z-up frame and uniformly scaled to about the old red cylinder height. In this Isaac reference path the USDZ unit metadata is not relied on; the scale is applied against the raw authored bbox, currently `0.001103`, giving an approximate bottle size of `0.132 x 0.120 x 0.074m`. Its root and mesh collision properties use the same mass, rigid-body solver settings, collision offsets, and friction material as the blue cylinder.
 
 Default camera pose:
 

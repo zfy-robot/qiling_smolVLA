@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -92,6 +93,34 @@ test.add_argument("--wrist-roll", type=float, default=0.0)
 test.add_argument("--wrist-pitch", type=float, default=0.0)
 test.add_argument("--wrist-yaw", type=float, default=0.0)
 
+test_left = subparsers.add_parser("test-left-arm", help="Send a direct left-arm joint target for actuator testing.")
+test_left.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)
+test_left.add_argument("--shoulder-pitch", type=float, default=0.2)
+test_left.add_argument("--shoulder-roll", type=float, default=0.35)
+test_left.add_argument("--shoulder-yaw", type=float, default=0.0)
+test_left.add_argument("--elbow", type=float, default=-1.2)
+test_left.add_argument("--wrist-roll", type=float, default=0.0)
+test_left.add_argument("--wrist-pitch", type=float, default=0.0)
+test_left.add_argument("--wrist-yaw", type=float, default=0.0)
+
+bimanual = subparsers.add_parser("test-bimanual-arm", help="Send direct left/right arm joint targets.")
+bimanual.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)
+bimanual.add_argument("--left", type=float, nargs=7, metavar=("SP", "SR", "SY", "E", "WR", "WP", "WY"))
+bimanual.add_argument("--right", type=float, nargs=7, metavar=("SP", "SR", "SY", "E", "WR", "WP", "WY"))
+
+tcp_pose = subparsers.add_parser(
+    "tcp-pose",
+    help="Send one or two wrist/TCP pose targets in robot base_link frame, solved by Pink IK.",
+)
+tcp_pose.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)
+tcp_pose.add_argument("--frame", choices=["base_link"], default="base_link")
+tcp_pose.add_argument("--left-pos", type=float, nargs=3, metavar=("X", "Y", "Z"))
+tcp_pose.add_argument("--left-rpy", type=float, nargs=3, metavar=("R", "P", "Y"))
+tcp_pose.add_argument("--left-quat", type=float, nargs=4, metavar=("W", "X", "Y", "Z"))
+tcp_pose.add_argument("--right-pos", type=float, nargs=3, metavar=("X", "Y", "Z"))
+tcp_pose.add_argument("--right-rpy", type=float, nargs=3, metavar=("R", "P", "Y"))
+tcp_pose.add_argument("--right-quat", type=float, nargs=4, metavar=("W", "X", "Y", "Z"))
+
 stop = subparsers.add_parser("stop", help="Stop automatic arm control.")
 stop.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)
 
@@ -105,6 +134,44 @@ diagnose.add_argument("--hold-steps", type=int, default=60, help="Number of simu
 diagnose.add_argument("--drive-steps", type=int, default=30, help="Simulation steps for each positive joint-target response test.")
 
 args = parser.parse_args()
+
+
+def quat_from_rpy(roll: float, pitch: float, yaw: float) -> list[float]:
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    return [
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ]
+
+
+def arm_joint_payload(args_obj) -> list[float]:
+    return [
+        float(args_obj.shoulder_pitch),
+        float(args_obj.shoulder_roll),
+        float(args_obj.shoulder_yaw),
+        float(args_obj.elbow),
+        float(args_obj.wrist_roll),
+        float(args_obj.wrist_pitch),
+        float(args_obj.wrist_yaw),
+    ]
+
+
+def tcp_side_payload(pos, rpy, quat):
+    if pos is None:
+        return None
+    if quat is None:
+        quat = quat_from_rpy(*(rpy or [0.0, 0.0, 0.0]))
+    return {
+        "pos": [float(x) for x in pos],
+        "quat_wxyz": [float(x) for x in quat],
+    }
 
 
 def main() -> None:
@@ -158,15 +225,31 @@ def main() -> None:
     elif args.command == "test-right-arm":
         payload = {
             "mode": "test-right-arm",
-            "right_arm": [
-                float(args.shoulder_pitch),
-                float(args.shoulder_roll),
-                float(args.shoulder_yaw),
-                float(args.elbow),
-                float(args.wrist_roll),
-                float(args.wrist_pitch),
-                float(args.wrist_yaw),
-            ],
+            "right_arm": arm_joint_payload(args),
+        }
+    elif args.command == "test-left-arm":
+        payload = {
+            "mode": "test-left-arm",
+            "left_arm": arm_joint_payload(args),
+        }
+    elif args.command == "test-bimanual-arm":
+        if args.left is None and args.right is None:
+            raise SystemExit("test-bimanual-arm requires --left and/or --right")
+        payload = {
+            "mode": "test-bimanual-arm",
+            "left_arm": None if args.left is None else [float(x) for x in args.left],
+            "right_arm": None if args.right is None else [float(x) for x in args.right],
+        }
+    elif args.command == "tcp-pose":
+        left = tcp_side_payload(args.left_pos, args.left_rpy, args.left_quat)
+        right = tcp_side_payload(args.right_pos, args.right_rpy, args.right_quat)
+        if left is None and right is None:
+            raise SystemExit("tcp-pose requires --left-pos and/or --right-pos")
+        payload = {
+            "mode": "tcp-pose",
+            "frame": args.frame,
+            "left": left,
+            "right": right,
         }
     elif args.command == "stop":
         payload = {"mode": "idle"}

@@ -19,20 +19,34 @@ from isaaclab.utils.math import matrix_from_euler, quat_from_euler_xyz, quat_fro
 from .s4_robot_cfg import ALL_DRIVE_JOINTS, URDF_PATH, get_default_joint_positions
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ISAAC_ASSET_ROOT = Path("/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac")
 DEFAULT_SCENE_USD = ISAAC_ASSET_ROOT / "Environments" / "Simple_Warehouse" / "warehouse.usd"
 DEFAULT_TABLE_USD = ISAAC_ASSET_ROOT / "Props" / "PackingTable" / "packing_table.usd"
+PILL_BOTTLE_USDZ = PROJECT_ROOT / "assets" / "scenes" / "Pill_Bottle.usdz"
 
 BLOCK_CYLINDER_RADIUS = 0.035
 BLOCK_CYLINDER_HEIGHT = 0.12
 BLOCK_MASS = 0.08
+PILL_BOTTLE_SCALE_VALUE = 0.001103
+PILL_BOTTLE_SCALE = (PILL_BOTTLE_SCALE_VALUE, PILL_BOTTLE_SCALE_VALUE, PILL_BOTTLE_SCALE_VALUE)
+PILL_BOTTLE_SIZE_M = (0.132, 0.120, 0.074)
+PILL_BOTTLE_ORIENTATION = (0.7071068, 0.7071068, 0.0, 0.0)
+PILL_BOTTLE_ROOT_Z_OFFSET = 0.005
 PLATE_RADIUS = 0.13
 TASK_PLATFORM_HEIGHT = 0.05
 TASK_PLATFORM_SIZE = (0.56, 0.72, TASK_PLATFORM_HEIGHT)
 TABLE_YAW_90_QUAT = (0.7071068, 0.0, 0.0, 0.7071068)
 TASK_OBJECT_KEYS = ("task_platform", "red", "blue", "plate")
 TABLE_CLUTTER_RELATIVE_PRIMS = ("container_h20",)
+TABLE_CLUTTER_NAME_TOKENS = (
+    "container",
+    "corrugatedbox",
+    "box_",
+)
+TABLE_CLUTTER_EXACT_PREFIXES = (
+    "SM_Crate_A",
+)
 
 
 @dataclass(frozen=True)
@@ -61,8 +75,15 @@ class TaskLayout:
 
     def red_block_pos(self, table_top_z: float) -> np.ndarray:
         surface_z = self.task_surface_z(table_top_z)
+        # Legacy name: the red task slot is now a scaled pill-bottle asset.
+        # The USDZ is Y-up and authored in centimeters, so its root is placed
+        # near the platform surface after the Y->Z rotation.
         return np.array(
-            [self.block_x, self.table_center_y + self.block_y_offset, surface_z + BLOCK_CYLINDER_HEIGHT * 0.5],
+            [
+                self.block_x,
+                self.table_center_y + self.block_y_offset,
+                surface_z + PILL_BOTTLE_ROOT_Z_OFFSET,
+            ],
             dtype=np.float32,
         )
 
@@ -165,14 +186,17 @@ def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
     if not cfg.scene_usd.is_file():
         raise FileNotFoundError(f"Scene USD not found: {cfg.scene_usd}")
 
+    print(f"[BOOT] loading background scene: {cfg.scene_usd}", flush=True)
     scene_cfg = sim_utils.UsdFileCfg(usd_path=str(cfg.scene_usd))
     scene_cfg.func("/World/BackgroundScene", scene_cfg)
+    print("[BOOT] background scene loaded.", flush=True)
 
     if cfg.table_usd is None:
         return
     if not cfg.table_usd.is_file():
         raise FileNotFoundError(f"Table USD not found: {cfg.table_usd}")
 
+    print(f"[BOOT] loading table: {cfg.table_usd}", flush=True)
     table_cfg = sim_utils.UsdFileCfg(
         usd_path=str(cfg.table_usd),
         scale=(cfg.table_scale, cfg.table_scale, cfg.table_scale),
@@ -184,6 +208,7 @@ def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
         translation=(cfg.layout.table_center_x, cfg.layout.table_center_y, cfg.table_visual_z),
         orientation=TABLE_YAW_90_QUAT,
     )
+    print("[BOOT] table loaded.", flush=True)
     if cfg.clean_table_clutter:
         remove_table_clutter("/World/TaskTableVisual")
 
@@ -192,6 +217,7 @@ def remove_table_clutter(table_root_path: str) -> None:
     """Deactivate known top-level PackingTable clutter while keeping the table body visible."""
     try:
         import omni.usd
+        from pxr import Usd
     except Exception as exc:
         print(f"[WARN] could not import omni.usd to remove table clutter: {exc}")
         return
@@ -214,11 +240,82 @@ def remove_table_clutter(table_root_path: str) -> None:
             removed.append(path)
         except Exception as exc:
             print(f"[WARN] could not deactivate table clutter prim {path}: {exc}")
+    for prim in list(Usd.PrimRange(table_root)):
+        if prim == table_root or not prim.IsValid() or not prim.IsActive():
+            continue
+        prim_name = prim.GetName()
+        name = prim_name.lower()
+        path = str(prim.GetPath())
+        if any(token in name for token in TABLE_CLUTTER_NAME_TOKENS) or any(
+            prim_name.startswith(prefix) for prefix in TABLE_CLUTTER_EXACT_PREFIXES
+        ):
+            try:
+                prim.SetActive(False)
+                removed.append(path)
+            except Exception as exc:
+                print(f"[WARN] could not deactivate table clutter prim {path}: {exc}")
     if removed:
-        print(f"[INFO] Removed PackingTable clutter prims: {', '.join(removed)}")
+        unique_removed = list(dict.fromkeys(removed))
+        print(f"[INFO] Removed PackingTable clutter prims: {', '.join(unique_removed)}")
+
+
+def configure_usdz_rigid_meshes(
+    prim_path: str,
+    mass_props: schemas.MassPropertiesCfg,
+    rigid_props: schemas.RigidBodyPropertiesCfg,
+    collision_props: schemas.CollisionPropertiesCfg,
+    physics_material: sim_utils.RigidBodyMaterialCfg,
+) -> None:
+    """Apply simple rigid-body and convex mesh collision settings to an imported USDZ object."""
+    try:
+        from pxr import Usd
+
+        from isaaclab.sim.utils import bind_physics_material
+        from isaaclab.sim.utils.stage import get_current_stage
+    except Exception as exc:
+        print(f"[WARN] could not import USD helpers for {prim_path}: {exc}")
+        return
+
+    stage = get_current_stage()
+    root = stage.GetPrimAtPath(prim_path)
+    if not root.IsValid():
+        print(f"[WARN] USDZ rigid mesh root not found: {prim_path}")
+        return
+
+    try:
+        schemas.define_rigid_body_properties(prim_path, rigid_props, stage=stage)
+        schemas.define_mass_properties(prim_path, mass_props, stage=stage)
+    except Exception as exc:
+        print(f"[WARN] could not define rigid body properties on {prim_path}: {exc}")
+
+    mesh_paths = [str(prim.GetPath()) for prim in Usd.PrimRange(root) if prim.GetTypeName() == "Mesh"]
+    if not mesh_paths:
+        print(f"[WARN] no mesh prims found under USDZ object: {prim_path}")
+        return
+
+    material_path = f"{prim_path}/physicsMaterial"
+    try:
+        physics_material.func(material_path, physics_material)
+    except Exception as exc:
+        print(f"[WARN] could not create physics material for {prim_path}: {exc}")
+        material_path = ""
+
+    for mesh_path in mesh_paths:
+        try:
+            schemas.define_collision_properties(mesh_path, collision_props, stage=stage)
+            schemas.define_mesh_collision_properties(mesh_path, schemas.ConvexHullPropertiesCfg(), stage=stage)
+            if material_path:
+                bind_physics_material(mesh_path, material_path, stage=stage)
+        except Exception as exc:
+            print(f"[WARN] could not configure collision mesh {mesh_path}: {exc}")
+    print(f"[BOOT] configured USDZ rigid mesh collisions: {prim_path} meshes={len(mesh_paths)}", flush=True)
 
 
 def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
+    if not PILL_BOTTLE_USDZ.is_file():
+        raise FileNotFoundError(f"Pill bottle USDZ not found: {PILL_BOTTLE_USDZ}")
+
+    print("[BOOT] creating task object configs...", flush=True)
     contact_material = sim_utils.RigidBodyMaterialCfg(static_friction=2.0, dynamic_friction=1.6, restitution=0.0)
     collision_props = schemas.CollisionPropertiesCfg(contact_offset=0.002, rest_offset=0.0005)
     dynamic_rigid_props = schemas.RigidBodyPropertiesCfg(
@@ -252,15 +349,16 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
     )
     red_cfg = RigidObjectCfg(
         prim_path="/World/RecordTask/RedBlock",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(float(x) for x in cfg.layout.red_block_pos(cfg.table_top_z))),
-        spawn=CylinderCfg(
-            radius=BLOCK_CYLINDER_RADIUS,
-            height=BLOCK_CYLINDER_HEIGHT,
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=tuple(float(x) for x in cfg.layout.red_block_pos(cfg.table_top_z)),
+            rot=PILL_BOTTLE_ORIENTATION,
+        ),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=str(PILL_BOTTLE_USDZ),
+            scale=PILL_BOTTLE_SCALE,
             mass_props=schemas.MassPropertiesCfg(mass=BLOCK_MASS),
             rigid_props=dynamic_rigid_props,
             collision_props=collision_props,
-            physics_material=contact_material,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.05, 0.03)),
         ),
     )
     blue_cfg = RigidObjectCfg(
@@ -292,17 +390,37 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.92, 0.92, 0.86)),
         ),
     )
+
+    print("[BOOT] instantiating task_platform...", flush=True)
+    task_platform_obj = RigidObject(cfg=task_platform_cfg)
+    print("[BOOT] instantiating red pill bottle...", flush=True)
+    red_obj = RigidObject(cfg=red_cfg)
+    configure_usdz_rigid_meshes(
+        "/World/RecordTask/RedBlock",
+        schemas.MassPropertiesCfg(mass=BLOCK_MASS),
+        dynamic_rigid_props,
+        collision_props,
+        contact_material,
+    )
+    print("[BOOT] instantiating blue cylinder...", flush=True)
+    blue_obj = RigidObject(cfg=blue_cfg)
+    print("[BOOT] instantiating plate...", flush=True)
+    plate_obj = RigidObject(cfg=plate_cfg)
+    print("[BOOT] task objects ready.", flush=True)
+
     return {
-        "task_platform": RigidObject(cfg=task_platform_cfg),
-        "red": RigidObject(cfg=red_cfg),
-        "blue": RigidObject(cfg=blue_cfg),
-        "plate": RigidObject(cfg=plate_cfg),
+        "task_platform": task_platform_obj,
+        "red": red_obj,
+        "blue": blue_obj,
+        "plate": plate_obj,
     }
 
 
 def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
     spawn_background_and_table(cfg)
+    print("[BOOT] spawning physics task objects...", flush=True)
     task_objects = spawn_physics_task_objects(cfg)
+    print("[BOOT] creating camera config...", flush=True)
     camera = Camera(
         cfg=CameraCfg(
             prim_path="/World/DebugFrontCamera",
@@ -318,14 +436,17 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
             ),
         )
     )
+    print("[BOOT] creating robot articulation...", flush=True)
+    robot = build_robot(
+        "/World/Robot",
+        cfg.joint_stiffness,
+        cfg.joint_damping,
+        cfg.joint_effort_limit,
+        cfg.robot_base_z,
+    )
+    print("[BOOT] scene objects constructed.", flush=True)
     return {
-        "robot": build_robot(
-            "/World/Robot",
-            cfg.joint_stiffness,
-            cfg.joint_damping,
-            cfg.joint_effort_limit,
-            cfg.robot_base_z,
-        ),
+        "robot": robot,
         "task_platform": task_objects["task_platform"],
         "red": task_objects["red"],
         "blue": task_objects["blue"],
@@ -334,8 +455,13 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
     }
 
 
-def write_object_pose(obj: RigidObject, pos: np.ndarray, device: str) -> None:
-    pose = torch.tensor([[pos[0], pos[1], pos[2], 1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=device)
+def write_object_pose(
+    obj: RigidObject,
+    pos: np.ndarray,
+    device: str,
+    quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+) -> None:
+    pose = torch.tensor([[pos[0], pos[1], pos[2], *quat]], dtype=torch.float32, device=device)
     obj.write_root_pose_to_sim(pose)
     obj.write_root_velocity_to_sim(torch.zeros(1, 6, device=device))
 
@@ -352,7 +478,7 @@ def reset_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim: SimulationCon
     robot.reset()
 
     write_object_pose(scene["task_platform"], cfg.layout.task_platform_pos(cfg.table_top_z), sim.device)
-    write_object_pose(scene["red"], cfg.layout.red_block_pos(cfg.table_top_z), sim.device)
+    write_object_pose(scene["red"], cfg.layout.red_block_pos(cfg.table_top_z), sim.device, PILL_BOTTLE_ORIENTATION)
     write_object_pose(scene["blue"], cfg.layout.blue_block_pos(cfg.table_top_z), sim.device)
     write_object_pose(scene["plate"], cfg.layout.plate_pos(cfg.table_top_z), sim.device)
     return init_pos[0].detach().cpu().numpy()
@@ -397,7 +523,9 @@ def format_layout(cfg: SceneBuildCfg) -> str:
         f"  task_platform=({task_platform[0]:.3f}, {task_platform[1]:.3f}, {task_platform[2]:.3f}) "
         f"size=({TASK_PLATFORM_SIZE[0]:.3f}, {TASK_PLATFORM_SIZE[1]:.3f}, {TASK_PLATFORM_SIZE[2]:.3f})\n"
         f"  table_center=({cfg.layout.table_center_x:.3f}, {cfg.layout.table_center_y:.3f})\n"
-        f"  red_block=({red[0]:.3f}, {red[1]:.3f}, {red[2]:.3f})\n"
+        f"  red_bottle=({red[0]:.3f}, {red[1]:.3f}, {red[2]:.3f}) "
+        f"asset={PILL_BOTTLE_USDZ.name} scale={PILL_BOTTLE_SCALE_VALUE:.6f} "
+        f"approx_size=({PILL_BOTTLE_SIZE_M[0]:.3f},{PILL_BOTTLE_SIZE_M[1]:.3f},{PILL_BOTTLE_SIZE_M[2]:.3f})\n"
         f"  blue_block=({blue[0]:.3f}, {blue[1]:.3f}, {blue[2]:.3f})\n"
         f"  plate=({plate[0]:.3f}, {plate[1]:.3f}, {plate[2]:.3f})"
     )

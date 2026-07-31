@@ -75,8 +75,6 @@ from s4_robot.arm_control import smooth_command
 from s4_robot.control_mapping import ACTION_SLICES, extract_bimanual_state, make_full_joint_target
 from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS
 from s4_robot.simulation import (
-    DEFAULT_SCENE_USD,
-    DEFAULT_TABLE_USD,
     SceneBuildCfg,
     TASK_OBJECT_KEYS,
     TaskLayout,
@@ -86,11 +84,12 @@ from s4_robot.simulation import (
     reset_camera,
     reset_scene,
 )
+from s4_pipeline.config import load_project_config
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_DIR / "configs" / "s4_bimanual_dataset.json"
-SERVER_PATH = Path(__file__).resolve().parent / "09_smolvla_policy_server.py"
+SERVER_PATH = Path(__file__).resolve().parent / "policy_server.py"
 GROUP_SLICES = {
     "left_arm": ACTION_SLICES.left_arm,
     "left_hand": ACTION_SLICES.left_hand,
@@ -102,8 +101,7 @@ DEFAULT_STAGING_HDF5 = PROJECT_DIR / "datasets/staging/s4_right_blue_cylinder_pl
 
 
 def load_table_top_z() -> float:
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        return float(json.load(f)["scene"]["table_top_z"])
+    return float(load_project_config(CONFIG_PATH).scene.table_top_z)
 
 
 def load_task_description() -> str:
@@ -218,13 +216,14 @@ def load_dataset_feature_dims() -> tuple[int, int]:
 
 
 def make_scene_cfg() -> SceneBuildCfg:
+    project_cfg = load_project_config(CONFIG_PATH)
     return SceneBuildCfg(
         table_top_z=load_table_top_z(),
         joint_stiffness=float(args_cli.joint_stiffness),
         joint_damping=float(args_cli.joint_damping),
         joint_effort_limit=float(args_cli.joint_effort_limit),
-        scene_usd=DEFAULT_SCENE_USD,
-        table_usd=DEFAULT_TABLE_USD,
+        scene_usd=project_cfg.scene.scene_usd,
+        table_usd=project_cfg.scene.table_usd,
         robot_base_z=float(args_cli.robot_base_z),
         layout=TaskLayout(
             table_center_x=float(args_cli.task_x),

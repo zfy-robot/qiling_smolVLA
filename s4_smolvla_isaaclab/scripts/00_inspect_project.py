@@ -11,11 +11,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from s4_pipeline.config import load_project_config
 from s4_pipeline.paths import REFERENCE_BENCHHUB_DIR, REFERENCE_LEROBOT_DIR, SMOLVLA_CONFIG_PATH
 from s4_robot.control_mapping import BIMANUAL_ACTION_DIM, format_action_layout
+from tasks import TASK_REGISTRY, get_task_spec
 
 
 def main() -> None:
     cfg = load_project_config()
+    task = get_task_spec(cfg.dataset.task_id)
     print("S4 local pipeline")
+    print(f"  active task id:  {cfg.dataset.task_id}")
+    print(f"  active task:     {task.name}")
+    print(f"  task module:     scene={task.scene_builder} controller={task.scripted_controller}")
     print(f"  dataset repo_id: {cfg.dataset.repo_id}")
     print(f"  staging root:    {cfg.dataset.staging_root}")
     print(f"  lerobot root:    {cfg.dataset.lerobot_root}")
@@ -29,6 +34,11 @@ def main() -> None:
     print(f"  smolvla config:  {SMOLVLA_CONFIG_PATH}")
     print(f"  reference benchhub exists: {REFERENCE_BENCHHUB_DIR.exists()}")
     print(f"  reference lerobot exists:  {REFERENCE_LEROBOT_DIR.exists()}")
+    print()
+    print("Registered tasks:")
+    for task_id, spec in sorted(TASK_REGISTRY.items()):
+        marker = "*" if task_id == cfg.dataset.task_id else " "
+        print(f" {marker} {task_id}: {spec.description}")
     print()
     print(format_action_layout())
 

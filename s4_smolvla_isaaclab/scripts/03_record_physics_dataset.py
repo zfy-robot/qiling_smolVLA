@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -60,7 +62,15 @@ parser.add_argument("--hand-max-joint-step", type=float, default=0.008)
 parser.add_argument("--reach-max-cart-step", type=float, default=0.020)
 parser.add_argument("--reach-max-joint-delta", type=float, default=0.050)
 parser.add_argument("--reach-damping", type=float, default=0.16)
-parser.add_argument("--reach-posture-gain", type=float, default=0.03)
+parser.add_argument("--reach-posture-gain", type=float, default=0.30)
+parser.add_argument(
+    "--tcp-posture-gain",
+    type=float,
+    default=0.30,
+    help="Null-space posture gain for base_link TCP IK. Biases both arms toward DEFAULT_POSE while preserving TCP tasks.",
+)
+parser.add_argument("--tcp-ik-damping", type=float, default=0.08, help="DLS damping for base_link TCP IK.")
+parser.add_argument("--tcp-max-joint-delta", type=float, default=0.025, help="Per-step joint delta limit for base_link TCP IK.")
 parser.add_argument("--reach-max-error", type=float, default=0.85)
 parser.add_argument(
     "--reach-jacobian-body-shift",
@@ -93,6 +103,21 @@ parser.add_argument(
 )
 parser.add_argument("--gravity-comp-scale", type=float, default=1.0, help="Scale for gravity compensation feed-forward effort.")
 parser.add_argument("--show-tcp-frames", action="store_true", help="Visualize current hand TCP and target block TCP frames.")
+parser.add_argument("--show-drawer-handle-frame", action="store_true", help="Visualize the top drawer handle frame.")
+parser.add_argument(
+    "--drawer-handle-frame-prim",
+    type=str,
+    default="/World/DrawerTask/DrawerCabinet/drawer_handle_frame",
+    help="USD prim path for drawer_handle_frame. Falls back to searching by leaf name.",
+)
+parser.add_argument("--print-tcp-pose", action="store_true", help="Print left/right TCP poses in world/base_link frame.")
+parser.add_argument("--tcp-print-period", type=float, default=0.5, help="Seconds between --print-tcp-pose log lines.")
+parser.add_argument("--drawer-open", action="store_true", help="Preview drawer opening by driving the drawer USD joint.")
+parser.add_argument("--drawer-joint-filter", type=str, default="drawer_top_joint", help="Substring used to select drawer joint prims.")
+parser.add_argument("--drawer-target", type=float, default=0.35, help="Drawer joint drive target position for --drawer-open.")
+parser.add_argument("--drawer-drive-stiffness", type=float, default=800.0)
+parser.add_argument("--drawer-drive-damping", type=float, default=120.0)
+parser.add_argument("--drawer-drive-max-force", type=float, default=800.0)
 parser.add_argument("--record-output", type=Path, default=None, help="Write HDF5 episodes while running scripted grasp.")
 parser.add_argument("--record-episodes", type=int, default=1, help="Number of scripted grasp episodes to record.")
 parser.add_argument("--record-every-n", type=int, default=1, help="Record every N simulation steps.")
@@ -152,7 +177,7 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.markers import FRAME_MARKER_CFG, VisualizationMarkers
-from isaaclab.utils.math import quat_from_euler_xyz, quat_mul
+from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz, quat_mul
 
 from s4_robot.arm_control import (
     KeyboardJog,
@@ -160,28 +185,36 @@ from s4_robot.arm_control import (
     CLOSE_RIGHT_HAND,
     DEFAULT_TCP_OFFSET_WRIST,
     OPEN_RIGHT_HAND,
+    quat_rotate_wxyz,
     read_control_action,
     smooth_command,
     write_default_control_file,
 )
-from s4_robot.control_mapping import ACTION_SLICES, extract_bimanual_state, format_action_layout
-from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS, RIGHT_ARM_JOINTS, RIGHT_HAND_JOINTS, get_joint_limits
+from s4_robot.control_mapping import ACTION_SLICES, action_to_joint_targets, extract_bimanual_state, format_action_layout
+from s4_robot.s4_robot_cfg import (
+    ALL_DRIVE_JOINTS,
+    LEFT_ARM_JOINTS,
+    RIGHT_ARM_JOINTS,
+    RIGHT_HAND_JOINTS,
+    get_default_joint_positions,
+    get_joint_limits,
+)
 from s4_robot.simulation import (
     BLOCK_CYLINDER_RADIUS,
-    DEFAULT_SCENE_USD,
-    DEFAULT_TABLE_USD,
     PLATE_RADIUS,
     SceneBuildCfg,
     TASK_OBJECT_KEYS,
     TaskLayout,
-    build_scene,
+    build_scene as build_default_scene,
     create_simulation_context,
     format_layout,
     reset_camera,
     reset_scene,
     write_object_pose,
 )
+from s4_pipeline.config import load_project_config
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
+from tasks import get_task_spec
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -192,13 +225,13 @@ JOINT_LIMITS = get_joint_limits()
 def load_table_top_z() -> float:
     if args_cli.table_top_z is not None:
         return float(args_cli.table_top_z)
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        return float(json.load(f)["scene"]["table_top_z"])
+    return float(load_project_config(CONFIG_PATH).scene.table_top_z)
 
 
 def make_scene_cfg() -> SceneBuildCfg:
-    scene_usd = args_cli.scene_usd or DEFAULT_SCENE_USD
-    table_usd = args_cli.table_usd if args_cli.table_usd is not None else DEFAULT_TABLE_USD
+    project_cfg = load_project_config(CONFIG_PATH)
+    scene_usd = args_cli.scene_usd or project_cfg.scene.scene_usd
+    table_usd = args_cli.table_usd if args_cli.table_usd is not None else project_cfg.scene.table_usd
     layout = TaskLayout(
         table_center_x=float(args_cli.task_x),
         table_center_y=float(args_cli.task_y),
@@ -227,6 +260,16 @@ def make_scene_cfg() -> SceneBuildCfg:
     )
 
 
+def resolve_scene_builder():
+    project_cfg = load_project_config(CONFIG_PATH)
+    spec = get_task_spec(project_cfg.dataset.task_id)
+    module_name, func_name = spec.scene_builder.split(":", 1)
+    if module_name == "s4_robot.simulation" and func_name == "build_scene":
+        return build_default_scene
+    module = importlib.import_module(module_name)
+    return getattr(module, func_name)
+
+
 def set_named_joint_targets(
     full_target: np.ndarray,
     robot: Articulation,
@@ -242,6 +285,17 @@ def set_named_joint_targets(
             full_target[robot.joint_names.index(name)] = safe_value
 
 
+def parse_arm_target(payload: dict, key: str) -> np.ndarray | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    target = np.asarray(value, dtype=np.float32)
+    if target.shape != (7,):
+        print(f"[WARN] ignored invalid {key} target: expected 7 values")
+        return None
+    return target
+
+
 def control_action_from_full_target(full_target: np.ndarray, robot: Articulation) -> np.ndarray:
     return extract_bimanual_state(full_target, robot.joint_names)
 
@@ -249,6 +303,13 @@ def control_action_from_full_target(full_target: np.ndarray, robot: Articulation
 def control_action_from_sim(robot: Articulation) -> np.ndarray:
     joint_pos = robot.data.joint_pos[0].detach().cpu().numpy()
     return extract_bimanual_state(joint_pos, robot.joint_names)
+
+
+def write_action_to_full_target(full_target: np.ndarray, robot: Articulation, action: np.ndarray) -> None:
+    targets = action_to_joint_targets(action, include_mimic=True)
+    for name, value in targets.items():
+        if name in robot.joint_names:
+            full_target[robot.joint_names.index(name)] = float(value)
 
 
 def right_hand_command_error(commanded_action: np.ndarray, target: np.ndarray) -> float:
@@ -455,19 +516,42 @@ def reset_unstable_arm_state(
 
 
 class TcpFrameVisualizer:
-    """Visualize estimated hand TCP and target block TCP frames."""
+    """Visualize estimated TCP, target, and task frames."""
 
     def __init__(self, device: str):
-        hand_cfg = FRAME_MARKER_CFG.replace(prim_path="/World/Visuals/RightHandTCP")
-        hand_cfg.markers["frame"].scale = (0.08, 0.08, 0.08)
+        right_cfg = FRAME_MARKER_CFG.replace(prim_path="/World/Visuals/RightHandTCP")
+        right_cfg.markers["frame"].scale = (0.08, 0.08, 0.08)
+        left_cfg = FRAME_MARKER_CFG.replace(prim_path="/World/Visuals/LeftHandTCP")
+        left_cfg.markers["frame"].scale = (0.08, 0.08, 0.08)
         target_cfg = FRAME_MARKER_CFG.replace(prim_path="/World/Visuals/TargetBlockTCP")
         target_cfg.markers["frame"].scale = (0.11, 0.11, 0.11)
-        self.hand_marker = VisualizationMarkers(hand_cfg)
+        handle_cfg = FRAME_MARKER_CFG.replace(prim_path="/World/Visuals/DrawerHandleTop")
+        handle_cfg.markers["frame"].scale = (0.09, 0.09, 0.09)
+        self.right_marker = VisualizationMarkers(right_cfg)
+        self.left_marker = VisualizationMarkers(left_cfg)
         self.target_marker = VisualizationMarkers(target_cfg)
-        self.hand_marker.set_visibility(False)
+        self.handle_marker = VisualizationMarkers(handle_cfg)
+        self.right_marker.set_visibility(False)
+        self.left_marker.set_visibility(False)
         self.target_marker.set_visibility(False)
+        self.handle_marker.set_visibility(False)
         self.device = device
         self.identity_quat = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float32, device=device)
+
+    def _visualize_marker(
+        self,
+        marker: VisualizationMarkers,
+        pose: tuple[np.ndarray, np.ndarray] | None,
+    ) -> None:
+        if pose is None:
+            marker.set_visibility(False)
+            return
+        pos, quat = pose
+        marker.set_visibility(True)
+        marker.visualize(
+            translations=torch.tensor(pos, dtype=torch.float32, device=self.device).view(1, 3),
+            orientations=torch.tensor(quat, dtype=torch.float32, device=self.device).view(1, 4),
+        )
 
     def visualize(
         self,
@@ -475,14 +559,7 @@ class TcpFrameVisualizer:
         target_tcp_pos: np.ndarray | None,
         target_tcp_quat: np.ndarray | None = None,
     ) -> None:
-        hand_tcp_pos, hand_tcp_quat = hand_tcp_pose if hand_tcp_pose is not None else (None, None)
-        if hand_tcp_pos is not None:
-            pos = torch.tensor(hand_tcp_pos, dtype=torch.float32, device=self.device).view(1, 3)
-            quat = torch.tensor(hand_tcp_quat, dtype=torch.float32, device=self.device).view(1, 4)
-            self.hand_marker.set_visibility(True)
-            self.hand_marker.visualize(translations=pos, orientations=quat)
-        else:
-            self.hand_marker.set_visibility(False)
+        self._visualize_marker(self.right_marker, hand_tcp_pose)
         if target_tcp_pos is not None:
             pos = torch.tensor(target_tcp_pos, dtype=torch.float32, device=self.device).view(1, 3)
             if target_tcp_quat is None:
@@ -493,6 +570,18 @@ class TcpFrameVisualizer:
             self.target_marker.visualize(translations=pos, orientations=quat)
         else:
             self.target_marker.set_visibility(False)
+
+    def visualize_task_frames(
+        self,
+        left_tcp_pose: tuple[np.ndarray, np.ndarray] | None = None,
+        right_tcp_pose: tuple[np.ndarray, np.ndarray] | None = None,
+        drawer_handle_pose: tuple[np.ndarray, np.ndarray] | None = None,
+        target_tcp_pos: np.ndarray | None = None,
+        target_tcp_quat: np.ndarray | None = None,
+    ) -> None:
+        self._visualize_marker(self.left_marker, left_tcp_pose)
+        self.visualize(right_tcp_pose, target_tcp_pos, target_tcp_quat)
+        self._visualize_marker(self.handle_marker, drawer_handle_pose)
 
 
 def estimate_right_hand_tcp_pose(
@@ -508,6 +597,156 @@ def estimate_right_hand_tcp_pose(
     tcp_pos = wrist_pose_w[0, 0:3] + tcp_offset_w[0]
     tcp_quat = wrist_pose_w[0, 3:7]
     return tcp_pos.detach().cpu().numpy(), tcp_quat.detach().cpu().numpy()
+
+
+def estimate_right_hand_tcp_pose_from_robot(
+    robot: Articulation,
+    tcp_offset_wrist: np.ndarray = DEFAULT_TCP_OFFSET_WRIST,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    return estimate_hand_tcp_pose_from_robot(robot, "right_wrist_yaw_link", tcp_offset_wrist)
+
+
+def estimate_left_hand_tcp_pose_from_robot(
+    robot: Articulation,
+    tcp_offset_wrist: np.ndarray = DEFAULT_TCP_OFFSET_WRIST,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    return estimate_hand_tcp_pose_from_robot(robot, "left_wrist_yaw_link", tcp_offset_wrist)
+
+
+def estimate_hand_tcp_pose_from_robot(
+    robot: Articulation,
+    wrist_body_name: str,
+    tcp_offset_wrist: np.ndarray = DEFAULT_TCP_OFFSET_WRIST,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    body_ids, _ = robot.find_bodies(f"^{wrist_body_name}$")
+    if not body_ids:
+        print(f"[WARN] cannot estimate TCP pose; body not found: {wrist_body_name}")
+        return None
+    wrist_pose_w = robot.data.body_pose_w[:, body_ids[0]]
+    tcp_offset = torch.tensor(tcp_offset_wrist, dtype=torch.float32, device=robot.device).view(1, 3)
+    tcp_offset_w = quat_rotate_wxyz(wrist_pose_w[:, 3:7], tcp_offset)
+    tcp_pos = wrist_pose_w[0, 0:3] + tcp_offset_w[0]
+    tcp_quat = wrist_pose_w[0, 3:7]
+    return tcp_pos.detach().cpu().numpy(), tcp_quat.detach().cpu().numpy()
+
+
+def estimate_body_pose_from_robot(robot: Articulation, body_name: str) -> tuple[np.ndarray, np.ndarray] | None:
+    body_ids, _ = robot.find_bodies(f"^{body_name}$")
+    if not body_ids:
+        return None
+    pose_w = robot.data.body_pose_w[:, body_ids[0]]
+    return pose_w[0, 0:3].detach().cpu().numpy(), pose_w[0, 3:7].detach().cpu().numpy()
+
+
+def quat_conjugate_wxyz(quat: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=np.float64)
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+
+
+def quat_mul_wxyz_np(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    a = np.asarray(q1, dtype=np.float64)
+    b = np.asarray(q2, dtype=np.float64)
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    out = np.array(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ],
+        dtype=np.float64,
+    )
+    norm = np.linalg.norm(out)
+    return out if norm < 1.0e-8 else out / norm
+
+
+def quat_to_matrix_wxyz_np(quat: np.ndarray) -> np.ndarray:
+    from s4_robot.pink_bimanual_ik import quat_wxyz_to_matrix
+
+    return quat_wxyz_to_matrix(np.asarray(quat, dtype=np.float64))
+
+
+def pose_world_to_base(
+    pose_w: tuple[np.ndarray, np.ndarray],
+    base_pose_w: tuple[np.ndarray, np.ndarray] | None,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if base_pose_w is None:
+        return None
+    pos_w, quat_w = pose_w
+    base_pos_w, base_quat_w = base_pose_w
+    rot_bw = quat_to_matrix_wxyz_np(base_quat_w).T
+    pos_b = rot_bw @ (np.asarray(pos_w, dtype=np.float64) - np.asarray(base_pos_w, dtype=np.float64))
+    quat_b = quat_mul_wxyz_np(quat_conjugate_wxyz(base_quat_w), quat_w)
+    return pos_b.astype(np.float32), quat_b.astype(np.float32)
+
+
+def get_usd_prim_world_pose(prim_path: str, fallback_leaf_name: str | None = None) -> tuple[np.ndarray, np.ndarray] | None:
+    try:
+        import omni.usd
+        from pxr import Usd, UsdGeom
+    except Exception as exc:
+        print(f"[WARN] could not import USD helpers for frame pose: {exc}")
+        return None
+
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid() and fallback_leaf_name:
+        for candidate in stage.Traverse():
+            if candidate.GetName() == fallback_leaf_name:
+                prim = candidate
+                break
+    if not prim.IsValid():
+        print(f"[WARN] frame prim not found: {prim_path}")
+        return None
+    xformable = UsdGeom.Xformable(prim)
+    matrix = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    translation = matrix.ExtractTranslation()
+    rotation = matrix.ExtractRotationQuat()
+    imag = rotation.GetImaginary()
+    pos = np.array([translation[0], translation[1], translation[2]], dtype=np.float32)
+    quat = np.array([rotation.GetReal(), imag[0], imag[1], imag[2]], dtype=np.float32)
+    quat_norm = np.linalg.norm(quat)
+    if quat_norm > 1e-6:
+        quat = quat / quat_norm
+    return pos, quat
+
+
+def get_drawer_handle_top_pose() -> tuple[np.ndarray, np.ndarray] | None:
+    return get_usd_prim_world_pose(
+        str(args_cli.drawer_handle_frame_prim),
+        fallback_leaf_name=Path(str(args_cli.drawer_handle_frame_prim)).name,
+    )
+
+
+def format_tcp_pose_line(
+    prefix: str,
+    pose: tuple[np.ndarray, np.ndarray] | None,
+    base_pose_w: tuple[np.ndarray, np.ndarray] | None = None,
+) -> str:
+    if pose is None:
+        return f"{prefix} unavailable"
+    pos, quat = pose
+    quat_t = torch.tensor(quat, dtype=torch.float32).view(1, 4)
+    roll, pitch, yaw = euler_xyz_from_quat(quat_t)
+    rpy_deg = torch.rad2deg(torch.stack((roll[0], pitch[0], yaw[0]))).numpy()
+    text = (
+        f"{prefix} pos_w=({pos[0]:+.4f},{pos[1]:+.4f},{pos[2]:+.4f}) "
+        f"quat_wxyz=({quat[0]:+.5f},{quat[1]:+.5f},{quat[2]:+.5f},{quat[3]:+.5f}) "
+        f"rpy_deg=({rpy_deg[0]:+.2f},{rpy_deg[1]:+.2f},{rpy_deg[2]:+.2f})"
+    )
+    pose_b = pose_world_to_base(pose, base_pose_w)
+    if pose_b is not None:
+        pos_b, quat_b = pose_b
+        quat_b_t = torch.tensor(quat_b, dtype=torch.float32).view(1, 4)
+        roll_b, pitch_b, yaw_b = euler_xyz_from_quat(quat_b_t)
+        rpy_b_deg = torch.rad2deg(torch.stack((roll_b[0], pitch_b[0], yaw_b[0]))).numpy()
+        text += (
+            f" pos_base=({pos_b[0]:+.4f},{pos_b[1]:+.4f},{pos_b[2]:+.4f}) "
+            f"quat_base_wxyz=({quat_b[0]:+.5f},{quat_b[1]:+.5f},{quat_b[2]:+.5f},{quat_b[3]:+.5f}) "
+            f"rpy_base_deg=({rpy_b_deg[0]:+.2f},{rpy_b_deg[1]:+.2f},{rpy_b_deg[2]:+.2f})"
+        )
+    return text
 
 
 def right_tcp_position(
@@ -717,7 +956,308 @@ def make_right_reach_controller(robot: Articulation, device: str) -> RightArmRea
     )
 
 
+def reset_robot_only(scene: dict[str, object], sim) -> np.ndarray:
+    robot: Articulation = scene["robot"]
+    default_drive = get_default_joint_positions()
+    init_pos = torch.zeros(1, robot.num_joints, device=sim.device)
+    for drive_i, joint_name in enumerate(ALL_DRIVE_JOINTS):
+        if joint_name in robot.joint_names:
+            init_pos[0, robot.joint_names.index(joint_name)] = float(default_drive[drive_i])
+    robot.write_joint_state_to_sim(init_pos, torch.zeros_like(init_pos))
+    robot.reset()
+    return init_pos[0].detach().cpu().numpy()
+
+
+def _drawer_joint_type_name(prim) -> str:
+    try:
+        type_name = prim.GetTypeName()
+    except Exception:
+        return ""
+    return str(type_name)
+
+
+def list_drawer_joint_prims(root_path: str = "/World/DrawerTask/DrawerCabinet") -> list[tuple[str, str]]:
+    try:
+        import omni.usd
+    except Exception as exc:
+        print(f"[WARN] could not import USD helpers for drawer joints: {exc}")
+        return []
+
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(root_path)
+    if not root.IsValid():
+        print(f"[WARN] drawer root not found for joint scan: {root_path}")
+        return []
+    joints: list[tuple[str, str]] = []
+    for prim in stage.Traverse():
+        path = str(prim.GetPath())
+        if not path.startswith(root_path):
+            continue
+        type_name = _drawer_joint_type_name(prim)
+        if "Joint" in type_name or path.endswith("_joint"):
+            joints.append((path, type_name))
+    return joints
+
+
+def configure_drawer_drive() -> list[str]:
+    try:
+        import omni.usd
+        from pxr import UsdPhysics
+    except Exception as exc:
+        print(f"[WARN] could not import USD physics helpers for drawer drive: {exc}")
+        return []
+
+    stage = omni.usd.get_context().get_stage()
+    joints = list_drawer_joint_prims()
+    if joints:
+        print("[DRAWER] detected joints:")
+        for path, type_name in joints:
+            print(f"[DRAWER]   {path} type={type_name}")
+
+    selected: list[str] = []
+    joint_filter = str(args_cli.drawer_joint_filter)
+    for path, type_name in joints:
+        if joint_filter and joint_filter not in path:
+            continue
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            continue
+        drive_kind = "linear" if "Prismatic" in type_name else "angular"
+        drive = UsdPhysics.DriveAPI.Apply(prim, drive_kind)
+        drive.CreateTargetPositionAttr().Set(float(args_cli.drawer_target))
+        drive.CreateStiffnessAttr().Set(float(args_cli.drawer_drive_stiffness))
+        drive.CreateDampingAttr().Set(float(args_cli.drawer_drive_damping))
+        drive.CreateMaxForceAttr().Set(float(args_cli.drawer_drive_max_force))
+        selected.append(path)
+        print(
+            f"[DRAWER] drive {path} kind={drive_kind} target={float(args_cli.drawer_target):.3f} "
+            f"kp={float(args_cli.drawer_drive_stiffness):.1f} kd={float(args_cli.drawer_drive_damping):.1f}",
+            flush=True,
+        )
+    if not selected:
+        print(f"[WARN] no drawer joints matched filter: {joint_filter!r}")
+    return selected
+
+
+def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
+    robot: Articulation = scene["robot"]
+    camera = scene["camera"]
+    target = reset_robot_only(scene, sim)
+    robot.set_joint_position_target(torch.tensor(target, device=sim.device).view(1, -1))
+    robot.write_data_to_sim()
+    reset_camera(camera, sim, cfg)
+    print(scene.get("layout_text", "[SCENE] static task scene ready."))
+    drawer_drive_paths = configure_drawer_drive() if args_cli.drawer_open else []
+    if drawer_drive_paths:
+        print("[SCENE] drawer drive preview: physics is stepped so the driven joint can move.")
+    else:
+        print("[SCENE] static preview mode: GUI keeps rendering; physics is not stepped unless headless.")
+    tcp_visualizer = None
+    if (args_cli.show_tcp_frames or args_cli.show_drawer_handle_frame) and not args_cli.headless:
+        tcp_visualizer = TcpFrameVisualizer(sim.device)
+        print(
+            "Debug frames: /World/Visuals/LeftHandTCP, /World/Visuals/RightHandTCP, "
+            "/World/Visuals/DrawerHandleTop"
+        )
+    action = control_action_from_full_target(target, robot)
+    keyboard_jog = None
+    if args_cli.keyboard_jog and not args_cli.headless:
+        candidate = KeyboardJog(action, jog_step=float(args_cli.jog_step))
+        if candidate.start():
+            keyboard_jog = candidate
+            print("Keyboard jog: '['/']' select joint, 'u' increase, 'j' decrease, 'r' reset, 'p' print selected.")
+    args_cli.arm_control_file.parent.mkdir(parents=True, exist_ok=True)
+    args_cli.arm_control_file.write_text(json.dumps({"mode": "idle"}, indent=2), encoding="utf-8")
+    last_arm_control_mtime = args_cli.arm_control_file.stat().st_mtime_ns
+    print(f"Arm control file: {args_cli.arm_control_file}")
+    last_tcp_print = 0.0
+    pink_tcp_controller = None
+    arm_control_active = False
+    tcp_pose_active = False
+    tcp_pose_goal_left = None
+    tcp_pose_goal_right = None
+    last_arm_debug = 0.0
+    gravity_comp_joint_ids = resolve_existing_joint_ids(robot, list(ALL_DRIVE_JOINTS))
+    last_gravity_comp_stats = (0.0, 0.0)
+    print(
+        f"[SCENE] drawer preview gravity_compensation={bool(args_cli.gravity_compensation)} "
+        f"scale={float(args_cli.gravity_comp_scale):.2f} joints={len(gravity_comp_joint_ids)}",
+        flush=True,
+    )
+    try:
+        while simulation_app.is_running():
+            try:
+                arm_control_mtime = args_cli.arm_control_file.stat().st_mtime_ns
+            except FileNotFoundError:
+                arm_control_mtime = None
+            if arm_control_mtime != last_arm_control_mtime:
+                last_arm_control_mtime = arm_control_mtime
+                if arm_control_mtime is not None:
+                    try:
+                        payload = json.loads(args_cli.arm_control_file.read_text(encoding="utf-8"))
+                    except Exception as exc:
+                        print(f"[WARN] ignoring invalid arm control file: {exc}")
+                        payload = {}
+                    mode = payload.get("mode")
+                    if mode == "test-right-arm":
+                        right_arm = parse_arm_target(payload, "right_arm")
+                        if right_arm is not None:
+                            set_named_joint_targets(target, robot, RIGHT_ARM_JOINTS, right_arm)
+                            action = control_action_from_full_target(target, robot)
+                            arm_control_active = True
+                            tcp_pose_active = False
+                            print(f"[ARM] drawer preview right-arm target: {[round(float(x), 3) for x in right_arm]}", flush=True)
+                    elif mode == "test-left-arm":
+                        left_arm = parse_arm_target(payload, "left_arm")
+                        if left_arm is not None:
+                            set_named_joint_targets(target, robot, LEFT_ARM_JOINTS, left_arm)
+                            action = control_action_from_full_target(target, robot)
+                            arm_control_active = True
+                            tcp_pose_active = False
+                            print(f"[ARM] drawer preview left-arm target: {[round(float(x), 3) for x in left_arm]}", flush=True)
+                    elif mode == "test-bimanual-arm":
+                        left_arm = parse_arm_target(payload, "left_arm")
+                        right_arm = parse_arm_target(payload, "right_arm")
+                        if left_arm is not None:
+                            set_named_joint_targets(target, robot, LEFT_ARM_JOINTS, left_arm)
+                        if right_arm is not None:
+                            set_named_joint_targets(target, robot, RIGHT_ARM_JOINTS, right_arm)
+                        if left_arm is not None or right_arm is not None:
+                            action = control_action_from_full_target(target, robot)
+                            arm_control_active = True
+                            tcp_pose_active = False
+                            print("[ARM] drawer preview bimanual joint target updated", flush=True)
+                    elif mode == "tcp-pose":
+                        if payload.get("frame") != "base_link":
+                            print(f"[WARN] tcp-pose only supports frame=base_link, got {payload.get('frame')!r}")
+                            continue
+                        try:
+                            if pink_tcp_controller is None:
+                                from s4_robot.pink_bimanual_ik import PinkBimanualTcpController
+
+                                pink_tcp_controller = PinkBimanualTcpController(
+                                    robot,
+                                    sim.device,
+                                    posture_gain=args_cli.tcp_posture_gain,
+                                    damping=args_cli.tcp_ik_damping,
+                                    max_joint_delta=args_cli.tcp_max_joint_delta,
+                                )
+                                print("[ARM] Pinocchio DLS bimanual TCP controller ready (target frame: base_link)")
+                            tcp_pose_goal_left = payload.get("left")
+                            tcp_pose_goal_right = payload.get("right")
+                            tcp_pose_active = True
+                            arm_control_active = True
+                            print(
+                                "[ARM] Pinocchio DLS tcp-pose goal accepted; solving continuously "
+                                f"left={tcp_pose_goal_left is not None} right={tcp_pose_goal_right is not None} "
+                                f"left_goal={tcp_pose_goal_left} right_goal={tcp_pose_goal_right}",
+                                flush=True,
+                            )
+                        except Exception as exc:
+                            print(f"[WARN] Pinocchio DLS tcp-pose setup failed: {exc}", flush=True)
+                            traceback.print_exc()
+                    elif mode == "reset-scene":
+                        target = reset_robot_only(scene, sim)
+                        action = control_action_from_full_target(target, robot)
+                        pink_tcp_controller = None
+                        arm_control_active = False
+                        tcp_pose_active = False
+                        tcp_pose_goal_left = None
+                        tcp_pose_goal_right = None
+                        print("[SCENE] drawer preview robot reset.", flush=True)
+                    elif mode == "idle":
+                        arm_control_active = False
+                        tcp_pose_active = False
+                        print("[ARM] drawer preview idle", flush=True)
+            if keyboard_jog is not None:
+                action = keyboard_jog.update(action)
+                write_action_to_full_target(target, robot, action)
+            if tcp_pose_active and pink_tcp_controller is not None:
+                try:
+                    current_q = robot.data.joint_pos[0].detach().cpu().numpy()
+                    arm_targets = pink_tcp_controller.compute(
+                        current_q,
+                        max(sim.get_physics_dt(), 1.0 / 60.0),
+                        tcp_pose_goal_left,
+                        tcp_pose_goal_right,
+                    )
+                    left_arm = arm_targets[: len(LEFT_ARM_JOINTS)]
+                    right_arm = arm_targets[len(LEFT_ARM_JOINTS) :]
+                    set_named_joint_targets(target, robot, LEFT_ARM_JOINTS, left_arm)
+                    set_named_joint_targets(target, robot, RIGHT_ARM_JOINTS, right_arm)
+                    action = control_action_from_full_target(target, robot)
+                except Exception as exc:
+                    print(f"[WARN] Pinocchio DLS continuous solve failed: {exc}", flush=True)
+                    traceback.print_exc()
+                    tcp_pose_active = False
+            target_tensor = torch.tensor(target, device=sim.device).view(1, -1)
+            if args_cli.headless or drawer_drive_paths or keyboard_jog is not None or arm_control_active:
+                robot.set_joint_position_target(target_tensor)
+                last_gravity_comp_stats = apply_gravity_compensation(
+                    robot,
+                    gravity_comp_joint_ids,
+                    scale=float(args_cli.gravity_comp_scale),
+                    enabled=bool(args_cli.gravity_compensation),
+                )
+                robot.write_data_to_sim()
+                sim.step(render=not args_cli.headless)
+                robot.update(dt=sim.get_physics_dt())
+                camera.update(dt=sim.get_physics_dt())
+            else:
+                robot.set_joint_position_target(target_tensor)
+                last_gravity_comp_stats = apply_gravity_compensation(
+                    robot,
+                    gravity_comp_joint_ids,
+                    scale=float(args_cli.gravity_comp_scale),
+                    enabled=bool(args_cli.gravity_compensation),
+                )
+                robot.write_data_to_sim()
+                simulation_app.update()
+            if tcp_visualizer is not None:
+                tcp_visualizer.visualize_task_frames(
+                    left_tcp_pose=estimate_left_hand_tcp_pose_from_robot(robot),
+                    right_tcp_pose=estimate_right_hand_tcp_pose_from_robot(robot),
+                    drawer_handle_pose=get_drawer_handle_top_pose() if args_cli.show_drawer_handle_frame else None,
+                )
+            if args_cli.print_tcp_pose:
+                now = time.monotonic()
+                if now - last_tcp_print >= max(float(args_cli.tcp_print_period), 0.05):
+                    base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
+                    print(format_tcp_pose_line("[TCP] left_hand", estimate_left_hand_tcp_pose_from_robot(robot), base_pose_w))
+                    print(format_tcp_pose_line("[TCP] right_hand", estimate_right_hand_tcp_pose_from_robot(robot), base_pose_w))
+                    print(format_tcp_pose_line("[TCP] drawer_handle_frame", get_drawer_handle_top_pose(), base_pose_w))
+                    last_tcp_print = now
+            if arm_control_active:
+                now = time.monotonic()
+                if now - last_arm_debug >= 0.5:
+                    q = robot.data.joint_pos[0].detach().cpu().numpy()
+                    right_err = 0.0
+                    left_err = 0.0
+                    for name in RIGHT_ARM_JOINTS:
+                        if name in robot.joint_names:
+                            idx = robot.joint_names.index(name)
+                            right_err = max(right_err, abs(float(target[idx] - q[idx])))
+                    for name in LEFT_ARM_JOINTS:
+                        if name in robot.joint_names:
+                            idx = robot.joint_names.index(name)
+                            left_err = max(left_err, abs(float(target[idx] - q[idx])))
+                    print(
+                        f"[ARMDBG] active={arm_control_active} tcp_pose={tcp_pose_active} "
+                        f"left_q_max_err={left_err:.4f} right_q_max_err={right_err:.4f} "
+                        f"gravity_comp=max:{last_gravity_comp_stats[0]:.2f}/mean:{last_gravity_comp_stats[1]:.2f}",
+                        flush=True,
+                    )
+                    last_arm_debug = now
+    finally:
+        if keyboard_jog is not None:
+            keyboard_jog.stop()
+
+
 def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
+    if scene.get("task_id") not in (None, "right_blue_cylinder_plate"):
+        run_static_task_scene(scene, cfg, sim)
+        return
+
     robot: Articulation = scene["robot"]
     camera = scene["camera"]
     sim_dt = sim.get_physics_dt()
@@ -815,7 +1355,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 },
             },
         )
-    if args_cli.show_tcp_frames and not args_cli.headless:
+    if (args_cli.show_tcp_frames or args_cli.show_drawer_handle_frame) and not args_cli.headless:
         tcp_visualizer = TcpFrameVisualizer(sim.device)
         reach_controller = make_right_reach_controller(robot, sim.device)
         if args_cli.verbose_status:
@@ -841,7 +1381,10 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
         f"size={cfg.camera_width}x{cfg.camera_height} sensor_render=True ui_headless={bool(args_cli.headless)}"
     )
     if tcp_visualizer is not None:
-        print("TCP frames: /World/Visuals/RightHandTCP and /World/Visuals/TargetBlockTCP")
+        print(
+            "Debug frames: /World/Visuals/LeftHandTCP, /World/Visuals/RightHandTCP, "
+            "/World/Visuals/TargetBlockTCP, /World/Visuals/DrawerHandleTop"
+        )
     if keyboard_jog is not None:
         print("Keyboard jog: '['/']' select joint, 'u' increase, 'j' decrease, 'r' reset, 'p' print selected.")
     print("Reset command: bash run.sh control reset-scene")
@@ -887,6 +1430,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
 
     try:
         last_report = time.monotonic()
+        last_tcp_report = 0.0
         last_unstable_report = 0.0
         last_grasp_wait_report = 0.0
         last_control_mtime = None
@@ -1615,12 +2159,26 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     auto_grasp_pending = True
             if tcp_visualizer is not None:
                 hand_tcp_pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
+                if hand_tcp_pose is None:
+                    hand_tcp_pose = estimate_right_hand_tcp_pose_from_robot(robot, reach_tcp_offset)
                 if target_tcp_pos is None and reach_block is not None:
                     block_pos = scene[reach_block].data.root_pos_w[0].detach().cpu().numpy()
                     target_tcp_pos = block_pos + reach_offset
-                tcp_visualizer.visualize(hand_tcp_pose, target_tcp_pos, target_tcp_quat)
+                tcp_visualizer.visualize_task_frames(
+                    left_tcp_pose=estimate_left_hand_tcp_pose_from_robot(robot, reach_tcp_offset),
+                    right_tcp_pose=hand_tcp_pose,
+                    drawer_handle_pose=get_drawer_handle_top_pose() if args_cli.show_drawer_handle_frame else None,
+                    target_tcp_pos=target_tcp_pos,
+                    target_tcp_quat=target_tcp_quat,
+                )
 
             now = time.monotonic()
+            if args_cli.print_tcp_pose and now - last_tcp_report >= max(float(args_cli.tcp_print_period), 0.05):
+                pose = estimate_right_hand_tcp_pose(robot, reach_controller, reach_tcp_offset)
+                if pose is None:
+                    pose = estimate_right_hand_tcp_pose_from_robot(robot, reach_tcp_offset)
+                print(format_tcp_pose_line("[TCP] right_hand", pose, estimate_body_pose_from_robot(robot, "base_link")))
+                last_tcp_report = now
             if args_cli.verbose_status and now - last_report > 2.0:
                 red_pos = scene["red"].data.root_pos_w[0].detach().cpu().numpy()
                 blue_pos = scene["blue"].data.root_pos_w[0].detach().cpu().numpy()
@@ -1693,17 +2251,39 @@ def main() -> None:
     cfg = make_scene_cfg()
     if args_cli.print_layout:
         print(format_action_layout())
-        print(format_layout(cfg))
+        project_cfg = load_project_config(CONFIG_PATH)
+        if project_cfg.dataset.task_id == "right_blue_cylinder_plate":
+            print(format_layout(cfg))
+        else:
+            print(f"Task layout will be printed by scene builder: {project_cfg.dataset.task_id}")
 
-    sim = create_simulation_context(args_cli.device)
-    scene = build_scene(cfg)
+    print("[BOOT] creating SimulationContext...", flush=True)
+    sim_device = args_cli.device
+    if args_cli.drawer_open and str(sim_device).startswith("cuda"):
+        sim_device = "cpu"
+        print(
+            "[DRAWER] --drawer-open uses CPU PhysX because direct GPU API forbids runtime articulation drive targets.",
+            flush=True,
+        )
+    sim = create_simulation_context(sim_device)
+    print("[BOOT] building scene...", flush=True)
+    scene_builder = resolve_scene_builder()
+    print(f"[BOOT] scene builder: {scene_builder.__module__}:{scene_builder.__name__}", flush=True)
+    scene = scene_builder(cfg)
+    print("[BOOT] resetting simulation...", flush=True)
     sim.reset()
+    print("[BOOT] resetting camera...", flush=True)
     reset_camera(scene["camera"], sim, cfg)
+    print("[BOOT] entering run loop...", flush=True)
     run_debug(scene, cfg, sim)
 
 
 if __name__ == "__main__":
     try:
         main()
+    except BaseException:
+        print("[FATAL] 03_record_physics_dataset.py failed before normal shutdown:", flush=True)
+        traceback.print_exc()
+        raise
     finally:
         simulation_app.close()

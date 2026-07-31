@@ -1,12 +1,11 @@
-# SmolVLA training config template for drawer_insert_close.
-# Update dataset/output_dir after the drawer scene and recorder are validated.
+# SmolVLA training config for right_blue_cylinder_plate.
 
-task: drawer_insert_close
+task: right_blue_cylinder_plate
 robot: S4-UpperBody
 
-dataset: s4_drawer_insert_close_v0
+dataset: s4_right_blue_cylinder_plate_v1
 dataset_root: /home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data
-output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v0
+output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_s4_right_v1
 
 steps: 20000
 batch_size: 4

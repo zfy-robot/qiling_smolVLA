@@ -1,17 +1,17 @@
 {
-  "task_id": "drawer_insert_close",
+  "task_id": "right_blue_cylinder_plate",
   "dataset": {
-    "repo_id": "local/s4_drawer_insert_close_v0",
-    "staging_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/staging/s4_drawer_insert_close_v0",
-    "root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/s4_drawer_insert_close_v0",
+    "repo_id": "local/s4_right_blue_cylinder_plate_v1",
+    "staging_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/staging/s4_right_blue_cylinder_plate_v1",
+    "root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/s4_right_blue_cylinder_plate_v1",
     "lerobot_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data",
     "fps": 20,
-    "task": "Open the drawer, place the object inside, and close the drawer.",
+    "task": "Use the right hand to put the blue cylinder into the plate.",
     "control_mode": "right_only"
   },
   "scene": {
     "scene_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd",
-    "table_usd": null,
+    "table_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Props/PackingTable/packing_table.usd",
     "table_top_z": 1.0
   },
   "features": {
@@ -37,11 +37,12 @@
     }
   },
   "training": {
-    "env_name": "s4_drawer_insert_close",
+    "env_name": "s4_right_blue_cylinder_plate",
     "policy_type": "smolvla",
     "pretrained_policy": "lerobot/smolvla_base",
-    "output_dir": "/home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v0",
+    "output_dir": "/home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_s4_right_v1",
     "target_episodes_first_pass": 20,
     "target_episodes_training_pass": 100
   }
 }
+
