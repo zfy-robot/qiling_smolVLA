@@ -10,12 +10,18 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs/train/smolvla_s4_bimanual_v0/checkpoints"
-DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets/lerobot_data/s4_bimanual_red_blue_plate_v0"
+DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs/train/smolvla_s4_right_v1/checkpoints"
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets/lerobot_data/s4_right_blue_cylinder_plate_v1"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/eval/policy_visualization.mp4"
 DEFAULT_HF_HOME = PROJECT_ROOT / ".cache/huggingface"
-RIGHT_ARM = slice(13, 20)
-RIGHT_HAND = slice(20, 26)
+
+
+def _action_groups(action_dim: int) -> tuple[slice, slice]:
+    if action_dim == 13:
+        return slice(0, 7), slice(7, 13)
+    if action_dim == 26:
+        return slice(13, 20), slice(20, 26)
+    raise ValueError(f"Unsupported action dim for visualization: {action_dim}")
 
 
 def _set_local_hf_cache() -> None:
@@ -110,9 +116,10 @@ def _draw_frame(image: Any, info: dict[str, Any], pred: Any, expert: Any) -> Any
     x = base.width + 14
     y = 12
     diff = pred - expert
+    right_arm, right_hand = _action_groups(int(expert.numel()))
     mae = diff.abs().mean().item()
-    ra_mae = diff[RIGHT_ARM].abs().mean().item()
-    rh_mae = diff[RIGHT_HAND].abs().mean().item()
+    ra_mae = diff[right_arm].abs().mean().item()
+    rh_mae = diff[right_hand].abs().mean().item()
     draw.text((x, y), "SmolVLA offline policy visualization", fill=(255, 255, 255))
     y += 22
     draw.text((x, y), f"episode={info['episode']} frame={info['frame']} idx={info['idx']}", fill=(220, 220, 220))
@@ -123,8 +130,8 @@ def _draw_frame(image: Any, info: dict[str, Any], pred: Any, expert: Any) -> Any
     y += 24
     pred_list = pred.detach().cpu().tolist()
     expert_list = expert.detach().cpu().tolist()
-    y = _draw_bars(draw, x, y, "right_arm action[13:20]", pred_list[13:20], expert_list[13:20], -1.8, 1.8)
-    _draw_bars(draw, x, y, "right_hand action[20:26]", pred_list[20:26], expert_list[20:26], -0.2, 1.2)
+    y = _draw_bars(draw, x, y, f"right_arm action[{right_arm.start}:{right_arm.stop}]", pred_list[right_arm], expert_list[right_arm], -1.8, 1.8)
+    _draw_bars(draw, x, y, f"right_hand action[{right_hand.start}:{right_hand.stop}]", pred_list[right_hand], expert_list[right_hand], -0.2, 1.2)
     return np.asarray(canvas)
 
 
@@ -151,7 +158,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render an offline SmolVLA policy visualization video.")
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--dataset-root", default=str(DEFAULT_DATASET_ROOT))
-    parser.add_argument("--repo-id", default="s4_bimanual_red_blue_plate_v0")
+    parser.add_argument("--repo-id", default="s4_right_blue_cylinder_plate_v1")
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument("--max-frames", type=int, default=360)

@@ -22,12 +22,12 @@ IsaacLab robot joint state + chest RGB
 -> policy_preprocessor
 -> SmolVLAPolicy.select_action
 -> policy_postprocessor
--> 26D action
+-> task action
 -> s4_robot/control_mapping.py
 -> IsaacLab joint position target
 ```
 
-The final mapping step is local because the S4 IsaacLab robot is not a LeRobot built-in hardware class.
+The final mapping step is local because the S4 IsaacLab robot is not a LeRobot built-in hardware class. The current v1 task trains a right-only 13D policy action (`right_arm_7 + right_hand_6`). Online eval expands that 13D output into the internal 26D active action buffer and only overwrites the right side.
 
 ## Data Contract
 
@@ -48,12 +48,24 @@ obs/chest_front_rgb
 Current LeRobot features:
 
 ```text
-observation.state: 48D full imported robot joint position
-observation.images.chest_front_rgb: 240x320 RGB video
-action: 26D left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
+observation.state: 13D right_arm_7 + right_hand_6
+observation.images.chest_front_rgb: 480x680 RGB video
+action: 13D right_arm_7 + right_hand_6
 ```
 
+Raw HDF5 still stores full joint positions and full 26D active actions for debugging. Conversion defaults to `control_mode=right_only` and slices `processed_actions[13:26]` plus `obs/s4_active_joint_pos[13:26]`.
+
 ## Action Layout
+
+```text
+LeRobot v1 right-only action:
+
+```text
+00:07 right_arm
+07:13 right_hand
+```
+
+Internal/debug 26D active action:
 
 ```text
 00:07 left_arm

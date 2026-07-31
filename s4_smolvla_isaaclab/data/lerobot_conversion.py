@@ -15,6 +15,8 @@ import numpy as np
 
 from . import hdf5_schema as schema
 
+RIGHT_ONLY_ACTION_SLICE = slice(13, 26)
+
 
 def video_info(fps: int) -> dict:
     return {
@@ -35,14 +37,18 @@ def discover_hdf5_files(root_path: Path) -> list[Path]:
     raise FileNotFoundError(f"HDF5 root does not exist: {root_path}")
 
 
-def inspect_first_demo(hdf5_path: Path, camera_path: str) -> tuple[int, int, tuple[int, ...]]:
+def inspect_first_demo(hdf5_path: Path, camera_path: str, control_mode: str) -> tuple[int, int, tuple[int, ...]]:
     with h5py.File(hdf5_path, "r") as f:
         demo_names = sorted(f["data"].keys(), key=lambda x: int(x.split("_")[-1]))
         for demo_name in demo_names:
             demo = f["data"][demo_name]
             if schema.PROCESSED_ACTIONS in demo and schema.FULL_JOINT_POS in demo and camera_path in demo:
-                action_dim = int(np.asarray(demo[schema.PROCESSED_ACTIONS]).shape[1])
-                state_dim = int(np.asarray(demo[schema.FULL_JOINT_POS]).shape[1])
+                if control_mode == "right_only":
+                    action_dim = 13
+                    state_dim = 13
+                else:
+                    action_dim = int(np.asarray(demo[schema.PROCESSED_ACTIONS]).shape[1])
+                    state_dim = int(np.asarray(demo[schema.FULL_JOINT_POS]).shape[1])
                 camera_shape = tuple(np.asarray(demo[camera_path][0]).shape)
                 return state_dim, action_dim, camera_shape
     raise ValueError(f"No valid demo found in {hdf5_path}")
@@ -83,15 +89,18 @@ def convert_hdf5_to_lerobot(
     camera_paths: list[str] | None = None,
     fps: int = 30,
     overwrite: bool = False,
+    control_mode: str = "right_only",
 ) -> Path:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     camera_paths = camera_paths or [schema.CHEST_FRONT_RGB]
+    if control_mode not in {"right_only", "bimanual"}:
+        raise ValueError(f"control_mode must be right_only or bimanual, got {control_mode!r}")
     hdf5_files = discover_hdf5_files(root_path)
     if not hdf5_files:
         raise FileNotFoundError(f"No .hdf5 files found under {root_path}")
 
-    state_dim, action_dim, camera_shape = inspect_first_demo(hdf5_files[0], camera_paths[0])
+    state_dim, action_dim, camera_shape = inspect_first_demo(hdf5_files[0], camera_paths[0], control_mode)
     features = build_lerobot_features(camera_paths, state_dim, action_dim, camera_shape, fps=fps)
     dataset_root = Path(output_root) / repo_id
     if dataset_root.exists():
@@ -119,7 +128,11 @@ def convert_hdf5_to_lerobot(
                 if schema.PROCESSED_ACTIONS not in demo:
                     continue
                 actions = np.asarray(demo[schema.PROCESSED_ACTIONS])
-                states = np.asarray(demo[schema.FULL_JOINT_POS])
+                if control_mode == "right_only":
+                    actions = actions[:, RIGHT_ONLY_ACTION_SLICE]
+                    states = np.asarray(demo[schema.ACTIVE_JOINT_POS])[:, RIGHT_ONLY_ACTION_SLICE]
+                else:
+                    states = np.asarray(demo[schema.FULL_JOINT_POS])
                 cameras = {path: np.asarray(demo[path]) for path in camera_paths}
                 frame_count = min([len(actions), len(states), *(len(v) for v in cameras.values())])
                 for i in range(frame_count):

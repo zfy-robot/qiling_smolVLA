@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -33,7 +35,15 @@ parser.add_argument("--block-y-offset", type=float, default=0.20, help="Half spa
 parser.add_argument("--plate-x", type=float, default=0.50, help="World X for plate center.")
 parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.18, -0.62, 1.42], metavar=("X", "Y", "Z"))
 parser.add_argument("--camera-target", type=float, nargs=3, default=[0.52, -0.12, 0.98], metavar=("X", "Y", "Z"))
-parser.add_argument("--camera-width", type=int, default=640)
+parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[-11.0, -26.0, -95.0], metavar=("R", "P", "Y"))
+parser.add_argument("--camera-convention", choices=["opengl", "ros", "world"], default="opengl")
+parser.add_argument(
+    "--camera-look-at",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Pass --no-camera-look-at to use --camera-rpy-deg.",
+)
+parser.add_argument("--camera-width", type=int, default=680)
 parser.add_argument("--camera-height", type=int, default=480)
 parser.add_argument("--continuous", action="store_true", help="Run forever for debug.")
 parser.add_argument("--keyboard-jog", action="store_true", help="Enable live keyboard joint jogging.")
@@ -73,7 +83,8 @@ parser.add_argument(
 )
 parser.add_argument("--unstable-arm-threshold", type=float, default=3.2)
 parser.add_argument("--unstable-arm-velocity-threshold", type=float, default=18.0)
-parser.add_argument("--reset-settle-steps", type=int, default=120, help="Physics steps to settle the robot after reset before syncing hold targets.")
+parser.add_argument("--reset-settle-steps", type=int, default=0, help="Minimum physics steps to settle the robot after reset before syncing hold targets.")
+parser.add_argument("--reset-settle-s", type=float, default=2.0, help="Minimum simulated seconds to settle after scene load/reset before starting a task.")
 parser.add_argument(
     "--gravity-compensation",
     action=argparse.BooleanOptionalAction,
@@ -88,8 +99,32 @@ parser.add_argument("--record-every-n", type=int, default=1, help="Record every 
 parser.add_argument(
     "--record-episode-timeout-s",
     type=float,
-    default=500.0,
+    default=120.0,
     help="Discard the active recorded episode and reset if it exceeds this wall-clock timeout.",
+)
+parser.add_argument(
+    "--success-check",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Only write recorded episodes when the target cylinder finishes inside the plate region.",
+)
+parser.add_argument(
+    "--success-xy-tolerance",
+    type=float,
+    default=None,
+    help="Maximum final XY distance from cylinder center to plate center. Default is plate_radius - cylinder_radius.",
+)
+parser.add_argument(
+    "--success-z-min-above-plate",
+    type=float,
+    default=-0.02,
+    help="Minimum final cylinder center height relative to plate center for success.",
+)
+parser.add_argument(
+    "--success-z-max-above-plate",
+    type=float,
+    default=0.20,
+    help="Maximum final cylinder center height relative to plate center for success.",
 )
 parser.add_argument("--auto-grasp", action="store_true", help="Automatically start grasp-block when recording starts.")
 parser.add_argument("--auto-grasp-block", choices=["red", "blue"], default="blue")
@@ -132,8 +167,10 @@ from s4_robot.arm_control import (
 from s4_robot.control_mapping import ACTION_SLICES, extract_bimanual_state, format_action_layout
 from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS, RIGHT_ARM_JOINTS, RIGHT_HAND_JOINTS, get_joint_limits
 from s4_robot.simulation import (
+    BLOCK_CYLINDER_RADIUS,
     DEFAULT_SCENE_USD,
     DEFAULT_TABLE_USD,
+    PLATE_RADIUS,
     SceneBuildCfg,
     TASK_OBJECT_KEYS,
     TaskLayout,
@@ -183,6 +220,8 @@ def make_scene_cfg() -> SceneBuildCfg:
         layout=layout,
         camera_eye=tuple(float(x) for x in args_cli.camera_eye),
         camera_target=tuple(float(x) for x in args_cli.camera_target),
+        camera_rpy_deg=None if args_cli.camera_look_at else tuple(float(x) for x in args_cli.camera_rpy_deg),
+        camera_convention=str(args_cli.camera_convention),
         camera_width=max(int(args_cli.camera_width), 1),
         camera_height=max(int(args_cli.camera_height), 1),
     )
@@ -220,6 +259,35 @@ def pose7_from_rigid_object(obj) -> np.ndarray:
     pos = obj.data.root_pos_w[0].detach().cpu().numpy()
     quat = obj.data.root_quat_w[0].detach().cpu().numpy()
     return np.concatenate([pos, quat]).astype(np.float32)
+
+
+def final_cylinder_in_plate(scene: dict[str, object], block: str) -> tuple[bool, dict[str, float]]:
+    block_obj = scene["blue"] if block == "blue" else scene["red"]
+    block_pos = block_obj.data.root_pos_w[0].detach().cpu().numpy()
+    plate_pos = scene["plate"].data.root_pos_w[0].detach().cpu().numpy()
+    xy_dist = float(np.linalg.norm(block_pos[:2] - plate_pos[:2]))
+    z_above_plate = float(block_pos[2] - plate_pos[2])
+    xy_tolerance = (
+        float(args_cli.success_xy_tolerance)
+        if args_cli.success_xy_tolerance is not None
+        else max(float(PLATE_RADIUS - BLOCK_CYLINDER_RADIUS), 0.01)
+    )
+    z_min = float(args_cli.success_z_min_above_plate)
+    z_max = float(args_cli.success_z_max_above_plate)
+    ok = bool(xy_dist <= xy_tolerance and z_min <= z_above_plate <= z_max)
+    return ok, {
+        "xy_dist": xy_dist,
+        "xy_tolerance": xy_tolerance,
+        "z_above_plate": z_above_plate,
+        "z_min": z_min,
+        "z_max": z_max,
+        "block_x": float(block_pos[0]),
+        "block_y": float(block_pos[1]),
+        "block_z": float(block_pos[2]),
+        "plate_x": float(plate_pos[0]),
+        "plate_y": float(plate_pos[1]),
+        "plate_z": float(plate_pos[2]),
+    }
 
 
 def camera_rgb_uint8(camera) -> np.ndarray:
@@ -270,19 +338,16 @@ def default_grasp_payload(block: str) -> dict[str, object]:
         "grasp_pose": "current",
         "grasp_rpy": [0.0, 0.1, -0.20],
         "place_rpy": [0.40, 0.0, 0.0],
-        "release_lift_y": -0.05,
-        "release_lift_z": 0.18,
-        "release_retreat_offset": [-0.12, -0.24, 0.06],
         "tolerance": 0.05,
         "approach_steps": 120,
         "lower_steps": 120,
         "close_steps": 70,
+        "pre_close_hold_steps": 120,
         "hand_complete_tolerance": 0.015,
         "lift_steps": 60,
         "place_steps": 150,
+        "pre_release_hold_steps": 120,
         "release_steps": 50,
-        "release_lift_steps": 70,
-        "retreat_steps": 120,
     }
 
 
@@ -294,7 +359,7 @@ def settle_scene_to_target(scene: dict[str, object], camera, full_target: np.nda
     for _ in range(steps):
         robot.set_joint_position_target(target_tensor)
         robot.write_data_to_sim()
-        sim.step(render=not args_cli.headless)
+        sim.step(render=True)
         robot.update(dt=sim.get_physics_dt())
         for key in TASK_OBJECT_KEYS:
             scene[key].update(dt=sim.get_physics_dt())
@@ -537,7 +602,7 @@ def print_right_arm_diagnostics(
         for _ in range(hold_steps):
             robot.set_joint_position_target(target_tensor)
             robot.write_data_to_sim()
-            sim.step(render=not args_cli.headless)
+            sim.step(render=True)
             robot.update(dt=sim.get_physics_dt())
         hold_end = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
         hold_delta = hold_end - hold_start
@@ -606,7 +671,7 @@ def print_right_arm_diagnostics(
             for _ in range(4):
                 robot.set_joint_position_target(hold_target)
                 robot.write_data_to_sim()
-                sim.step(render=not args_cli.headless)
+                sim.step(render=True)
                 robot.update(dt=sim.get_physics_dt())
             q_start = robot.data.joint_pos.clone()
             tcp_start = right_tcp_position(robot, reach_controller, tcp_offset_wrist)
@@ -615,7 +680,7 @@ def print_right_arm_diagnostics(
             for _ in range(drive_steps):
                 robot.set_joint_position_target(drive_target)
                 robot.write_data_to_sim()
-                sim.step(render=not args_cli.headless)
+                sim.step(render=True)
                 robot.update(dt=sim.get_physics_dt())
             q_end = float(robot.data.joint_pos[0, jid])
             right_q_delta = (robot.data.joint_pos[0, joint_ids] - q_start[0, joint_ids]).detach().cpu().numpy()
@@ -656,6 +721,10 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     robot: Articulation = scene["robot"]
     camera = scene["camera"]
     sim_dt = sim.get_physics_dt()
+    reset_settle_steps = max(
+        int(args_cli.reset_settle_steps),
+        int(math.ceil(max(float(args_cli.reset_settle_s), 0.0) / max(float(sim_dt), 1.0e-6))),
+    )
     rng = np.random.default_rng(int(args_cli.random_seed))
     randomize_blue_xy = max(float(args_cli.randomize_blue_xy), 0.0)
     default_target = reset_scene(scene, cfg, sim)
@@ -667,7 +736,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
             f"[RANDOMIZE] blue xy offset=({blue_offset_xy[0]:+.4f},{blue_offset_xy[1]:+.4f}) "
             f"blue=({blue_pos[0]:.3f},{blue_pos[1]:.3f},{blue_pos[2]:.3f})"
         )
-    settle_scene_to_target(scene, camera, default_target, sim, args_cli.reset_settle_steps)
+    settle_scene_to_target(scene, camera, default_target, sim, reset_settle_steps)
     full_command_target = default_target.copy()
     robot.set_joint_position_target(torch.tensor(full_command_target, device=sim.device).view(1, -1))
     robot.write_data_to_sim()
@@ -697,6 +766,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     writer = None
     recording_episode = None
     recorded_episodes = 0
+    record_complete = False
     record_step = 0
     record_wall_start = None
     auto_grasp_pending = bool(args_cli.auto_grasp or args_cli.record_output is not None)
@@ -711,15 +781,29 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 "sim_dt": float(sim.get_physics_dt()),
                 "record_every_n": int(record_every_n),
                 "record_episode_timeout_s": float(max(float(args_cli.record_episode_timeout_s), 1.0)),
+                "reset_settle_s": float(max(float(args_cli.reset_settle_s), 0.0)),
+                "reset_settle_steps": int(reset_settle_steps),
                 "record_fps": float(1.0 / (sim.get_physics_dt() * record_every_n)),
                 "randomization": {
                     "blue_xy_range_m": float(randomize_blue_xy),
                     "random_seed": int(args_cli.random_seed),
                     "distribution": "uniform",
                 },
+                "success_filter": {
+                    "enabled": bool(args_cli.success_check),
+                    "target_block": str(args_cli.auto_grasp_block),
+                    "xy_tolerance": (
+                        None if args_cli.success_xy_tolerance is None else float(args_cli.success_xy_tolerance)
+                    ),
+                    "default_xy_tolerance": float(max(PLATE_RADIUS - BLOCK_CYLINDER_RADIUS, 0.01)),
+                    "z_min_above_plate": float(args_cli.success_z_min_above_plate),
+                    "z_max_above_plate": float(args_cli.success_z_max_above_plate),
+                },
                 "camera": {
                     "eye": list(cfg.camera_eye),
                     "target": list(cfg.camera_target),
+                    "rpy_deg": None if cfg.camera_rpy_deg is None else list(cfg.camera_rpy_deg),
+                    "convention": str(cfg.camera_convention),
                     "width": int(cfg.camera_width),
                     "height": int(cfg.camera_height),
                 },
@@ -748,6 +832,14 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     args_cli.arm_control_file.write_text(json.dumps({"mode": "idle"}, indent=2), encoding="utf-8")
     print("\nS4 debug running.")
     print(format_layout(cfg))
+    print(
+        "Recording camera: /World/DebugFrontCamera "
+        f"mode={'look_at' if cfg.camera_rpy_deg is None else 'rpy'} "
+        f"eye=({cfg.camera_eye[0]:.3f},{cfg.camera_eye[1]:.3f},{cfg.camera_eye[2]:.3f}) "
+        f"target=({cfg.camera_target[0]:.3f},{cfg.camera_target[1]:.3f},{cfg.camera_target[2]:.3f}) "
+        f"rpy_deg={cfg.camera_rpy_deg} convention={cfg.camera_convention} "
+        f"size={cfg.camera_width}x{cfg.camera_height} sensor_render=True ui_headless={bool(args_cli.headless)}"
+    )
     if tcp_visualizer is not None:
         print("TCP frames: /World/Visuals/RightHandTCP and /World/Visuals/TargetBlockTCP")
     if keyboard_jog is not None:
@@ -757,6 +849,18 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
         print(
             f"HDF5 recording: {args_cli.record_output} episodes={max_record_episodes} "
             f"every_n={record_every_n} timeout={max(float(args_cli.record_episode_timeout_s), 1.0):.1f}s"
+        )
+        success_xy_tolerance = (
+            float(args_cli.success_xy_tolerance)
+            if args_cli.success_xy_tolerance is not None
+            else max(float(PLATE_RADIUS - BLOCK_CYLINDER_RADIUS), 0.01)
+        )
+        print(
+            "Success filter: "
+            f"enabled={bool(args_cli.success_check)} block={args_cli.auto_grasp_block} "
+            f"xy_dist<={success_xy_tolerance:.3f}m "
+            f"z_above_plate=[{float(args_cli.success_z_min_above_plate):.3f},"
+            f"{float(args_cli.success_z_max_above_plate):.3f}]m"
         )
     if args_cli.verbose_status:
         print(f"Joint control file: {args_cli.control_file}")
@@ -846,27 +950,19 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                     "grasp_pose": payload.get("grasp_pose", "current"),
                                     "grasp_rpy": np.asarray(payload.get("grasp_rpy", [0.0, 0.1, -0.20]), dtype=np.float32),
                                     "place_rpy": np.asarray(payload.get("place_rpy", [0.40, 0.0, 0.0]), dtype=np.float32),
-                                    "release_lift_y": float(payload.get("release_lift_y", -0.05)),
-                                    "release_lift_z": float(payload.get("release_lift_z", 0.18)),
-                                    "release_retreat_offset": np.asarray(
-                                        payload.get("release_retreat_offset", [-0.12, -0.24, 0.06]),
-                                        dtype=np.float32,
-                                    ),
                                     "tolerance": max(float(payload.get("tolerance", 0.05)), 0.01),
                                     "approach_steps": max(int(payload.get("approach_steps", 360)), 1),
                                     "lower_steps": max(int(payload.get("lower_steps", 240)), 1),
                                     "close_steps": max(int(payload.get("close_steps", 160)), 1),
+                                    "pre_close_hold_steps": max(int(payload.get("pre_close_hold_steps", 120)), 0),
                                     "hand_complete_tolerance": max(float(payload.get("hand_complete_tolerance", 0.015)), 0.001),
                                     "lift_steps": max(int(payload.get("lift_steps", 120)), 1),
                                     "place_steps": max(int(payload.get("place_steps", 360)), 1),
+                                    "pre_release_hold_steps": max(int(payload.get("pre_release_hold_steps", 120)), 0),
                                     "release_steps": max(int(payload.get("release_steps", 120)), 1),
-                                    "release_lift_steps": max(int(payload.get("release_lift_steps", 70)), 1),
-                                    "retreat_steps": max(int(payload.get("retreat_steps", 360)), 1),
                                 }
                                 if grasp_plan["place_offset"].shape != (2,):
                                     grasp_plan["place_offset"] = np.array([0.0, -0.05], dtype=np.float32)
-                                if grasp_plan["release_retreat_offset"].shape != (3,):
-                                    grasp_plan["release_retreat_offset"] = np.array([-0.12, -0.24, 0.06], dtype=np.float32)
                                 grasp_phase = "approach"
                                 grasp_phase_steps = 0
                                 reach_offset = np.array(
@@ -1025,7 +1121,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                 camera,
                                 default_target,
                                 sim,
-                                args_cli.reset_settle_steps,
+                                reset_settle_steps,
                             )
                             full_command_target = default_target.copy()
                             action = control_action_from_sim(robot)
@@ -1048,7 +1144,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                                 reach_controller.reset_diagnostics()
                             robot.set_joint_position_target(torch.tensor(full_command_target, device=sim.device).view(1, -1))
                             robot.write_data_to_sim()
-                            print(f"[SCENE] reset robot, task objects, camera, and control state after {args_cli.reset_settle_steps} settle steps.")
+                            print(f"[SCENE] reset robot, task objects, camera, and control state after {reset_settle_steps} settle steps.")
                         elif mode == "diagnose-right-arm":
                             arm_mode = "idle"
                             reach_block = None
@@ -1109,6 +1205,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 block_phase_offsets = {
                     "approach": np.array([base_offset[0], base_offset[1], grasp_plan["approach_z"]], dtype=np.float32),
                     "lower": np.array([base_offset[0], base_offset[1], grasp_plan["grasp_z"]], dtype=np.float32),
+                    "pre_close_hold": np.array([base_offset[0], base_offset[1], grasp_plan["grasp_z"]], dtype=np.float32),
                     "close": np.array([base_offset[0], base_offset[1], grasp_plan["grasp_z"]], dtype=np.float32),
                     "lift": np.array([base_offset[0], base_offset[1], grasp_plan["lift_z"]], dtype=np.float32),
                 }
@@ -1121,30 +1218,23 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                         [place_offset[0], place_offset[1], grasp_plan["place_z"]],
                         dtype=np.float32,
                     ),
+                    "pre_release_hold": np.array(
+                        [place_offset[0], place_offset[1], grasp_plan["place_z"]],
+                        dtype=np.float32,
+                    ),
                     "release": np.array(
                         [place_offset[0], place_offset[1], grasp_plan["place_z"]],
                         dtype=np.float32,
                     ),
-                    "release_lift": np.array(
-                        [0.0, grasp_plan["release_lift_y"], grasp_plan["release_lift_z"]],
-                        dtype=np.float32,
-                    ),
-                    "release_retreat": np.asarray(grasp_plan["release_retreat_offset"], dtype=np.float32),
                 }
-                if grasp_phase in {"release_lift", "release_retreat"}:
-                    phase_anchor_key = f"{grasp_phase}_anchor_pos_w"
-                    phase_anchor = grasp_plan.get(phase_anchor_key)
-                    if phase_anchor is None:
-                        phase_anchor = plate_anchor
-                    phase_offset = plate_phase_offsets[grasp_phase]
-                elif grasp_phase in plate_phase_offsets:
+                if grasp_phase in plate_phase_offsets:
                     phase_anchor = plate_anchor
                     phase_offset = plate_phase_offsets[grasp_phase]
                 else:
                     phase_anchor = block_anchor
                     phase_offset = block_phase_offsets.get(grasp_phase, block_phase_offsets["approach"])
                 if reach_controller is not None:
-                    if grasp_phase in {"release_lift", "release_retreat"} or reach_offset_frame == "world":
+                    if reach_offset_frame == "world":
                         phase_offset_w = phase_offset
                     else:
                         offset_t = torch.tensor(phase_offset, dtype=torch.float32, device=sim.device).view(1, 3)
@@ -1168,8 +1258,12 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     grasp_phase_steps = 0
                 elif grasp_phase == "lower":
                     if phase_dist <= grasp_plan["tolerance"]:
-                        grasp_phase = "close"
+                        grasp_phase = "pre_close_hold"
                         grasp_phase_steps = 0
+                        print(
+                            "[ARM] pre-close hold: keeping hand open at grasp pose "
+                            f"for {grasp_plan['pre_close_hold_steps']} sim steps before closing."
+                        )
                     elif grasp_phase_steps >= grasp_plan["lower_steps"]:
                         now = time.monotonic()
                         if now - last_grasp_wait_report > 1.0:
@@ -1180,6 +1274,9 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             )
                             last_grasp_wait_report = now
                         grasp_phase_steps = grasp_plan["lower_steps"]
+                elif grasp_phase == "pre_close_hold" and grasp_phase_steps >= grasp_plan["pre_close_hold_steps"]:
+                    grasp_phase = "close"
+                    grasp_phase_steps = 0
                 elif grasp_phase == "close":
                     hand_err = right_hand_command_error(commanded_action, CLOSE_RIGHT_HAND)
                     if grasp_phase_steps >= grasp_plan["close_steps"] and hand_err <= grasp_plan["hand_complete_tolerance"]:
@@ -1228,8 +1325,12 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     grasp_phase_steps = 0
                 elif grasp_phase == "place_lower":
                     if phase_dist <= grasp_plan["tolerance"]:
-                        grasp_phase = "release"
+                        grasp_phase = "pre_release_hold"
                         grasp_phase_steps = 0
+                        print(
+                            "[ARM] pre-release hold: keeping hand closed at place pose "
+                            f"for {grasp_plan['pre_release_hold_steps']} sim steps before opening."
+                        )
                     elif grasp_phase_steps >= grasp_plan["place_steps"]:
                         now = time.monotonic()
                         if now - last_grasp_wait_report > 1.0:
@@ -1240,53 +1341,32 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             )
                             last_grasp_wait_report = now
                         grasp_phase_steps = grasp_plan["place_steps"]
+                elif grasp_phase == "pre_release_hold" and grasp_phase_steps >= grasp_plan["pre_release_hold_steps"]:
+                    grasp_phase = "release"
+                    grasp_phase_steps = 0
                 elif grasp_phase == "release":
                     hand_err = right_hand_command_error(commanded_action, OPEN_RIGHT_HAND)
                     if grasp_phase_steps >= grasp_plan["release_steps"] and hand_err <= grasp_plan["hand_complete_tolerance"]:
                         commanded_action[ACTION_SLICES.right_hand] = OPEN_RIGHT_HAND.copy()
                         desired_action[ACTION_SLICES.right_hand] = OPEN_RIGHT_HAND.copy()
                         hand_target = OPEN_RIGHT_HAND.copy()
-                        if current_tcp_pose is not None:
-                            grasp_plan["release_lift_anchor_pos_w"] = current_tcp_pose[0].copy()
-                        else:
-                            grasp_plan["release_lift_anchor_pos_w"] = plate_anchor + np.array(
-                                [grasp_plan["place_offset"][0], grasp_plan["place_offset"][1], grasp_plan["place_z"]],
-                                dtype=np.float32,
-                            )
-                        grasp_phase = "release_lift"
+                        grasp_phase = "done"
                         grasp_phase_steps = 0
                     elif grasp_phase_steps >= grasp_plan["release_steps"]:
                         now = time.monotonic()
                         if now - last_grasp_wait_report > 1.0:
                             print(
-                                "[ARM] waiting for hand open before retreat: "
+                                "[ARM] waiting for hand open before ending: "
                                 f"cmd_err={hand_err:.3f} tol={grasp_plan['hand_complete_tolerance']:.3f}"
                             )
                             last_grasp_wait_report = now
                         grasp_phase_steps = grasp_plan["release_steps"]
-                elif grasp_phase == "release_lift" and (
-                    phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["release_lift_steps"]
-                ):
-                    if current_tcp_pose is not None:
-                        grasp_plan["release_retreat_anchor_pos_w"] = current_tcp_pose[0].copy()
-                    else:
-                        grasp_plan["release_retreat_anchor_pos_w"] = grasp_plan.get(
-                            "release_lift_anchor_pos_w",
-                            plate_anchor,
-                        ) + plate_phase_offsets["release_lift"]
-                    grasp_phase = "release_retreat"
-                    grasp_phase_steps = 0
-                elif grasp_phase == "release_retreat" and (
-                    phase_dist <= grasp_plan["tolerance"] or grasp_phase_steps >= grasp_plan["retreat_steps"]
-                ):
-                    grasp_phase = "done"
-                    grasp_phase_steps = 0
                 if grasp_phase != old_phase:
                     print(f"[ARM] grasp phase {old_phase} -> {grasp_phase} dist={phase_dist:.3f}m")
                 if grasp_phase == "lift":
                     carry_quat = grasp_plan.get("carry_tcp_quat_w")
                     grasp_plan["active_target_tcp_quat_w"] = carry_quat if carry_quat is not None else grasp_plan.get("target_tcp_quat_w")
-                elif grasp_phase in {"move_to_plate", "place_lower", "release", "release_lift", "release_retreat", "done"}:
+                elif grasp_phase in {"move_to_plate", "place_lower", "pre_release_hold", "release", "done"}:
                     place_quat = grasp_plan.get("place_tcp_quat_w")
                     carry_quat = grasp_plan.get("carry_tcp_quat_w")
                     grasp_plan["active_target_tcp_quat_w"] = (
@@ -1294,25 +1374,25 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     )
                 else:
                     grasp_plan["active_target_tcp_quat_w"] = grasp_plan.get("target_tcp_quat_w")
-                if grasp_phase in {"release_lift", "release_retreat"}:
-                    phase_anchor_key = f"{grasp_phase}_anchor_pos_w"
-                    target_block_pos_w = grasp_plan.get(phase_anchor_key, plate_anchor)
-                    reach_offset = plate_phase_offsets[grasp_phase]
-                elif grasp_phase in plate_phase_offsets:
+                if grasp_phase in plate_phase_offsets:
                     target_block_pos_w = plate_anchor
                     reach_offset = plate_phase_offsets[grasp_phase]
                 else:
                     target_block_pos_w = block_anchor
                     reach_offset = block_phase_offsets.get(grasp_phase, block_phase_offsets["approach"])
                 grasp_plan["active_anchor_pos_w"] = target_block_pos_w.copy()
-                hand_target = CLOSE_RIGHT_HAND.copy() if grasp_phase in {"close", "lift", "move_to_plate", "place_lower"} else OPEN_RIGHT_HAND.copy()
+                hand_target = (
+                    CLOSE_RIGHT_HAND.copy()
+                    if grasp_phase in {"close", "lift", "move_to_plate", "place_lower", "pre_release_hold"}
+                    else OPEN_RIGHT_HAND.copy()
+                )
                 if grasp_phase == "done":
                     arm_mode = "hold"
                     hold_action = commanded_action.copy()
                     commanded_action = hold_action.copy()
                     desired_action = hold_action.copy()
                     hand_target = OPEN_RIGHT_HAND.copy()
-                    print("[ARM] grasp-place sequence done; released cylinder, lifted vertically, and retreated.")
+                    print("[ARM] grasp-place sequence done; released cylinder and holding final pose.")
             if (
                 arm_mode in {"reach-block", "grasp-block"}
                 and reach_controller is not None
@@ -1330,9 +1410,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     reach_tcp_offset,
                     hand_target,
                     offset_frame=(
-                        "world"
-                        if arm_mode == "grasp-block" and grasp_phase in {"release_lift", "release_retreat"}
-                        else reach_offset_frame
+                        reach_offset_frame
                     ),
                     target_block_pos_w=target_block_pos_w,
                     target_tcp_quat_w=target_pose_quat_w,
@@ -1400,7 +1478,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 enabled=bool(args_cli.gravity_compensation),
             )
             robot.write_data_to_sim()
-            sim.step(render=not args_cli.headless)
+            sim.step(render=True)
             robot.update(dt=sim_dt)
             for key in TASK_OBJECT_KEYS:
                 scene[key].update(dt=sim_dt)
@@ -1427,7 +1505,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             f"blue=({blue_pos[0]:.3f},{blue_pos[1]:.3f},{blue_pos[2]:.3f})"
                         )
                     reset_camera(camera, sim, cfg)
-                    settle_scene_to_target(scene, camera, default_target, sim, args_cli.reset_settle_steps)
+                    settle_scene_to_target(scene, camera, default_target, sim, reset_settle_steps)
                     full_command_target = default_target.copy()
                     action = control_action_from_sim(robot)
                     commanded_action = action.copy()
@@ -1455,6 +1533,47 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     )
                 record_step += 1
                 if arm_mode == "hold" and grasp_phase == "done":
+                    success_ok, success_stats = final_cylinder_in_plate(scene, args_cli.auto_grasp_block)
+                    if bool(args_cli.success_check) and not success_ok:
+                        wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
+                        print(
+                            f"[RECORD][FAIL] discarded episode attempt for index {recorded_episodes}: "
+                            f"{args_cli.auto_grasp_block}_xy_dist={success_stats['xy_dist']:.3f}m "
+                            f"tol={success_stats['xy_tolerance']:.3f}m "
+                            f"z_above_plate={success_stats['z_above_plate']:.3f}m "
+                            f"allowed=[{success_stats['z_min']:.3f},{success_stats['z_max']:.3f}]m "
+                            f"frames={len(recording_episode)} sim_steps={record_step} "
+                            f"wall_seconds={wall_seconds:.2f}s. Resetting and retrying."
+                        )
+                        recording_episode = None
+                        record_wall_start = None
+                        record_step = 0
+                        default_target = reset_scene(scene, cfg, sim)
+                        blue_offset_xy = sample_blue_xy_offset(rng, randomize_blue_xy)
+                        blue_randomized = apply_blue_xy_offset(scene, cfg, sim, blue_offset_xy)
+                        if randomize_blue_xy > 0.0:
+                            blue_pos = blue_randomized["blue"]
+                            print(
+                                f"[RANDOMIZE] blue xy offset=({blue_offset_xy[0]:+.4f},{blue_offset_xy[1]:+.4f}) "
+                                f"blue=({blue_pos[0]:.3f},{blue_pos[1]:.3f},{blue_pos[2]:.3f})"
+                            )
+                        reset_camera(camera, sim, cfg)
+                        settle_scene_to_target(scene, camera, default_target, sim, reset_settle_steps)
+                        full_command_target = default_target.copy()
+                        action = control_action_from_sim(robot)
+                        commanded_action = action.copy()
+                        hold_action = action.copy()
+                        action_target_bias = control_action_bias_from_target(full_command_target, robot)
+                        arm_mode = "idle"
+                        reach_block = None
+                        target_tcp_pos = None
+                        target_tcp_quat = None
+                        grasp_plan = None
+                        grasp_phase = None
+                        grasp_phase_steps = 0
+                        hand_target = OPEN_RIGHT_HAND.copy()
+                        auto_grasp_pending = True
+                        continue
                     demo_name = writer.write_episode(recording_episode) if writer is not None else "demo"
                     sim_seconds = record_step * sim_dt
                     wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
@@ -1462,12 +1581,15 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     print(
                         f"[RECORD] wrote {demo_name}: {len(recording_episode)} frames "
                         f"sim_steps={record_step} sim_seconds={sim_seconds:.2f}s "
-                        f"wall_seconds={wall_seconds:.2f}s realtime_factor={realtime_factor:.2f}x"
+                        f"wall_seconds={wall_seconds:.2f}s realtime_factor={realtime_factor:.2f}x "
+                        f"{args_cli.auto_grasp_block}_xy_dist={success_stats['xy_dist']:.3f}m "
+                        f"z_above_plate={success_stats['z_above_plate']:.3f}m"
                     )
                     recording_episode = None
                     record_wall_start = None
                     recorded_episodes += 1
                     if writer is not None and recorded_episodes >= max_record_episodes:
+                        record_complete = True
                         break
                     default_target = reset_scene(scene, cfg, sim)
                     blue_offset_xy = sample_blue_xy_offset(rng, randomize_blue_xy)
@@ -1479,7 +1601,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                             f"blue=({blue_pos[0]:.3f},{blue_pos[1]:.3f},{blue_pos[2]:.3f})"
                         )
                     reset_camera(camera, sim, cfg)
-                    settle_scene_to_target(scene, camera, default_target, sim, args_cli.reset_settle_steps)
+                    settle_scene_to_target(scene, camera, default_target, sim, reset_settle_steps)
                     full_command_target = default_target.copy()
                     action = control_action_from_sim(robot)
                     commanded_action = action.copy()
@@ -1560,6 +1682,11 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
             keyboard_jog.stop()
         if writer is not None:
             writer.close()
+        if record_complete and args_cli.record_output is not None:
+            print(f"[RECORD] complete: wrote {recorded_episodes} episode(s) to {args_cli.record_output}", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(0)
 
 
 def main() -> None:

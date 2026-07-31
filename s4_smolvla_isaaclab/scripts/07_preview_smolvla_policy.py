@@ -18,8 +18,8 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs/train/smolvla_s4_bimanual_v0/checkpoints"
-DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets/lerobot_data/s4_bimanual_red_blue_plate_v0"
+DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "outputs/train/smolvla_s4_right_v1/checkpoints"
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "datasets/lerobot_data/s4_right_blue_cylinder_plate_v1"
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/eval/offline_policy_preview.csv"
 DEFAULT_HF_HOME = PROJECT_ROOT / ".cache/huggingface"
 ACTION_GROUPS = {
@@ -27,6 +27,10 @@ ACTION_GROUPS = {
     "left_hand": slice(7, 13),
     "right_arm": slice(13, 20),
     "right_hand": slice(20, 26),
+}
+RIGHT_ONLY_ACTION_GROUPS = {
+    "right_arm": slice(0, 7),
+    "right_hand": slice(7, 13),
 }
 
 
@@ -84,6 +88,14 @@ def _format_head(values: Any, limit: int = 8) -> str:
     return ",".join(f"{x:.4f}" for x in values[:limit].detach().cpu().tolist())
 
 
+def _action_groups(action_dim: int) -> dict[str, slice]:
+    if action_dim == 13:
+        return RIGHT_ONLY_ACTION_GROUPS
+    if action_dim == 26:
+        return ACTION_GROUPS
+    raise ValueError(f"Unsupported action dim for preview grouping: {action_dim}")
+
+
 def _to_observation(item: dict[str, Any], image_key: str, task: str) -> dict[str, Any]:
     return {
         "observation.state": item["observation.state"],
@@ -99,7 +111,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Preview a trained SmolVLA policy against recorded dataset frames.")
     parser.add_argument("--checkpoint", default=None, help="Checkpoint dir or pretrained_model dir. Defaults to latest.")
     parser.add_argument("--dataset-root", default=str(DEFAULT_DATASET_ROOT))
-    parser.add_argument("--repo-id", default="s4_bimanual_red_blue_plate_v0")
+    parser.add_argument("--repo-id", default="s4_right_blue_cylinder_plate_v1")
     parser.add_argument("--num-frames", type=int, default=20)
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
@@ -156,6 +168,7 @@ def main() -> None:
             policy.reset()
         observation = preprocessor(_to_observation(item, image_key, task))
         expert = item["action"].to(dtype=torch.float32)
+        groups = _action_groups(int(expert.numel()))
         with torch.inference_mode():
             predicted = policy.select_action(observation)
             predicted = postprocessor(predicted).squeeze(0)
@@ -163,12 +176,12 @@ def main() -> None:
         diff = predicted - expert
         mae, rmse, max_abs = _metrics(diff)
         group_metrics: dict[str, tuple[float, float, float]] = {
-            name: _metrics(diff[group_slice]) for name, group_slice in ACTION_GROUPS.items()
+            name: _metrics(diff[group_slice]) for name, group_slice in groups.items()
         }
-        pred_right_arm = _format_head(predicted[ACTION_GROUPS["right_arm"]], 7)
-        expert_right_arm = _format_head(expert[ACTION_GROUPS["right_arm"]], 7)
-        pred_right_hand = _format_head(predicted[ACTION_GROUPS["right_hand"]], 6)
-        expert_right_hand = _format_head(expert[ACTION_GROUPS["right_hand"]], 6)
+        pred_right_arm = _format_head(predicted[groups["right_arm"]], 7)
+        expert_right_arm = _format_head(expert[groups["right_arm"]], 7)
+        pred_right_hand = _format_head(predicted[groups["right_hand"]], 6)
+        expert_right_hand = _format_head(expert[groups["right_hand"]], 6)
 
         row = {
             "dataset_index": int(idx),
@@ -177,8 +190,8 @@ def main() -> None:
             "mae": mae,
             "rmse": rmse,
             "max_abs": max_abs,
-            "left_arm_mae": group_metrics["left_arm"][0],
-            "left_hand_mae": group_metrics["left_hand"][0],
+            "left_arm_mae": group_metrics.get("left_arm", (0.0, 0.0, 0.0))[0],
+            "left_hand_mae": group_metrics.get("left_hand", (0.0, 0.0, 0.0))[0],
             "right_arm_mae": group_metrics["right_arm"][0],
             "right_hand_mae": group_metrics["right_hand"][0],
             "pred_right_arm": pred_right_arm,
@@ -191,8 +204,8 @@ def main() -> None:
             f"[PREVIEW] idx={idx:05d} ep={row['episode_index']} frame={row['frame_index']} "
             f"mae={mae:.5f} rmse={rmse:.5f} max={max_abs:.5f} "
             f"group_mae(LA/LH/RA/RH)="
-            f"{group_metrics['left_arm'][0]:.4f}/"
-            f"{group_metrics['left_hand'][0]:.4f}/"
+            f"{group_metrics.get('left_arm', (0.0, 0.0, 0.0))[0]:.4f}/"
+            f"{group_metrics.get('left_hand', (0.0, 0.0, 0.0))[0]:.4f}/"
             f"{group_metrics['right_arm'][0]:.4f}/"
             f"{group_metrics['right_hand'][0]:.4f} "
             f"right_arm=[{pred_right_arm}] expert=[{expert_right_arm}] "
@@ -210,7 +223,7 @@ def main() -> None:
     mean_rmse = sum(row["rmse"] for row in rows) / len(rows)
     group_mean = {
         group: sum(row[f"{group}_mae"] for row in rows) / len(rows)
-        for group in ACTION_GROUPS
+        for group in ("left_arm", "left_hand", "right_arm", "right_hand")
     }
     print(
         f"[PREVIEW] mean_mae={mean_mae:.5f} mean_rmse={mean_rmse:.5f} "

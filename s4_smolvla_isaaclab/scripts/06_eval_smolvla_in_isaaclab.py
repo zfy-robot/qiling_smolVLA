@@ -15,17 +15,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 PROJECT_DIR_FOR_DEFAULTS = Path(__file__).resolve().parents[1]
+DEFAULT_CHECKPOINT_ROOT = PROJECT_DIR_FOR_DEFAULTS / "outputs/train/smolvla_s4_right_v1/checkpoints"
 
 from isaaclab.app import AppLauncher
 
 
 parser = argparse.ArgumentParser(description="Evaluate a SmolVLA checkpoint in the local S4 IsaacLab scene.")
-parser.add_argument("--checkpoint", required=True)
+parser.add_argument("--checkpoint", default=None, help="Checkpoint dir or pretrained_model dir. Defaults to latest local checkpoint.")
 parser.add_argument("--steps", type=int, default=900)
 parser.add_argument("--policy-every-n-steps", type=int, default=0, help="Policy query period in simulation steps. 0 means infer from the dataset/HDF5 used for training.")
 parser.add_argument("--video-every-n-steps", type=int, default=2)
 parser.add_argument("--output-video", type=Path, default=PROJECT_DIR_FOR_DEFAULTS / "outputs/eval/smolvla_rollout.avi")
-parser.add_argument("--dataset-root", type=Path, default=PROJECT_DIR_FOR_DEFAULTS / "datasets/lerobot_data/s4_bimanual_red_blue_plate_v0")
+parser.add_argument("--dataset-root", type=Path, default=PROJECT_DIR_FOR_DEFAULTS / "datasets/lerobot_data/s4_right_blue_cylinder_plate_v1")
 parser.add_argument("--task-description", default=None)
 parser.add_argument("--policy-python", default="/home/zfy/miniconda3/envs/smolvla/bin/python")
 parser.add_argument("--policy-device", default="cuda", choices=["cuda", "cpu"])
@@ -34,8 +35,8 @@ parser.add_argument("--policy-request-timeout", type=float, default=60.0)
 parser.add_argument("--policy-control-groups", nargs="+", default=["right_arm", "right_hand"], choices=["left_arm", "left_hand", "right_arm", "right_hand"])
 parser.add_argument("--action-clip", default="dataset_minmax", choices=["none", "dataset_minmax", "dataset_q01_q99"])
 parser.add_argument("--seed", type=int, default=42)
-parser.add_argument("--camera-width", type=int, default=320)
-parser.add_argument("--camera-height", type=int, default=240)
+parser.add_argument("--camera-width", type=int, default=680)
+parser.add_argument("--camera-height", type=int, default=480)
 parser.add_argument("--robot-base-z", type=float, default=0.98)
 parser.add_argument("--task-x", type=float, default=0.50)
 parser.add_argument("--task-y", type=float, default=-0.05)
@@ -43,6 +44,14 @@ parser.add_argument("--block-y-offset", type=float, default=0.20)
 parser.add_argument("--plate-x", type=float, default=0.50)
 parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.18, -0.62, 1.42])
 parser.add_argument("--camera-target", type=float, nargs=3, default=[0.52, -0.12, 0.98])
+parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[-11.0, -26.0, -95.0])
+parser.add_argument("--camera-convention", choices=["opengl", "ros", "world"], default="opengl")
+parser.add_argument(
+    "--camera-look-at",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Pass --no-camera-look-at to use --camera-rpy-deg.",
+)
 parser.add_argument("--joint-stiffness", type=float, default=600.0)
 parser.add_argument("--joint-damping", type=float, default=80.0)
 parser.add_argument("--joint-effort-limit", type=float, default=300.0)
@@ -89,7 +98,7 @@ GROUP_SLICES = {
     "right_hand": ACTION_SLICES.right_hand,
 }
 LEGACY_RIGHT_BLUE_TASK = "Use the left hand to put the red block into the tray and the right hand to put the blue block into the tray."
-DEFAULT_STAGING_HDF5 = PROJECT_DIR / "datasets/staging/s4_bimanual_red_blue_plate_v0/s4_right_blue_cylinder_plate_scripted.hdf5"
+DEFAULT_STAGING_HDF5 = PROJECT_DIR / "datasets/staging/s4_right_blue_cylinder_plate_v1/s4_right_blue_cylinder_plate_scripted.hdf5"
 
 
 def load_table_top_z() -> float:
@@ -187,10 +196,25 @@ def load_action_bounds() -> tuple[np.ndarray | None, np.ndarray | None]:
         low_key, high_key = "min", "max"
     low = np.asarray(stats[low_key], dtype=np.float32)
     high = np.asarray(stats[high_key], dtype=np.float32)
-    if low.shape != (26,) or high.shape != (26,):
+    if low.ndim != 1 or high.ndim != 1 or low.shape != high.shape or low.shape[0] not in {13, 26}:
         print(f"[WARN] invalid action stats shape, disabling action clipping: low={low.shape} high={high.shape}")
         return None, None
     return low, high
+
+
+def load_dataset_feature_dims() -> tuple[int, int]:
+    info_path = Path(args_cli.dataset_root) / "meta" / "info.json"
+    if not info_path.exists():
+        return 48, 26
+    try:
+        with info_path.open("r", encoding="utf-8") as f:
+            features = json.load(f).get("features", {})
+        state_dim = int(features.get("observation.state", {}).get("shape", [48])[0])
+        action_dim = int(features.get("action", {}).get("shape", [26])[0])
+        return state_dim, action_dim
+    except Exception as exc:
+        print(f"[WARN] could not read dataset feature dims ({type(exc).__name__}: {exc}); using 48/26.")
+        return 48, 26
 
 
 def make_scene_cfg() -> SceneBuildCfg:
@@ -211,6 +235,8 @@ def make_scene_cfg() -> SceneBuildCfg:
         ),
         camera_eye=tuple(float(x) for x in args_cli.camera_eye),
         camera_target=tuple(float(x) for x in args_cli.camera_target),
+        camera_rpy_deg=None if args_cli.camera_look_at else tuple(float(x) for x in args_cli.camera_rpy_deg),
+        camera_convention=str(args_cli.camera_convention),
         camera_width=max(int(args_cli.camera_width), 1),
         camera_height=max(int(args_cli.camera_height), 1),
     )
@@ -250,7 +276,7 @@ def settle_scene(scene: dict[str, object], camera, full_target: np.ndarray, sim,
     for _ in range(max(int(steps), 0)):
         robot.set_joint_position_target(target_tensor)
         robot.write_data_to_sim()
-        sim.step(render=not args_cli.headless)
+        sim.step(render=True)
         robot.update(dt=sim.get_physics_dt())
         for key in TASK_OBJECT_KEYS:
             scene[key].update(dt=sim.get_physics_dt())
@@ -277,13 +303,49 @@ def make_policy_server_env() -> dict[str, str]:
     return env
 
 
+def list_available_checkpoints(root: Path = DEFAULT_CHECKPOINT_ROOT) -> list[Path]:
+    if not root.exists():
+        return []
+    candidates = [p for p in root.iterdir() if p.is_dir() and p.name.isdigit()]
+    candidates.sort(key=lambda p: int(p.name))
+    return candidates
+
+
+def latest_checkpoint() -> Path:
+    candidates = list_available_checkpoints()
+    if not candidates:
+        raise FileNotFoundError(f"No numeric checkpoints found under: {DEFAULT_CHECKPOINT_ROOT}")
+    return candidates[-1] / "pretrained_model"
+
+
+def resolve_checkpoint(path: str | None) -> Path:
+    if path is None:
+        ckpt = latest_checkpoint()
+    else:
+        ckpt = Path(path).expanduser()
+        if (ckpt / "checkpoints").exists():
+            nested = [p for p in (ckpt / "checkpoints").iterdir() if p.is_dir() and p.name.isdigit()]
+            nested.sort(key=lambda p: int(p.name))
+            if nested:
+                ckpt = nested[-1] / "pretrained_model"
+        elif (ckpt / "pretrained_model").exists():
+            ckpt = ckpt / "pretrained_model"
+    if not (ckpt / "config.json").exists():
+        available = ", ".join(p.name for p in list_available_checkpoints()) or "<none>"
+        raise FileNotFoundError(
+            f"SmolVLA pretrained_model config.json not found: {ckpt}\n"
+            f"Available checkpoints under {DEFAULT_CHECKPOINT_ROOT}: {available}"
+        )
+    return ckpt
+
+
 class PolicyServer:
-    def __init__(self, checkpoint: str):
+    def __init__(self, checkpoint: Path):
         cmd = [
             args_cli.policy_python,
             str(SERVER_PATH),
             "--checkpoint",
-            checkpoint,
+            str(checkpoint),
             "--device",
             args_cli.policy_device,
             "--seed",
@@ -360,8 +422,8 @@ class PolicyServer:
             }
         )
         action = np.asarray(response["action"], dtype=np.float32)
-        if action.shape != (26,):
-            raise ValueError(f"Policy returned action shape {action.shape}, expected (26,)")
+        if action.shape not in {(13,), (26,)}:
+            raise ValueError(f"Policy returned action shape {action.shape}, expected (13,) or (26,)")
         return action
 
     def close(self) -> None:
@@ -426,6 +488,12 @@ def apply_policy_action_filter(
     clipped = raw_action.copy()
     if low is not None and high is not None:
         clipped = np.clip(clipped, low, high)
+    if clipped.shape == (13,):
+        filtered[ACTION_SLICES.right_arm] = clipped[:7]
+        filtered[ACTION_SLICES.right_hand] = clipped[7:13]
+        return filtered.astype(np.float32), clipped.astype(np.float32)
+    if clipped.shape != (26,):
+        raise ValueError(f"Policy action must have shape (13,) or (26,), got {clipped.shape}")
     for group in args_cli.policy_control_groups:
         sl = GROUP_SLICES[group]
         filtered[sl] = clipped[sl]
@@ -433,6 +501,12 @@ def apply_policy_action_filter(
 
 
 def format_group_values(prefix: str, action: np.ndarray) -> str:
+    if action.shape == (13,):
+        return (
+            f"{prefix} "
+            f"RA=[" + ",".join(f"{x:+.3f}" for x in action[:7]) + "] "
+            f"RH=[" + ",".join(f"{x:+.3f}" for x in action[7:13]) + "]"
+        )
     return (
         f"{prefix} "
         f"RA=[" + ",".join(f"{x:+.3f}" for x in action[ACTION_SLICES.right_arm]) + "] "
@@ -457,11 +531,15 @@ def main() -> None:
     print(format_layout(cfg))
     task_description = load_task_description()
     action_low, action_high = load_action_bounds()
+    dataset_state_dim, dataset_action_dim = load_dataset_feature_dims()
     policy_every_n_steps = resolve_policy_every_n_steps()
+    checkpoint = resolve_checkpoint(args_cli.checkpoint)
     print(f"[EVAL] task={task_description!r}")
+    print(f"[EVAL] checkpoint={checkpoint}")
     print(
         f"[EVAL] policy_control_groups={','.join(args_cli.policy_control_groups)} "
-        f"action_clip={args_cli.action_clip} policy_every_n_steps={policy_every_n_steps}"
+        f"action_clip={args_cli.action_clip} policy_every_n_steps={policy_every_n_steps} "
+        f"dataset_state_dim={dataset_state_dim} dataset_action_dim={dataset_action_dim}"
     )
     sim = create_simulation_context(args_cli.device)
     scene = build_scene(cfg)
@@ -478,7 +556,7 @@ def main() -> None:
     desired_action = commanded_action.copy()
     full_target = default_target.copy()
     video = None
-    server = PolicyServer(args_cli.checkpoint)
+    server = PolicyServer(checkpoint)
     server.reset()
     last_action = commanded_action.copy()
     last_gravity = (0.0, 0.0)
@@ -487,7 +565,13 @@ def main() -> None:
     try:
         for step in range(max(int(args_cli.steps), 1)):
             if step % policy_every_n_steps == 0:
-                state = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
+                if dataset_state_dim == 13:
+                    state = extract_bimanual_state(
+                        robot.data.joint_pos[0].detach().cpu().numpy(),
+                        robot.joint_names,
+                    )[ACTION_SLICES.right_arm.start : ACTION_SLICES.right_hand.stop].astype(np.float32)
+                else:
+                    state = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
                 image = camera_rgb_uint8(camera)
                 raw_policy_action = server.action(state, image, task_description)
                 desired_action, clipped_policy_action = apply_policy_action_filter(
@@ -523,7 +607,7 @@ def main() -> None:
             robot.set_joint_position_target(torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1))
             last_gravity = apply_gravity_compensation(robot, gravity_joint_ids)
             robot.write_data_to_sim()
-            sim.step(render=not args_cli.headless)
+            sim.step(render=True)
             robot.update(dt=sim_dt)
             for key in TASK_OBJECT_KEYS:
                 scene[key].update(dt=sim_dt)

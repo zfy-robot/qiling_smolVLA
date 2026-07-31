@@ -26,7 +26,7 @@ from .control_mapping import ACTION_SLICES, BIMANUAL_ARM_HAND_JOINTS, bimanual_d
 from .s4_robot_cfg import RIGHT_ARM_JOINTS, get_joint_limits
 
 
-OPEN_RIGHT_HAND = np.array([0.5, 0.12, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)
+OPEN_RIGHT_HAND = np.array([0.9, 0.0, 0.05, 0.05, 0.05, 0.05], dtype=np.float32)
 CLOSE_RIGHT_HAND = np.array([1.0, 0.42, 0.85, 0.85, 0.85, 0.85], dtype=np.float32)
 DEFAULT_TCP_OFFSET_WRIST = np.array([0.0, 0.0, -0.10], dtype=np.float32)
 DEFAULT_MAX_CART_STEP = 0.004

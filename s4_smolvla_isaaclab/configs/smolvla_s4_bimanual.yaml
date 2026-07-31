@@ -1,12 +1,12 @@
 # Local SmolVLA training config for the S4 IsaacLab manipulation task.
 # This file is owned by s4_smolvla_isaaclab. BenchHub configs are reference only.
 
-task: s4_bimanual_red_blue_plate
+task: s4_right_blue_cylinder_plate
 robot: S4-Bimanual
 
-dataset: s4_bimanual_red_blue_plate_v0
+dataset: s4_right_blue_cylinder_plate_v1
 dataset_root: /home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data
-output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_s4_bimanual_v0
+output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_s4_right_v1
 
 steps: 20000
 batch_size: 4

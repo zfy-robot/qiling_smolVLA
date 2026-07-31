@@ -14,6 +14,7 @@ from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObj
 from isaaclab.sensors.camera import Camera, CameraCfg
 from isaaclab.sim import PhysxCfg, SimulationCfg, SimulationContext, schemas
 from isaaclab.sim.spawners.shapes import CuboidCfg, CylinderCfg
+from isaaclab.utils.math import matrix_from_euler, quat_from_euler_xyz, quat_from_matrix
 
 from .s4_robot_cfg import ALL_DRIVE_JOINTS, URDF_PATH, get_default_joint_positions
 
@@ -26,6 +27,7 @@ DEFAULT_TABLE_USD = ISAAC_ASSET_ROOT / "Props" / "PackingTable" / "packing_table
 BLOCK_CYLINDER_RADIUS = 0.035
 BLOCK_CYLINDER_HEIGHT = 0.12
 BLOCK_MASS = 0.08
+PLATE_RADIUS = 0.13
 TASK_PLATFORM_HEIGHT = 0.05
 TASK_PLATFORM_SIZE = (0.56, 0.72, TASK_PLATFORM_HEIGHT)
 TABLE_YAW_90_QUAT = (0.7071068, 0.0, 0.0, 0.7071068)
@@ -90,6 +92,8 @@ class SceneBuildCfg:
     layout: TaskLayout = TaskLayout()
     camera_eye: tuple[float, float, float] = (0.18, -0.62, 1.42)
     camera_target: tuple[float, float, float] = (0.52, -0.12, 0.98)
+    camera_rpy_deg: tuple[float, float, float] | None = None
+    camera_convention: str = "opengl"
     camera_width: int = 640
     camera_height: int = 480
 
@@ -276,7 +280,7 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
         prim_path="/World/RecordTask/Plate",
         init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(float(x) for x in cfg.layout.plate_pos(cfg.table_top_z))),
         spawn=CylinderCfg(
-            radius=0.13,
+            radius=PLATE_RADIUS,
             height=0.025,
             rigid_props=schemas.RigidBodyPropertiesCfg(
                 kinematic_enabled=True,
@@ -357,10 +361,27 @@ def reset_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim: SimulationCon
 def reset_camera(camera: Camera, sim: SimulationContext, cfg: SceneBuildCfg | None = None) -> None:
     eye = cfg.camera_eye if cfg is not None else (0.18, -0.62, 1.42)
     target = cfg.camera_target if cfg is not None else (0.52, -0.12, 0.98)
-    camera.set_world_poses_from_view(
-        eyes=torch.tensor([eye], dtype=torch.float32, device=sim.device),
-        targets=torch.tensor([target], dtype=torch.float32, device=sim.device),
-    )
+    rpy_deg = cfg.camera_rpy_deg if cfg is not None else None
+    if rpy_deg is None:
+        camera.set_world_poses_from_view(
+            eyes=torch.tensor([eye], dtype=torch.float32, device=sim.device),
+            targets=torch.tensor([target], dtype=torch.float32, device=sim.device),
+        )
+    else:
+        rpy = torch.deg2rad(torch.tensor(rpy_deg, dtype=torch.float32, device=sim.device))
+        if cfg is not None and cfg.camera_convention == "opengl":
+            # IsaacSim UI displays camera rotation as USD rotateXYZ. That is not
+            # the same Euler decomposition as IsaacLab's quat_from_euler_xyz().
+            # Build the quaternion from the rotateXYZ matrix so the UI fields
+            # match camera_rpy_deg.
+            quat = quat_from_matrix(matrix_from_euler(rpy, "XYZ")).view(1, 4)
+        else:
+            quat = quat_from_euler_xyz(rpy[0:1], rpy[1:2], rpy[2:3])
+        camera.set_world_poses(
+            positions=torch.tensor([eye], dtype=torch.float32, device=sim.device),
+            orientations=quat,
+            convention=cfg.camera_convention if cfg is not None else "opengl",
+        )
     camera.reset()
 
 
