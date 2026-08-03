@@ -48,7 +48,8 @@ def inspect_first_demo(hdf5_path: Path, camera_path: str, control_mode: str) -> 
                     state_dim = 13
                 else:
                     action_dim = int(np.asarray(demo[schema.PROCESSED_ACTIONS]).shape[1])
-                    state_dim = int(np.asarray(demo[schema.FULL_JOINT_POS]).shape[1])
+                    state_path = schema.ACTIVE_JOINT_POS if schema.ACTIVE_JOINT_POS in demo else schema.FULL_JOINT_POS
+                    state_dim = int(np.asarray(demo[state_path]).shape[1])
                 camera_shape = tuple(np.asarray(demo[camera_path][0]).shape)
                 return state_dim, action_dim, camera_shape
     raise ValueError(f"No valid demo found in {hdf5_path}")
@@ -132,14 +133,22 @@ def convert_hdf5_to_lerobot(
                     actions = actions[:, RIGHT_ONLY_ACTION_SLICE]
                     states = np.asarray(demo[schema.ACTIVE_JOINT_POS])[:, RIGHT_ONLY_ACTION_SLICE]
                 else:
-                    states = np.asarray(demo[schema.FULL_JOINT_POS])
+                    state_path = schema.ACTIVE_JOINT_POS if schema.ACTIVE_JOINT_POS in demo else schema.FULL_JOINT_POS
+                    states = np.asarray(demo[state_path])
                 cameras = {path: np.asarray(demo[path]) for path in camera_paths}
                 frame_count = min([len(actions), len(states), *(len(v) for v in cameras.values())])
+                task_values = None
+                if schema.TASK_DESCRIPTION in demo:
+                    task_values = np.asarray(demo[schema.TASK_DESCRIPTION])
                 for i in range(frame_count):
+                    frame_task = task_description
+                    if task_values is not None and i < len(task_values):
+                        raw_task = task_values[i]
+                        frame_task = raw_task.decode("utf-8") if isinstance(raw_task, bytes) else str(raw_task)
                     frame = {
                         "observation.state": states[i].astype(np.float32),
                         "action": actions[i].astype(np.float32),
-                        "task": task_description,
+                        "task": frame_task,
                     }
                     for camera_path, values in cameras.items():
                         camera_name = camera_path.split("/")[-1]

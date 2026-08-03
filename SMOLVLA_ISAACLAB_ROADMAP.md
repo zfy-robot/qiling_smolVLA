@@ -1688,3 +1688,103 @@ bash run.sh control reach-block --block blue --z-offset 0.20 --offset-frame worl
 - 不要让策略直接输出所有手部 mimic joints。
 - 不要直接运行 BenchHub 脚本而不改环境名和 `/home/ubuntu` 路径。
 - 不要用硬编码关节 index 替代关节名映射，除非已经确认当前数据集就是 BenchHub 的 50D 顺序。
+
+## 2026-08-03 Drawer Insert-Close 脚本化采集链路
+
+本次把抽屉任务从静态预览推进到可脚本化采集的第一版，关键记录如下：
+
+- 当前激活任务是 `drawer_insert_close`，`configs/s4_bimanual_dataset.json` 已改为 `control_mode=bimanual`。
+- 数据合约改为 26D：`left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6`。转换到 LeRobot 时，bimanual 模式优先使用 HDF5 的 `obs/s4_active_joint_pos`，不再把全机器人 48D joint position 当作策略 state。
+- HDF5 新增每帧 `obs/task_description`。转换器会把每帧文本写入 LeRobot 的 `task` 字段，方便 SmolVLA 学到阶段语言。
+- 抽屉脚本控制器文件：
+  - `configs/tasks/drawer_insert_close.scripted.yaml`
+  - `tasks/drawer_insert_close_controller.py`
+- YAML 中每个 phase 可以独立配置左/右 TCP 目标、左/右手开合、home 目标、最小等待步数、最大步数和 TCP tolerance。后续调动作顺序和位置优先改 YAML，不要改 Python。
+- `scripts/03_record_physics_dataset.py` 的静态 drawer 场景现在支持直接 scripted recording：`record-hdf5 --auto-grasp` 不再走旧 cylinder `grasp-block`，而是实例化 `DrawerInsertCloseController`。
+- 手部控制命令已经支持左右手：
+  - `bash run.sh control hand --side left open`
+  - `bash run.sh control hand --side left close`
+  - `bash run.sh control hand --side right open`
+  - `bash run.sh control hand --side right close`
+  - `bash run.sh control hand --side both open`
+- `run.sh record-hdf5` 默认输出文件名改为 `<task_id>_scripted.hdf5`，避免 drawer 任务继续写成旧的 `s4_right_blue_cylinder_plate_scripted.hdf5`。
+
+抽屉任务的采集命令：
+
+```bash
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh activate-task drawer_insert_close
+bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+```
+
+转换和训练命令：
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh convert-lerobot --root-path datasets/staging/s4_drawer_insert_close_v0 --overwrite
+bash run.sh train-smolvla --overwrite-output
+```
+
+当前限制和下一步：
+
+- 尚未把 drawer joint state 或 tomato can pose 加入 `observation.state`。用户当前明确要求观测是相机 + 14 臂关节角 + 12 手关节角 + 阶段文本，所以暂时不加。
+- drawer 成功判定还没有做真实“罐子在抽屉内 + 抽屉关闭”检测；第一版先跑通 scripted 采集。稳定后再加 success filter，避免失败 episode 进入训练集。
+- 多 episode reset 目前依赖 `sim.reset()` + robot reset。若发现抽屉或罐子没有回初始位，需要在 `tasks/drawer_insert_close_scene.py` 为抽屉 articulation 和 can root transform 增加显式 reset。
+- 旧 cylinder 任务仍作为 regression test，不要在修 drawer 时破坏 `right_blue_cylinder_plate` 的采集/转换/训练链路。
+
+## 2026-08-03 Drawer 罐子物理属性与头部俯视相机
+
+本次针对抽屉任务继续优化：
+
+- `tasks/drawer_insert_close_scene.py` 中 TomatoSoupCan 不再作为普通 USD visual 引用加载，而是作为 IsaacLab `RigidObject` 加载。这样它有可重置的 root state，也能参与真实接触/抓取。
+- TomatoSoupCan 物理参数：
+  - `mass=0.08kg`
+  - `static_friction=2.2`
+  - `dynamic_friction=1.8`
+  - `restitution=0.0`
+  - `solver_position_iteration_count=32`
+  - `solver_velocity_iteration_count=8`
+  - `linear_damping=0.35`
+  - `angular_damping=0.45`
+  - `contact_offset=0.002`
+  - `rest_offset=0.0005`
+- 加载后调用 `configure_usdz_rigid_meshes()` 给 USD mesh 补刚体质量、凸包碰撞和物理材质绑定。以后不要把这个罐子改回 passive USD，否则手指只会碰到视觉模型或不稳定碰撞。
+- drawer static reset 现在会通过 `object_initial_poses` 显式重置 TomatoSoupCan 的 root pose 和 velocity，避免多 episode 采集时继承上一轮被碰飞的位置。
+- 默认采集/仿真/eval 相机从旧胸前侧视角改为头部/上半身俯视 look-at：
+  - `camera_eye=(0.10, 0.00, 1.68)`
+  - `camera_target=(0.68, 0.00, 1.02)`
+  - 分辨率仍为 `680x480`
+- 同步修改位置：
+  - `scripts/03_record_physics_dataset.py`
+  - `scripts/06_eval_smolvla_in_isaaclab.py`
+  - `s4_robot/simulation.py`
+- 如果用户觉得头部俯视角仍不合适，先用：
+
+```bash
+bash run.sh sim --print-layout --camera-eye X Y Z --camera-target X Y Z
+```
+
+确认视角后，再用同样参数重新 `record-hdf5`。LeRobot mp4 只编码 HDF5 中已有相机帧，旧数据不会因为代码相机默认变化自动更新。
+
+## 2026-08-03 相机改为用户 UI 调好的显式姿态
+
+用户在 IsaacSim UI 中调好的 DebugFrontCamera 为：
+
+- position: `(0.10, 0.00, 1.80)`
+- orientation / rotateXYZ: `(0.00, -23.00, -90.00)` deg
+
+已将默认采集/仿真/eval 相机从 look-at 模式切换为显式 RPY 模式：
+
+- `scripts/03_record_physics_dataset.py`
+- `scripts/04_record_bimanual_hdf5.py`
+- `scripts/06_eval_smolvla_in_isaaclab.py`
+- `s4_robot/simulation.py`
+
+重要区别：
+
+- `--camera-eye X Y Z` 始终表示相机在世界坐标系中的位置。
+- 默认模式下，`--camera-rpy-deg R P Y` 表示相机世界姿态，当前默认是用户 UI 里的 `(0,-23,-90)`。
+- `--camera-target X Y Z` 只在显式传 `--camera-look-at` 时生效，此时脚本会忽略 rpy，根据 eye 指向 target 自动计算相机姿态。
+- 以后如果用户在 UI 里给的是 position + orientation，就不要再用 look-at target 去近似，应直接设置 `--camera-eye ... --camera-rpy-deg ...`，并保持 `--camera-look-at` 为 false。

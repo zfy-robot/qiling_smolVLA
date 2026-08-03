@@ -79,8 +79,9 @@ grasp.add_argument("--place-steps", type=int, default=150, help="Max steps befor
 grasp.add_argument("--pre-release-hold-steps", type=int, default=120, help="Steps to pause at place pose with the hand closed before opening.")
 grasp.add_argument("--release-steps", type=int, default=50, help="Steps to hold open hand after placing before ending.")
 
-hand = subparsers.add_parser("hand", help="Set right hand open/close target.")
+hand = subparsers.add_parser("hand", help="Set left/right hand open/close target.")
 hand.add_argument("--file", type=Path, default=DEFAULT_ARM_CONTROL_FILE)
+hand.add_argument("--side", choices=["left", "right", "both"], default="right")
 hand.add_argument("state", choices=["open", "close"])
 
 test = subparsers.add_parser("test-right-arm", help="Send a direct right-arm joint target for actuator testing.")
@@ -221,7 +222,7 @@ def main() -> None:
             "release_steps": int(args.release_steps),
         }
     elif args.command == "hand":
-        payload = {"mode": "hand", "hand": args.state}
+        payload = {"mode": "hand", "hand": args.state, "side": args.side}
     elif args.command == "test-right-arm":
         payload = {
             "mode": "test-right-arm",

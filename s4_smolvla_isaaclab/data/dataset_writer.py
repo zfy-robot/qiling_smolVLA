@@ -42,6 +42,7 @@ class EpisodeBuffer:
     full_joint_pos: list[np.ndarray] = field(default_factory=list)
     active_joint_pos: list[np.ndarray] = field(default_factory=list)
     chest_front_rgb: list[np.ndarray] = field(default_factory=list)
+    task_descriptions: list[str] = field(default_factory=list)
     left_eef_pose: list[np.ndarray] = field(default_factory=list)
     right_eef_pose: list[np.ndarray] = field(default_factory=list)
     red_block_pose: list[np.ndarray] = field(default_factory=list)
@@ -57,6 +58,8 @@ class EpisodeBuffer:
             "full_joint_pos": len(self.full_joint_pos),
             "chest_front_rgb": len(self.chest_front_rgb),
         }
+        if self.task_descriptions:
+            lengths["task_descriptions"] = len(self.task_descriptions)
         if len(set(lengths.values())) != 1:
             raise ValueError(f"Episode arrays have mismatched lengths: {lengths}")
         if not self.actions:
@@ -81,6 +84,14 @@ class Hdf5DemoWriter:
         _create_nested_dataset(group, schema.FULL_JOINT_POS, np.asarray(episode.full_joint_pos, dtype=np.float32))
         if episode.active_joint_pos:
             _create_nested_dataset(group, schema.ACTIVE_JOINT_POS, np.asarray(episode.active_joint_pos, dtype=np.float32))
+        if episode.task_descriptions:
+            string_dtype = h5py.string_dtype(encoding="utf-8")
+            _create_nested_dataset(
+                group,
+                schema.TASK_DESCRIPTION,
+                np.asarray(episode.task_descriptions, dtype=object),
+                dtype=string_dtype,
+            )
         rgb = np.asarray(episode.chest_front_rgb, dtype=np.uint8)
         _create_nested_dataset(group, schema.CHEST_FRONT_RGB, rgb, **_image_dataset_kwargs(rgb))
         if episode.left_eef_pose:

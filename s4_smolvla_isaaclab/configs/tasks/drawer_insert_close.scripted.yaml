@@ -1,0 +1,143 @@
+controller:
+  task: "Open the drawer with the left hand, grasp the can with the right hand, put it into the drawer, and close the drawer."
+  default_tolerance: 0.035
+
+hands:
+  left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
+  left_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
+  right_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
+  right_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
+
+phases:
+  - name: left_approach_handle
+    task: "Move the left hand near the drawer handle."
+    left:
+      pos: [0.30, 0.36, 0.08]
+      rpy: [-1.5, 0.0, 1.5]
+    left_hand: open
+    right_hand: open
+    min_steps: 30
+    max_steps: 360
+
+  - name: left_grasp_handle
+    task: "Move the left hand onto the drawer handle."
+    left:
+      pos: [0.36, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    left_hand: open
+    min_steps: 20
+    max_steps: 240
+
+  - name: left_close_hand
+    task: "Close the left hand around the drawer handle."
+    left:
+      pos: [0.36, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    left_hand: close
+    min_steps: 90
+    max_steps: 120
+
+  - name: pull_drawer
+    task: "Pull the drawer open with the left hand."
+    left:
+      pos: [0.36, 0.30, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    left_hand: close
+    min_steps: 40
+    max_steps: 300
+
+  - name: right_pregrasp_can
+    task: "Move the right hand above the can while the left hand holds the drawer."
+    left:
+      pos: [0.36, 0.30, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    right:
+      pos: [0.50, -0.15, 0.25]
+      rpy: [0.0, -1.5, 0.0]
+    left_hand: close
+    right_hand: open
+    min_steps: 30
+    max_steps: 360
+
+  - name: right_grasp_can
+    task: "Move the right hand to the can grasp pose."
+    left:
+      pos: [0.32, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    right:
+      pos: [0.54, -0.13, 0.16]
+      rpy: [0.0, -1.5, 0.0]
+    left_hand: close
+    right_hand: open
+    min_steps: 20
+    max_steps: 300
+
+  - name: right_close_hand
+    task: "Close the right hand around the can."
+    left:
+      pos: [0.32, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    right:
+      pos: [0.54, -0.13, 0.16]
+      rpy: [0.0, -1.5, 0.0]
+    left_hand: close
+    right_hand: close
+    min_steps: 90
+    max_steps: 120
+
+  - name: right_place_in_drawer
+    task: "Place the can into the open drawer with the right hand."
+    left:
+      pos: [0.32, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    right:
+      pos: [0.44, 0.10, 0.18]
+      rpy: [0.0, -1.5, 1.5]
+    left_hand: close
+    right_hand: close
+    min_steps: 30
+    max_steps: 420
+
+  - name: right_open_hand
+    task: "Open the right hand to release the can inside the drawer."
+    left:
+      pos: [0.32, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    right:
+      pos: [0.44, 0.10, 0.18]
+      rpy: [0.0, -1.5, 1.5]
+    left_hand: close
+    right_hand: open
+    min_steps: 80
+    max_steps: 120
+
+  - name: push_drawer_closed_right_home
+    task: "Push the drawer closed with the left hand while the right arm returns home."
+    left:
+      pos: [0.36, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    left_hand: close
+    right_hand: open
+    right_arm_home: true
+    min_steps: 50
+    max_steps: 300
+
+  - name: left_open_hand
+    task: "Open the left hand after closing the drawer."
+    left:
+      pos: [0.36, 0.36, 0.10]
+      rpy: [-1.5, 0.0, 1.5]
+    left_hand: open
+    right_hand: open
+    right_arm_home: true
+    min_steps: 80
+    max_steps: 120
+
+  - name: both_home
+    task: "Return both arms to the home pose after finishing the task."
+    left_arm_home: true
+    right_arm_home: true
+    left_hand: open
+    right_hand: open
+    min_steps: 120
+    max_steps: 180

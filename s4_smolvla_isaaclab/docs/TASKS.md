@@ -119,25 +119,65 @@ If the next task needs drawer joint state in the policy observation, update:
 - `data/lerobot_conversion.py`
 - online eval observation packing
 
-## Drawer Insert Close Plan
+## Drawer Insert Close Task
 
-Initial task target:
+Current target:
 
 ```text
-open drawer -> insert object -> close drawer
+left hand opens drawer
+-> right hand grasps tomato can
+-> right hand places can in drawer
+-> right hand opens
+-> left hand closes drawer
+-> both arms return home
 ```
 
-Recommended first implementation:
+The task is now configured as a 26D bimanual policy contract:
 
-1. Create/load a drawer scene USD under `assets/scenes/`.
-2. Add a drawer handle frame and an object target frame.
-3. Script a conservative right-arm sequence:
-   approach handle, grasp handle, pull drawer, release/regrasp object, place object inside, push drawer closed.
-4. Record HDF5 with the same 13D right-only action first.
-5. Add drawer joint position to state only if image + arm/hand state is insufficient.
-6. Convert and train with a new repo id, e.g. `s4_drawer_insert_close_v0`.
+```text
+observation.state = left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
+action            = left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
+```
 
-Keep the existing blue-cylinder task unchanged as the regression test.
+Per-frame task text is written to HDF5 at `obs/task_description` and converted
+to the LeRobot `task` field. This keeps phase-specific language available for
+SmolVLA while preserving the same conversion/training scripts.
+
+The scripted drawer sequence lives in:
+
+```text
+configs/tasks/drawer_insert_close.scripted.yaml
+tasks/drawer_insert_close_controller.py
+```
+
+Tune phase targets in YAML, not in Python. Each phase can specify independent
+left/right TCP targets in robot `base_link`, independent left/right hand
+targets (`open`, `close`, `hold`, or explicit 6D values), optional home-arm
+targets, `min_steps`, `max_steps`, and a TCP distance `tolerance`.
+
+The current YAML starts from the manually tested poses:
+
+```bash
+bash run.sh control tcp-pose --left-pos 0.32 0.36 0.10 --left-rpy -1.5 0.0 1.5
+bash run.sh control tcp-pose --left-pos 0.36 0.36 0.10 --left-rpy -1.5 0.0 1.5
+bash run.sh control hand --side left close
+bash run.sh control tcp-pose --left-pos 0.36 0.30 0.10 --left-rpy -1.5 0.0 1.5
+bash run.sh control tcp-pose --right-pos 0.50 -0.15 0.25 --right-rpy 0.0 -1.5 0.0 --left-pos 0.36 0.30 0.10 --left-rpy -1.5 0.0 1.5
+bash run.sh control tcp-pose --right-pos 0.54 -0.13 0.16 --right-rpy 0.0 -1.5 0.0 --left-pos 0.32 0.36 0.10 --left-rpy -1.5 0.0 1.5
+bash run.sh control hand --side right close
+bash run.sh control tcp-pose --right-pos 0.44 0.10 0.18 --right-rpy 0.0 -1.5 1.5 --left-pos 0.32 0.36 0.10 --left-rpy -1.5 0.0 1.5
+bash run.sh control hand --side right open
+```
+
+For hand-only testing while holding the current arm pose:
+
+```bash
+bash run.sh control hand --side left open
+bash run.sh control hand --side left close
+bash run.sh control hand --side right open
+bash run.sh control hand --side right close
+bash run.sh control hand --side both open
+```
 
 ## Drawer Scene Preview
 
@@ -154,6 +194,18 @@ PackingTable clutter, or the old cylinder/plate task objects. It also removes
 stale legacy task prims such as `/World/TaskTableVisual`, `/World/RecordTask`,
 and `/World/DrawerTask` when iterating inside one IsaacSim session.
 
+Default recording camera for this task is the DebugFrontCamera pose tuned in
+the IsaacSim UI:
+
+```text
+position = (0.10, 0.00, 1.80)
+rpy_deg  = (0.00, -23.00, -90.00)
+mode     = explicit rpy, not look-at
+```
+
+`--camera-target` is ignored in this default mode. It is only used when
+`--camera-look-at` is explicitly passed.
+
 Loaded drawer asset:
 
 ```text
@@ -169,18 +221,22 @@ Loaded object:
 Current preview placement:
 
 ```text
-primary drawer = (0.80, 0.30, 0.70)
-secondary drawer = (0.80, -0.30, 0.70)
-TomatoSoupCan root = (0.57, -0.20, 1.16)
+primary drawer = (0.80, 0.383, 0.70)
+secondary drawer = (0.80, -0.383, 0.70)
+TomatoSoupCan root = (0.56, -0.08, 1.16)
 TomatoSoupCan orientation = rotate -90 deg about X
 ```
 
 The drawer USD is loaded without overriding its rigid-body settings. Do not set
 the cabinet root to kinematic, otherwise PhysX cannot create the drawer joints.
-The tomato can position is currently an explicit root transform, not an
-automatic bbox-bottom alignment. If the visual/collision origin proves
-inconvenient, adjust the placement constants in
-`tasks/drawer_insert_close_scene.py`.
+The tomato can is an IsaacLab `RigidObject` with explicit mass, convex mesh
+collisions, contact offsets, damping and high-friction material. This is
+required for physical grasping; do not change it back to a passive USD visual
+reference. Current can settings are `mass=0.08kg`, `static_friction=2.2`,
+`dynamic_friction=1.8`, `restitution=0.0`,
+`solver_position_iteration_count=32`, and `solver_velocity_iteration_count=8`.
+If the visual/collision origin proves inconvenient, adjust the placement
+constants in `tasks/drawer_insert_close_scene.py`.
 
 In GUI preview mode the script keeps the app rendering but does not advance
 physics. This is intentional for scene placement/debugging: advancing physics
@@ -338,8 +394,31 @@ The saved `assets/scenes/cabinet_task.usd` experiment was reverted because it
 loaded as an empty task scene in IsaacLab. Keep using explicit Python asset
 loading until the saved USD reference paths are fixed.
 
-Current limitation: this scene is only for visual placement and environment
-setup. It enters a static preview loop and does not yet run drawer open/insert/
-close collection logic. The next step is to add drawer handle frames, object
-selection, drawer joint detection, and a scripted controller under
-`tasks/drawer_insert_close_controller.py`.
+Scripted recording uses the same YAML controller as the visual sequence:
+
+```bash
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh activate-task drawer_insert_close
+bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+```
+
+The default HDF5 path is:
+
+```text
+datasets/staging/s4_drawer_insert_close_v0/drawer_insert_close_scripted.hdf5
+```
+
+Convert and train from the `smolvla` environment:
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh convert-lerobot --root-path datasets/staging/s4_drawer_insert_close_v0 --overwrite
+bash run.sh train-smolvla --overwrite-output
+```
+
+Current limitation: the first drawer scripted recorder records camera, 26D
+state/action, TCP poses, and phase text. It does not yet add explicit drawer
+joint state or object pose to `observation.state`; add those only if image +
+arm/hand state is insufficient.

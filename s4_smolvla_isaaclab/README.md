@@ -69,14 +69,25 @@ The active config files remain `configs/s4_bimanual_dataset.json` and `configs/s
 
 After activation, `sim`, `record-hdf5`, and `eval-smolvla` all read the active task's `scene.scene_usd`, `scene.table_usd`, and `scene.table_top_z`. Conversion and training remain task-agnostic unless a task changes the state/action feature contract.
 
-The drawer task currently has a scene preview but not a scripted data-collection controller:
+The drawer task has a scene preview and a YAML-driven scripted data-collection controller:
 
 ```bash
 bash run.sh activate-task drawer_insert_close
 bash run.sh sim --print-layout
 ```
 
-This currently loads the base warehouse, adds two aligned Sektion cabinets and only `005_tomato_soup_can.usd`, removes stale old-task prims if present, and adds the S4 robot plus DebugFrontCamera. It intentionally does not load the old PackingTable or the other three YCB objects. Current placement is explicit: drawers at `(0.80, 0.30, 0.70)` and `(0.80, -0.30, 0.70)`, tomato can root `(0.57, 0.00, 1.16)`.
+This currently loads the base warehouse, adds two aligned Sektion cabinets and only `005_tomato_soup_can.usd`, removes stale old-task prims if present, and adds the S4 robot plus DebugFrontCamera. It intentionally does not load the old PackingTable or the other three YCB objects. Current placement is explicit: drawers at `(0.80, 0.383, 0.70)` and `(0.80, -0.383, 0.70)`, tomato can root `(0.56, -0.08, 1.16)`.
+
+The tomato can is spawned as an IsaacLab `RigidObject`, not as a passive visual USD reference. It has explicit mass, rigid-body solver/damping settings, convex mesh collision, small contact/rest offsets, and high-friction material so the hand can physically grasp it:
+
+```text
+mass = 0.08 kg
+static_friction = 2.2
+dynamic_friction = 1.8
+restitution = 0.0
+solver_position_iteration_count = 32
+solver_velocity_iteration_count = 8
+```
 
 GUI preview mode renders without advancing physics. Use it for scene placement checks; drawer open/close should be implemented through the task controller instead of manually dragging articulation joints while the sim is running.
 After a live arm-control command is received through `/tmp/s4_arm_control.json`, the preview starts stepping physics so joint targets and Pinocchio DLS TCP targets move the robot.
@@ -186,6 +197,52 @@ bash run.sh sim --print-layout --show-tcp-frames --show-drawer-handle-frame --pr
 If the posture bias fights the TCP target too much, relaunch with
 `--tcp-posture-gain 0.10` or `--tcp-posture-gain 0.05`.
 
+The drawer insert-close scripted sequence is now config-driven:
+
+```text
+configs/tasks/drawer_insert_close.scripted.yaml
+tasks/drawer_insert_close_controller.py
+```
+
+It controls left arm, right arm, left hand, and right hand independently through
+one 26D contract:
+
+```text
+left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
+```
+
+Manual hand commands while the sim is running:
+
+```bash
+bash run.sh control hand --side left open
+bash run.sh control hand --side left close
+bash run.sh control hand --side right open
+bash run.sh control hand --side right close
+bash run.sh control hand --side both open
+```
+
+Record drawer demonstrations:
+
+```bash
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh activate-task drawer_insert_close
+bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+```
+
+Convert and train:
+
+```bash
+conda activate smolvla
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh convert-lerobot --root-path datasets/staging/s4_drawer_insert_close_v0 --overwrite
+bash run.sh train-smolvla --overwrite-output
+```
+
+The HDF5 writer stores per-frame phase text at `obs/task_description`; the
+converter forwards it to LeRobot's `task` field. See [TASKS.md](docs/TASKS.md)
+for the full drawer phase list and tuning notes.
+
 ## Environments
 
 Use `env_isaaclab` for IsaacSim/IsaacLab commands:
@@ -241,24 +298,30 @@ Default camera pose:
 
 ```text
 prim     = /World/DebugFrontCamera
-mode     = look_at
-eye      = (0.18, -0.62, 1.42)
-target   = (0.52, -0.12, 0.98)
+mode     = explicit rpy
+position = (0.10, 0.00, 1.80)
+rpy_deg  = (0.00, -23.00, -90.00)
 size     = 680x480
 ```
+
+This matches the DebugFrontCamera pose tuned in the IsaacSim UI. In this default
+mode, `--camera-eye` is the camera world position and `--camera-rpy-deg` is the
+camera world orientation. `--camera-target` is ignored unless `--camera-look-at`
+is explicitly passed.
 
 The recorded LeRobot video `observation.images.chest_front_rgb` is converted directly from HDF5
 `obs/chest_front_rgb`, which is captured by `/World/DebugFrontCamera`. If the camera pose is changed,
 re-record or reconvert with `--overwrite`; an old mp4 under `datasets/lerobot_data/.../videos` will not update
 by itself.
 
-RPY camera control is only for debugging. Pass `--no-camera-look-at --camera-rpy-deg R P Y` if you need to test
-an explicit rotation; the default data path should stay in look-at mode.
+Look-at camera control is only for debugging. Pass `--camera-look-at
+--camera-target X Y Z` if you want the script to compute orientation from a
+camera position and a target point.
 
 To test a different look-at target:
 
 ```bash
-bash run.sh sim --print-layout --camera-look-at --camera-target 0.52 -0.12 0.98
+bash run.sh sim --print-layout --camera-eye 0.10 0.0 1.80 --camera-rpy-deg 0.0 -23.0 -90.0
 ```
 
 If startup fails while testing the table cleanup path, isolate the issue with:

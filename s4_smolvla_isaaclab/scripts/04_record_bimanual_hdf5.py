@@ -31,15 +31,15 @@ parser.add_argument("--success-z-max-above-plate", type=float, default=0.20)
 parser.add_argument("--reset-settle-s", type=float, default=2.0, help="Simulated seconds to settle after scene load/reset before starting a task.")
 parser.add_argument("--camera-width", type=int, default=680)
 parser.add_argument("--camera-height", type=int, default=480)
-parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.18, -0.62, 1.42])
+parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.10, 0.0, 1.80])
 parser.add_argument("--camera-target", type=float, nargs=3, default=[0.52, -0.12, 0.98])
-parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[-11.0, -26.0, -95.0])
+parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[0.0, -23.0, -90.0])
 parser.add_argument("--camera-convention", choices=["opengl", "ros", "world"], default="opengl")
 parser.add_argument(
     "--camera-look-at",
     action=argparse.BooleanOptionalAction,
-    default=True,
-    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Pass --no-camera-look-at to use --camera-rpy-deg.",
+    default=False,
+    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Default uses explicit --camera-rpy-deg.",
 )
 parser.add_argument(
     "--no-render",

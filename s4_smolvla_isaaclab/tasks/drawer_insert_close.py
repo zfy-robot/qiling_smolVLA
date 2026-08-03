@@ -1,9 +1,4 @@
-"""Drawer open-insert-close task placeholder.
-
-This is the next task target. It intentionally registers the task contract and
-expected module boundaries before the drawer scene and scripted controller are
-implemented.
-"""
+"""Drawer open-insert-close task definition."""
 
 from __future__ import annotations
 
@@ -19,19 +14,19 @@ TASK_DESCRIPTION = "Open the drawer, place the object inside, and close the draw
 
 TASK_SPEC = TaskModuleSpec(
     task_id=TASK_ID,
-    name="S4 right hand drawer insert close",
+    name="S4 bimanual drawer insert close",
     description=TASK_DESCRIPTION,
     dataset_config=PROJECT_ROOT / "configs" / "tasks" / "drawer_insert_close.dataset.json",
     train_config=PROJECT_ROOT / "configs" / "tasks" / "drawer_insert_close.smolvla.yaml",
     data=TaskDataContract(
-        control_mode="right_only",
-        state_dim=13,
-        action_dim=13,
+        control_mode="bimanual",
+        state_dim=26,
+        action_dim=26,
     ),
     scene_builder="tasks.drawer_insert_close_scene:build_scene",
     scripted_controller="tasks.drawer_insert_close_controller:DrawerInsertCloseController",
     notes=(
-        "Planned task: load a drawer scene/object, pull drawer, insert object, close drawer.",
-        "Keep conversion/training unchanged unless drawer/object state must be added to observation.state.",
+        "Scripted data path: YAML phases -> bimanual TCP IK -> 26D action/state HDF5 -> LeRobot.",
+        "Observation.state is left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6.",
     ),
 )

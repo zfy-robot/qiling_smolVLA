@@ -42,15 +42,15 @@ parser.add_argument("--task-x", type=float, default=0.50)
 parser.add_argument("--task-y", type=float, default=-0.05)
 parser.add_argument("--block-y-offset", type=float, default=0.20)
 parser.add_argument("--plate-x", type=float, default=0.50)
-parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.18, -0.62, 1.42])
-parser.add_argument("--camera-target", type=float, nargs=3, default=[0.52, -0.12, 0.98])
-parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[-11.0, -26.0, -95.0])
+parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.10, 0.0, 1.80])
+parser.add_argument("--camera-target", type=float, nargs=3, default=[0.68, 0.0, 1.02])
+parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[0.0, -23.0, -90.0])
 parser.add_argument("--camera-convention", choices=["opengl", "ros", "world"], default="opengl")
 parser.add_argument(
     "--camera-look-at",
     action=argparse.BooleanOptionalAction,
-    default=True,
-    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Pass --no-camera-look-at to use --camera-rpy-deg.",
+    default=False,
+    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Default uses explicit --camera-rpy-deg.",
 )
 parser.add_argument("--joint-stiffness", type=float, default=600.0)
 parser.add_argument("--joint-damping", type=float, default=80.0)

@@ -111,9 +111,9 @@ class SceneBuildCfg:
     table_scale: float = 1.0
     clean_table_clutter: bool = True
     layout: TaskLayout = TaskLayout()
-    camera_eye: tuple[float, float, float] = (0.18, -0.62, 1.42)
-    camera_target: tuple[float, float, float] = (0.52, -0.12, 0.98)
-    camera_rpy_deg: tuple[float, float, float] | None = None
+    camera_eye: tuple[float, float, float] = (0.10, 0.0, 1.80)
+    camera_target: tuple[float, float, float] = (0.68, 0.0, 1.02)
+    camera_rpy_deg: tuple[float, float, float] | None = (0.0, -23.0, -90.0)
     camera_convention: str = "opengl"
     camera_width: int = 640
     camera_height: int = 480
@@ -485,8 +485,8 @@ def reset_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim: SimulationCon
 
 
 def reset_camera(camera: Camera, sim: SimulationContext, cfg: SceneBuildCfg | None = None) -> None:
-    eye = cfg.camera_eye if cfg is not None else (0.18, -0.62, 1.42)
-    target = cfg.camera_target if cfg is not None else (0.52, -0.12, 0.98)
+    eye = cfg.camera_eye if cfg is not None else (0.10, 0.0, 1.80)
+    target = cfg.camera_target if cfg is not None else (0.68, 0.0, 1.02)
     rpy_deg = cfg.camera_rpy_deg if cfg is not None else None
     if rpy_deg is None:
         camera.set_world_poses_from_view(

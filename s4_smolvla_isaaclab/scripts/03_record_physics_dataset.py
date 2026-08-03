@@ -35,15 +35,15 @@ parser.add_argument("--task-x", type=float, default=0.50, help="World X for bloc
 parser.add_argument("--task-y", type=float, default=-0.05, help="World Y center for table and task objects.")
 parser.add_argument("--block-y-offset", type=float, default=0.20, help="Half spacing between red and blue blocks.")
 parser.add_argument("--plate-x", type=float, default=0.50, help="World X for plate center.")
-parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.18, -0.62, 1.42], metavar=("X", "Y", "Z"))
-parser.add_argument("--camera-target", type=float, nargs=3, default=[0.52, -0.12, 0.98], metavar=("X", "Y", "Z"))
-parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[-11.0, -26.0, -95.0], metavar=("R", "P", "Y"))
+parser.add_argument("--camera-eye", type=float, nargs=3, default=[0.10, 0.0, 1.80], metavar=("X", "Y", "Z"))
+parser.add_argument("--camera-target", type=float, nargs=3, default=[0.68, 0.0, 1.02], metavar=("X", "Y", "Z"))
+parser.add_argument("--camera-rpy-deg", type=float, nargs=3, default=[0.0, -23.0, -90.0], metavar=("R", "P", "Y"))
 parser.add_argument("--camera-convention", choices=["opengl", "ros", "world"], default="opengl")
 parser.add_argument(
     "--camera-look-at",
     action=argparse.BooleanOptionalAction,
-    default=True,
-    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Pass --no-camera-look-at to use --camera-rpy-deg.",
+    default=False,
+    help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Default uses explicit --camera-rpy-deg.",
 )
 parser.add_argument("--camera-width", type=int, default=680)
 parser.add_argument("--camera-height", type=int, default=480)
@@ -220,6 +220,8 @@ from tasks import get_task_spec
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_DIR / "configs" / "s4_bimanual_dataset.json"
 JOINT_LIMITS = get_joint_limits()
+OPEN_LEFT_HAND = OPEN_RIGHT_HAND.copy()
+CLOSE_LEFT_HAND = CLOSE_RIGHT_HAND.copy()
 
 
 def load_table_top_z() -> float:
@@ -381,6 +383,26 @@ def append_record_frame(
     episode.red_block_pose.append(pose7_from_rigid_object(scene["red"]))
     episode.blue_block_pose.append(pose7_from_rigid_object(scene["blue"]))
     episode.plate_pose.append(pose7_from_rigid_object(scene["plate"]))
+
+
+def append_bimanual_record_frame(
+    episode: EpisodeBuffer,
+    robot: Articulation,
+    camera,
+    action: np.ndarray,
+    task_description: str,
+) -> None:
+    episode.actions.append(np.asarray(action, dtype=np.float32).copy())
+    episode.full_joint_pos.append(robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32).copy())
+    episode.active_joint_pos.append(control_action_from_sim(robot).astype(np.float32).copy())
+    episode.task_descriptions.append(str(task_description))
+    episode.chest_front_rgb.append(camera_rgb_uint8(camera))
+    left_tcp = estimate_left_hand_tcp_pose_from_robot(robot)
+    if left_tcp is not None:
+        episode.left_eef_pose.append(np.concatenate([left_tcp[0], left_tcp[1]]).astype(np.float32))
+    right_tcp = estimate_right_hand_tcp_pose_from_robot(robot)
+    if right_tcp is not None:
+        episode.right_eef_pose.append(np.concatenate([right_tcp[0], right_tcp[1]]).astype(np.float32))
 
 
 def default_grasp_payload(block: str) -> dict[str, object]:
@@ -1042,10 +1064,47 @@ def configure_drawer_drive() -> list[str]:
 def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     robot: Articulation = scene["robot"]
     camera = scene["camera"]
+    sim_dt = sim.get_physics_dt()
+    reset_settle_steps = max(
+        int(args_cli.reset_settle_steps),
+        int(math.ceil(max(float(args_cli.reset_settle_s), 0.0) / max(float(sim_dt), 1.0e-6))),
+    )
+
+    def settle_static_target(full_target: np.ndarray) -> np.ndarray:
+        target_tensor = torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1)
+        for _ in range(reset_settle_steps):
+            robot.set_joint_position_target(target_tensor)
+            robot.write_data_to_sim()
+            sim.step(render=True)
+            robot.update(dt=sim_dt)
+            for obj in scene.get("dynamic_objects", []):
+                obj.update(dt=sim_dt)
+            camera.update(dt=sim_dt)
+        return robot.data.joint_pos[0].detach().cpu().numpy().copy()
+
+    def reset_static_objects() -> None:
+        for obj, pos, quat in scene.get("object_initial_poses", []):
+            write_object_pose(obj, np.asarray(pos, dtype=np.float32), sim.device, quat)
+            obj.update(dt=sim_dt)
+
+    def reset_static_attempt() -> np.ndarray:
+        sim.reset()
+        next_target = reset_robot_only(scene, sim)
+        reset_static_objects()
+        robot.set_joint_position_target(torch.tensor(next_target, device=sim.device).view(1, -1))
+        robot.write_data_to_sim()
+        reset_camera(camera, sim, cfg)
+        settled = settle_static_target(next_target)
+        next_target[:] = settled
+        return next_target
+
     target = reset_robot_only(scene, sim)
+    reset_static_objects()
     robot.set_joint_position_target(torch.tensor(target, device=sim.device).view(1, -1))
     robot.write_data_to_sim()
     reset_camera(camera, sim, cfg)
+    if reset_settle_steps > 0:
+        target[:] = settle_static_target(target)
     print(scene.get("layout_text", "[SCENE] static task scene ready."))
     drawer_drive_paths = configure_drawer_drive() if args_cli.drawer_open else []
     if drawer_drive_paths:
@@ -1072,6 +1131,20 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     print(f"Arm control file: {args_cli.arm_control_file}")
     last_tcp_print = 0.0
     pink_tcp_controller = None
+    drawer_controller = None
+    scripted_drawer_enabled = bool(
+        scene.get("task_id") == "drawer_insert_close" and (args_cli.record_output is not None or args_cli.auto_grasp)
+    )
+    writer = None
+    recording_episode = None
+    recorded_episodes = 0
+    record_complete = False
+    record_step = 0
+    record_wall_start = None
+    current_scripted_task = str(scene.get("task_description", "Open the drawer, place the object inside, and close the drawer."))
+    current_scripted_phase = "idle"
+    max_record_episodes = max(int(args_cli.record_episodes), 1)
+    record_every_n = max(int(args_cli.record_every_n), 1)
     arm_control_active = False
     tcp_pose_active = False
     tcp_pose_goal_left = None
@@ -1084,6 +1157,66 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         f"scale={float(args_cli.gravity_comp_scale):.2f} joints={len(gravity_comp_joint_ids)}",
         flush=True,
     )
+    if args_cli.record_output is not None:
+        writer = Hdf5DemoWriter(
+            args_cli.record_output,
+            env_args={
+                "task": str(scene.get("task_id", "drawer_insert_close")),
+                "source": "scripted_yaml_bimanual_tcp_ik",
+                "sim_dt": float(sim_dt),
+                "record_every_n": int(record_every_n),
+                "record_episode_timeout_s": float(max(float(args_cli.record_episode_timeout_s), 1.0)),
+                "reset_settle_s": float(max(float(args_cli.reset_settle_s), 0.0)),
+                "reset_settle_steps": int(reset_settle_steps),
+                "record_fps": float(1.0 / (sim_dt * record_every_n)),
+                "camera": {
+                    "eye": list(cfg.camera_eye),
+                    "target": list(cfg.camera_target),
+                    "rpy_deg": None if cfg.camera_rpy_deg is None else list(cfg.camera_rpy_deg),
+                    "convention": str(cfg.camera_convention),
+                    "width": int(cfg.camera_width),
+                    "height": int(cfg.camera_height),
+                },
+                "data_contract": {
+                    "state_dim": 26,
+                    "action_dim": 26,
+                    "state_order": "left_arm_7,left_hand_6,right_arm_7,right_hand_6",
+                },
+            },
+        )
+        print(
+            f"[RECORD] drawer HDF5: {args_cli.record_output} episodes={max_record_episodes} "
+            f"every_n={record_every_n} timeout={max(float(args_cli.record_episode_timeout_s), 1.0):.1f}s",
+            flush=True,
+        )
+
+    def new_drawer_controller(initial_action: np.ndarray):
+        nonlocal pink_tcp_controller
+        if pink_tcp_controller is None:
+            from s4_robot.pink_bimanual_ik import PinkBimanualTcpController
+
+            pink_tcp_controller = PinkBimanualTcpController(
+                robot,
+                sim.device,
+                posture_gain=args_cli.tcp_posture_gain,
+                damping=args_cli.tcp_ik_damping,
+                max_joint_delta=args_cli.tcp_max_joint_delta,
+            )
+            print("[DRAWER] Pinocchio DLS bimanual TCP controller ready (target frame: base_link)", flush=True)
+        from tasks.drawer_insert_close_controller import DrawerInsertCloseController
+
+        return DrawerInsertCloseController(pink_tcp_controller, initial_action=initial_action)
+
+    if scripted_drawer_enabled:
+        drawer_controller = new_drawer_controller(action)
+        recording_episode = EpisodeBuffer() if writer is not None else None
+        record_wall_start = time.monotonic() if writer is not None else None
+        arm_control_active = True
+        print(
+            f"[DRAWER] scripted YAML controller active: phases={len(drawer_controller.phases)} "
+            f"config={drawer_controller.config_path}",
+            flush=True,
+        )
     try:
         while simulation_app.is_running():
             try:
@@ -1127,6 +1260,21 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             arm_control_active = True
                             tcp_pose_active = False
                             print("[ARM] drawer preview bimanual joint target updated", flush=True)
+                    elif mode == "hand" and payload.get("hand") in {"open", "close"}:
+                        side = payload.get("side", "right")
+                        if side not in {"left", "right", "both"}:
+                            side = "right"
+                        action = control_action_from_full_target(target, robot)
+                        hand_values_left = CLOSE_LEFT_HAND if payload["hand"] == "close" else OPEN_LEFT_HAND
+                        hand_values_right = CLOSE_RIGHT_HAND if payload["hand"] == "close" else OPEN_RIGHT_HAND
+                        if side in {"left", "both"}:
+                            action[ACTION_SLICES.left_hand] = hand_values_left
+                        if side in {"right", "both"}:
+                            action[ACTION_SLICES.right_hand] = hand_values_right
+                        write_action_to_full_target(target, robot, action)
+                        arm_control_active = True
+                        tcp_pose_active = False
+                        print(f"[ARM] drawer preview hand {payload['hand']} side={side}", flush=True)
                     elif mode == "tcp-pose":
                         if payload.get("frame") != "base_link":
                             print(f"[WARN] tcp-pose only supports frame=base_link, got {payload.get('frame')!r}")
@@ -1157,9 +1305,15 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             print(f"[WARN] Pinocchio DLS tcp-pose setup failed: {exc}", flush=True)
                             traceback.print_exc()
                     elif mode == "reset-scene":
-                        target = reset_robot_only(scene, sim)
+                        target = reset_static_attempt()
                         action = control_action_from_full_target(target, robot)
                         pink_tcp_controller = None
+                        drawer_controller = None
+                        if scripted_drawer_enabled:
+                            drawer_controller = new_drawer_controller(action)
+                            recording_episode = EpisodeBuffer() if writer is not None else None
+                            record_wall_start = time.monotonic() if writer is not None else None
+                            record_step = 0
                         arm_control_active = False
                         tcp_pose_active = False
                         tcp_pose_goal_left = None
@@ -1172,6 +1326,42 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             if keyboard_jog is not None:
                 action = keyboard_jog.update(action)
                 write_action_to_full_target(target, robot, action)
+            scripted_done = False
+            if drawer_controller is not None and not record_complete:
+                try:
+                    current_q = robot.data.joint_pos[0].detach().cpu().numpy()
+                    base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
+                    left_pose_w = estimate_left_hand_tcp_pose_from_robot(robot)
+                    right_pose_w = estimate_right_hand_tcp_pose_from_robot(robot)
+                    left_pose_b = pose_world_to_base(left_pose_w, base_pose_w) if left_pose_w is not None else None
+                    right_pose_b = pose_world_to_base(right_pose_w, base_pose_w) if right_pose_w is not None else None
+                    desired_action, current_scripted_phase, current_scripted_task, scripted_done = drawer_controller.step(
+                        current_q,
+                        max(sim_dt, 1.0 / 120.0),
+                        left_pose_b,
+                        right_pose_b,
+                    )
+                    next_action = smooth_command(
+                        action,
+                        desired_action,
+                        alpha=float(args_cli.target_alpha),
+                        max_joint_step=float(args_cli.max_joint_step),
+                    )
+                    for action_slice in (ACTION_SLICES.left_hand, ACTION_SLICES.right_hand):
+                        hand_delta = np.clip(
+                            next_action[action_slice] - action[action_slice],
+                            -float(args_cli.hand_max_joint_step),
+                            float(args_cli.hand_max_joint_step),
+                        )
+                        next_action[action_slice] = action[action_slice] + hand_delta
+                    action = next_action
+                    write_action_to_full_target(target, robot, action)
+                    arm_control_active = True
+                    tcp_pose_active = False
+                except Exception as exc:
+                    print(f"[WARN] drawer scripted controller failed: {exc}", flush=True)
+                    traceback.print_exc()
+                    drawer_controller = None
             if tcp_pose_active and pink_tcp_controller is not None:
                 try:
                     current_q = robot.data.joint_pos[0].detach().cpu().numpy()
@@ -1200,8 +1390,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     enabled=bool(args_cli.gravity_compensation),
                 )
                 robot.write_data_to_sim()
-                sim.step(render=not args_cli.headless)
+                sim.step(render=True)
                 robot.update(dt=sim.get_physics_dt())
+                for obj in scene.get("dynamic_objects", []):
+                    obj.update(dt=sim.get_physics_dt())
                 camera.update(dt=sim.get_physics_dt())
             else:
                 robot.set_joint_position_target(target_tensor)
@@ -1213,6 +1405,53 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 )
                 robot.write_data_to_sim()
                 simulation_app.update()
+            if recording_episode is not None and drawer_controller is not None:
+                wall_elapsed = time.monotonic() - record_wall_start if record_wall_start is not None else 0.0
+                record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
+                if wall_elapsed >= record_timeout_s:
+                    print(
+                        f"[RECORD][TIMEOUT] discarded drawer episode index={recorded_episodes} "
+                        f"wall_seconds={wall_elapsed:.1f}s timeout={record_timeout_s:.1f}s frames={len(recording_episode)}",
+                        flush=True,
+                    )
+                    recording_episode = EpisodeBuffer()
+                    record_wall_start = time.monotonic()
+                    record_step = 0
+                    target = reset_static_attempt()
+                    action = control_action_from_full_target(target, robot)
+                    pink_tcp_controller = None
+                    drawer_controller = new_drawer_controller(action)
+                    continue
+                if record_step % record_every_n == 0:
+                    append_bimanual_record_frame(
+                        recording_episode,
+                        robot,
+                        camera,
+                        action,
+                        current_scripted_task,
+                    )
+                record_step += 1
+                if scripted_done:
+                    demo_name = writer.write_episode(recording_episode) if writer is not None else "demo"
+                    sim_seconds = record_step * sim_dt
+                    wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
+                    print(
+                        f"[RECORD] wrote {demo_name}: phase={current_scripted_phase} "
+                        f"frames={len(recording_episode)} sim_steps={record_step} "
+                        f"sim_seconds={sim_seconds:.2f}s wall_seconds={wall_seconds:.2f}s",
+                        flush=True,
+                    )
+                    recorded_episodes += 1
+                    if writer is not None and recorded_episodes >= max_record_episodes:
+                        record_complete = True
+                        break
+                    recording_episode = EpisodeBuffer()
+                    record_wall_start = time.monotonic()
+                    record_step = 0
+                    target = reset_static_attempt()
+                    action = control_action_from_full_target(target, robot)
+                    pink_tcp_controller = None
+                    drawer_controller = new_drawer_controller(action)
             if tcp_visualizer is not None:
                 tcp_visualizer.visualize_task_frames(
                     left_tcp_pose=estimate_left_hand_tcp_pose_from_robot(robot),
@@ -1251,6 +1490,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     finally:
         if keyboard_jog is not None:
             keyboard_jog.stop()
+        if writer is not None:
+            writer.close()
+        if record_complete and args_cli.record_output is not None:
+            print(f"[RECORD] complete: wrote {recorded_episodes} drawer episode(s) to {args_cli.record_output}", flush=True)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(0)
 
 
 def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:

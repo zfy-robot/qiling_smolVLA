@@ -10,11 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from isaaclab.assets import RigidObject, RigidObjectCfg
 import isaaclab.sim as sim_utils
 from isaaclab.sensors.camera import Camera, CameraCfg
 from isaaclab.sim import schemas
 
-from s4_robot.simulation import SceneBuildCfg, build_robot, spawn_background_and_table
+from s4_robot.simulation import SceneBuildCfg, build_robot, configure_usdz_rigid_meshes, spawn_background_and_table
 
 
 ISAAC_ROOT = Path("/home/zfy/isaacsim_assets/Assets/Isaac/5.1")
@@ -25,13 +26,16 @@ YCB_OBJECTS = (
 DRAWER_YAW_180_QUAT = (0.0, 0.0, 0.0, 1.0)
 DRAWER_X = 0.80
 DRAWER_Z = 0.70
-DRAWER_Y_OFFSET = 0.4
+DRAWER_Y_OFFSET = 0.383
 DRAWER_PLACEMENTS = (
     ("DrawerCabinet", (DRAWER_X, DRAWER_Y_OFFSET, DRAWER_Z)),
     ("DrawerCabinetSecondary", (DRAWER_X, -DRAWER_Y_OFFSET, DRAWER_Z)),
 )
-TOMATO_SOUP_CAN_POSITION = (0.57, 0.0, 1.16)
+TOMATO_SOUP_CAN_POSITION = (0.56, -0.08, 1.16)
 OBJECT_ROTATE_X_NEG_90_QUAT = (0.7071068, -0.7071068, 0.0, 0.0)
+TOMATO_CAN_MASS_KG = 0.08
+TOMATO_CAN_STATIC_FRICTION = 2.2
+TOMATO_CAN_DYNAMIC_FRICTION = 1.8
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,49 @@ def _object_placements() -> tuple[DrawerAssetPlacement, ...]:
     )
 
 
+def _spawn_dynamic_usd_object(item: DrawerAssetPlacement) -> RigidObject:
+    """Spawn a graspable USD object with explicit rigid-body/contact settings."""
+    prim_path = f"/World/DrawerTask/Objects/{item.name}"
+    contact_material = sim_utils.RigidBodyMaterialCfg(
+        static_friction=TOMATO_CAN_STATIC_FRICTION,
+        dynamic_friction=TOMATO_CAN_DYNAMIC_FRICTION,
+        restitution=0.0,
+    )
+    collision_props = schemas.CollisionPropertiesCfg(contact_offset=0.002, rest_offset=0.0005)
+    rigid_props = schemas.RigidBodyPropertiesCfg(
+        solver_position_iteration_count=32,
+        solver_velocity_iteration_count=8,
+        max_depenetration_velocity=0.20,
+        linear_damping=0.35,
+        angular_damping=0.45,
+    )
+    obj_cfg = RigidObjectCfg(
+        prim_path=prim_path,
+        init_state=RigidObjectCfg.InitialStateCfg(pos=item.position, rot=item.orientation),
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=str(item.usd_path),
+            scale=item.scale,
+            mass_props=schemas.MassPropertiesCfg(mass=TOMATO_CAN_MASS_KG),
+            rigid_props=rigid_props,
+            collision_props=collision_props,
+        ),
+    )
+    obj = RigidObject(cfg=obj_cfg)
+    configure_usdz_rigid_meshes(
+        prim_path,
+        schemas.MassPropertiesCfg(mass=TOMATO_CAN_MASS_KG),
+        rigid_props,
+        collision_props,
+        contact_material,
+    )
+    print(
+        f"[BOOT] configured graspable {item.name}: mass={TOMATO_CAN_MASS_KG:.3f}kg "
+        f"friction=({TOMATO_CAN_STATIC_FRICTION:.1f},{TOMATO_CAN_DYNAMIC_FRICTION:.1f})",
+        flush=True,
+    )
+    return obj
+
+
 def format_drawer_layout(cfg: SceneBuildCfg, drawer_top_z: float | None) -> str:
     objects = "\n".join(
         f"  {item.name}=({item.position[0]:.3f}, {item.position[1]:.3f}, {item.position[2]:.3f}) "
@@ -247,16 +294,13 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
     if drawer_top_z is not None:
         print(f"[BOOT] primary drawer bbox top z={drawer_top_z:.3f}", flush=True)
 
+    dynamic_objects: list[RigidObject] = []
+    object_initial_poses: list[tuple[RigidObject, tuple[float, float, float], tuple[float, float, float, float]]] = []
     for item in _object_placements():
         print(f"[BOOT] loading drawer task object: {item.name} <- {item.usd_path.name}", flush=True)
-        _spawn_usd(
-            f"/World/DrawerTask/Objects/{item.name}",
-            item.usd_path,
-            item.position,
-            item.scale,
-            item.orientation,
-            kinematic=None,
-        )
+        obj = _spawn_dynamic_usd_object(item)
+        dynamic_objects.append(obj)
+        object_initial_poses.append((obj, item.position, item.orientation))
 
     camera = Camera(
         cfg=CameraCfg(
@@ -283,7 +327,10 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
     print("[BOOT] drawer task scene objects constructed.", flush=True)
     return {
         "task_id": "drawer_insert_close",
+        "task_description": "Open the drawer with the left hand, grasp the can with the right hand, put it into the drawer, and close the drawer.",
         "robot": robot,
         "camera": camera,
+        "dynamic_objects": dynamic_objects,
+        "object_initial_poses": object_initial_poses,
         "layout_text": format_drawer_layout(cfg, drawer_top_z),
     }

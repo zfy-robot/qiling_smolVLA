@@ -7,7 +7,7 @@
     "lerobot_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data",
     "fps": 20,
     "task": "Open the drawer, place the object inside, and close the drawer.",
-    "control_mode": "right_only"
+    "control_mode": "bimanual"
   },
   "scene": {
     "scene_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd",
@@ -17,18 +17,18 @@
   "features": {
     "observation.state": {
       "dtype": "float32",
-      "shape": [13],
-      "names": "right_arm_7, right_hand_6"
+      "shape": [26],
+      "names": "left_arm_7, left_hand_6, right_arm_7, right_hand_6"
     },
     "observation.active_state": {
       "dtype": "float32",
-      "shape": [13],
-      "names": "right_arm_7, right_hand_6"
+      "shape": [26],
+      "names": "left_arm_7, left_hand_6, right_arm_7, right_hand_6"
     },
     "action": {
       "dtype": "float32",
-      "shape": [13],
-      "names": "right_arm_7, right_hand_6"
+      "shape": [26],
+      "names": "left_arm_7, left_hand_6, right_arm_7, right_hand_6"
     },
     "observation.images.chest_front_rgb": {
       "dtype": "video",

@@ -79,7 +79,8 @@ split_record_args() {
     if [[ -z "$OUTPUT_PATH" ]]; then
         OUTPUT_PATH="$(python3 - <<'PY'
 from s4_pipeline.config import load_project_config
-print(load_project_config().dataset.staging_root / "s4_right_blue_cylinder_plate_scripted.hdf5")
+cfg = load_project_config()
+print(cfg.dataset.staging_root / f"{cfg.dataset.task_id}_scripted.hdf5")
 PY
 )"
     fi
