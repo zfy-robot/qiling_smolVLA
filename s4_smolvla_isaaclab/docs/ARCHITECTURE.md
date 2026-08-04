@@ -43,6 +43,8 @@ Required fields for conversion:
 processed_actions
 states/articulation/robot/joint_position
 obs/chest_front_rgb
+obs/left_wrist_rgb
+obs/right_wrist_rgb
 ```
 
 Current LeRobot features:
@@ -50,8 +52,15 @@ Current LeRobot features:
 ```text
 observation.state: 13D right_arm_7 + right_hand_6
 observation.images.chest_front_rgb: 480x680 RGB video
+observation.images.left_wrist_rgb: 480x680 RGB video
+observation.images.right_wrist_rgb: 480x680 RGB video
 action: 13D right_arm_7 + right_hand_6
 ```
+
+The wrist camera streams are optional for older HDF5 files, but new scene
+builders attach them under `left_wrist_yaw_link` and `right_wrist_yaw_link`.
+Their default mount offset is defined in `s4_robot/simulation.py` and should be
+tuned per robot/hand geometry before collecting final data.
 
 Raw HDF5 still stores full joint positions and full 26D active actions for debugging. Conversion defaults to `control_mode=right_only` and slices `processed_actions[13:26]` plus `obs/s4_active_joint_pos[13:26]`.
 

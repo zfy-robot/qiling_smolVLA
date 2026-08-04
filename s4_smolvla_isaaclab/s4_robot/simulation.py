@@ -16,7 +16,13 @@ from isaaclab.sim import PhysxCfg, SimulationCfg, SimulationContext, schemas
 from isaaclab.sim.spawners.shapes import CuboidCfg, CylinderCfg
 from isaaclab.utils.math import matrix_from_euler, quat_from_euler_xyz, quat_from_matrix
 
-from .s4_robot_cfg import ALL_DRIVE_JOINTS, URDF_PATH, get_default_joint_positions
+from .s4_robot_cfg import (
+    ALL_DRIVE_JOINTS,
+    LEFT_HAND_MIMIC_JOINTS,
+    RIGHT_HAND_MIMIC_JOINTS,
+    URDF_PATH,
+    get_default_joint_positions,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +53,16 @@ TABLE_CLUTTER_NAME_TOKENS = (
 TABLE_CLUTTER_EXACT_PREFIXES = (
     "SM_Crate_A",
 )
+# Real hand-eye calibration gives hand_base_link -> camera optical frame.
+# IsaacSim merges the fixed hand_base links into the wrist yaw links, so these
+# defaults are URDF wrist_yaw_link -> hand_base_link composed with the measured
+# hand_base_link -> camera transforms.
+LEFT_WRIST_CAMERA_LOCAL_POS = (-0.0445941356, -0.0209877889, -0.1614989107)
+LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ = (-0.1871460184, 0.6595136840, 0.6044971537, 0.4057108079)
+RIGHT_WRIST_CAMERA_LOCAL_POS = (0.0445948230, -0.0207078601, -0.1638273481)
+RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ = (-0.1353444104, 0.6807588438, -0.5885558066, -0.4145495744)
+WRIST_CAMERA_LOCAL_RPY_DEG: tuple[float, float, float] | None = None
+WRIST_CAMERA_OFFSET_CONVENTION = "ros"
 
 
 @dataclass(frozen=True)
@@ -115,15 +131,23 @@ class SceneBuildCfg:
     camera_target: tuple[float, float, float] = (0.68, 0.0, 1.02)
     camera_rpy_deg: tuple[float, float, float] | None = (0.0, -23.0, -90.0)
     camera_convention: str = "opengl"
-    camera_width: int = 640
+    camera_width: int = 680
     camera_height: int = 480
+    left_wrist_camera_pos: tuple[float, float, float] = LEFT_WRIST_CAMERA_LOCAL_POS
+    left_wrist_camera_quat_wxyz: tuple[float, float, float, float] = LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ
+    left_wrist_camera_rpy_deg: tuple[float, float, float] | None = WRIST_CAMERA_LOCAL_RPY_DEG
+    right_wrist_camera_pos: tuple[float, float, float] = RIGHT_WRIST_CAMERA_LOCAL_POS
+    right_wrist_camera_quat_wxyz: tuple[float, float, float, float] = RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ
+    right_wrist_camera_rpy_deg: tuple[float, float, float] | None = WRIST_CAMERA_LOCAL_RPY_DEG
+    wrist_camera_convention: str = WRIST_CAMERA_OFFSET_CONVENTION
 
 
-def create_simulation_context(device: str) -> SimulationContext:
+def create_simulation_context(device: str, *, use_fabric: bool = True) -> SimulationContext:
     sim = SimulationContext(
         SimulationCfg(
             device=device,
             dt=1.0 / 120.0,
+            use_fabric=bool(use_fabric),
             physx=PhysxCfg(
                 enable_ccd=True,
                 enable_stabilization=True,
@@ -173,6 +197,15 @@ def build_robot(
         actuators={
             "drive_joints": ImplicitActuatorCfg(
                 joint_names_expr=list(ALL_DRIVE_JOINTS),
+                stiffness=joint_stiffness,
+                damping=joint_damping,
+                effort_limit_sim=joint_effort_limit,
+            ),
+            # Mimic joints are not independent policy DOFs, but the imported
+            # articulation exposes them as normal joints and control_mapping
+            # writes deterministic targets derived from the six hand controls.
+            "mapped_hand_mimic_joints": ImplicitActuatorCfg(
+                joint_names_expr=list(LEFT_HAND_MIMIC_JOINTS + RIGHT_HAND_MIMIC_JOINTS),
                 stiffness=joint_stiffness,
                 damping=joint_damping,
                 effort_limit_sim=joint_effort_limit,
@@ -416,18 +449,20 @@ def spawn_physics_task_objects(cfg: SceneBuildCfg) -> dict[str, RigidObject]:
     }
 
 
-def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
-    spawn_background_and_table(cfg)
-    print("[BOOT] spawning physics task objects...", flush=True)
-    task_objects = spawn_physics_task_objects(cfg)
-    print("[BOOT] creating camera config...", flush=True)
-    camera = Camera(
+def make_rgb_camera(
+    prim_path: str,
+    cfg: SceneBuildCfg,
+    *,
+    offset: CameraCfg.OffsetCfg | None = None,
+) -> Camera:
+    return Camera(
         cfg=CameraCfg(
-            prim_path="/World/DebugFrontCamera",
+            prim_path=prim_path,
             update_period=0,
             height=int(cfg.camera_height),
             width=int(cfg.camera_width),
             data_types=["rgb"],
+            offset=CameraCfg.OffsetCfg() if offset is None else offset,
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=18.0,
                 focus_distance=1.2,
@@ -436,6 +471,60 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
             ),
         )
     )
+
+
+def quat_wxyz_from_rpy_deg(rpy_deg: tuple[float, float, float]) -> tuple[float, float, float, float]:
+    """Build a USD rotateXYZ-compatible quaternion from degrees."""
+    rpy = torch.deg2rad(torch.tensor(rpy_deg, dtype=torch.float32))
+    quat = quat_from_matrix(matrix_from_euler(rpy, "XYZ")).view(-1).cpu().numpy()
+    return tuple(float(x) for x in quat)
+
+
+def wrist_camera_offset(
+    pos: tuple[float, float, float],
+    quat_wxyz: tuple[float, float, float, float],
+    rpy_deg: tuple[float, float, float] | None,
+    convention: str,
+) -> CameraCfg.OffsetCfg:
+    rot = quat_wxyz if rpy_deg is None else quat_wxyz_from_rpy_deg(rpy_deg)
+    return CameraCfg.OffsetCfg(
+        pos=pos,
+        rot=rot,
+        convention=convention,
+    )
+
+
+def make_wrist_cameras(cfg: SceneBuildCfg) -> dict[str, Camera]:
+    return {
+        "left_wrist": make_rgb_camera(
+            "/World/Robot/left_wrist_yaw_link/LeftWristCamera",
+            cfg,
+            offset=wrist_camera_offset(
+                cfg.left_wrist_camera_pos,
+                cfg.left_wrist_camera_quat_wxyz,
+                cfg.left_wrist_camera_rpy_deg,
+                cfg.wrist_camera_convention,
+            ),
+        ),
+        "right_wrist": make_rgb_camera(
+            "/World/Robot/right_wrist_yaw_link/RightWristCamera",
+            cfg,
+            offset=wrist_camera_offset(
+                cfg.right_wrist_camera_pos,
+                cfg.right_wrist_camera_quat_wxyz,
+                cfg.right_wrist_camera_rpy_deg,
+                cfg.wrist_camera_convention,
+            ),
+        ),
+    }
+
+
+def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
+    spawn_background_and_table(cfg)
+    print("[BOOT] spawning physics task objects...", flush=True)
+    task_objects = spawn_physics_task_objects(cfg)
+    print("[BOOT] creating camera config...", flush=True)
+    camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
     print("[BOOT] creating robot articulation...", flush=True)
     robot = build_robot(
         "/World/Robot",
@@ -444,6 +533,8 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         cfg.joint_effort_limit,
         cfg.robot_base_z,
     )
+    print("[BOOT] creating wrist cameras...", flush=True)
+    wrist_cameras = make_wrist_cameras(cfg)
     print("[BOOT] scene objects constructed.", flush=True)
     return {
         "robot": robot,
@@ -452,6 +543,7 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         "blue": task_objects["blue"],
         "plate": task_objects["plate"],
         "camera": camera,
+        "wrist_cameras": wrist_cameras,
     }
 
 

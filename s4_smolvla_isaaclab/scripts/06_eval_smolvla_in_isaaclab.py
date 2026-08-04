@@ -52,6 +52,13 @@ parser.add_argument(
     default=False,
     help="Use --camera-eye -> --camera-target look-at for /World/DebugFrontCamera. Default uses explicit --camera-rpy-deg.",
 )
+parser.add_argument("--left-wrist-camera-pos", type=float, nargs=3, default=None)
+parser.add_argument("--right-wrist-camera-pos", type=float, nargs=3, default=None)
+parser.add_argument("--left-wrist-camera-quat-wxyz", type=float, nargs=4, default=None)
+parser.add_argument("--right-wrist-camera-quat-wxyz", type=float, nargs=4, default=None)
+parser.add_argument("--left-wrist-camera-rpy-deg", type=float, nargs=3, default=None)
+parser.add_argument("--right-wrist-camera-rpy-deg", type=float, nargs=3, default=None)
+parser.add_argument("--wrist-camera-convention", choices=["opengl", "ros", "world"], default=None)
 parser.add_argument("--joint-stiffness", type=float, default=600.0)
 parser.add_argument("--joint-damping", type=float, default=80.0)
 parser.add_argument("--joint-effort-limit", type=float, default=300.0)
@@ -75,9 +82,14 @@ from s4_robot.arm_control import smooth_command
 from s4_robot.control_mapping import ACTION_SLICES, extract_bimanual_state, make_full_joint_target
 from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS
 from s4_robot.simulation import (
+    LEFT_WRIST_CAMERA_LOCAL_POS,
+    LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ,
+    RIGHT_WRIST_CAMERA_LOCAL_POS,
+    RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ,
     SceneBuildCfg,
     TASK_OBJECT_KEYS,
     TaskLayout,
+    WRIST_CAMERA_OFFSET_CONVENTION,
     build_scene,
     create_simulation_context,
     format_layout,
@@ -238,6 +250,13 @@ def make_scene_cfg() -> SceneBuildCfg:
         camera_convention=str(args_cli.camera_convention),
         camera_width=max(int(args_cli.camera_width), 1),
         camera_height=max(int(args_cli.camera_height), 1),
+        left_wrist_camera_pos=tuple(float(x) for x in (args_cli.left_wrist_camera_pos or LEFT_WRIST_CAMERA_LOCAL_POS)),
+        right_wrist_camera_pos=tuple(float(x) for x in (args_cli.right_wrist_camera_pos or RIGHT_WRIST_CAMERA_LOCAL_POS)),
+        left_wrist_camera_quat_wxyz=tuple(float(x) for x in (args_cli.left_wrist_camera_quat_wxyz or LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ)),
+        right_wrist_camera_quat_wxyz=tuple(float(x) for x in (args_cli.right_wrist_camera_quat_wxyz or RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ)),
+        left_wrist_camera_rpy_deg=None if args_cli.left_wrist_camera_rpy_deg is None else tuple(float(x) for x in args_cli.left_wrist_camera_rpy_deg),
+        right_wrist_camera_rpy_deg=None if args_cli.right_wrist_camera_rpy_deg is None else tuple(float(x) for x in args_cli.right_wrist_camera_rpy_deg),
+        wrist_camera_convention=str(args_cli.wrist_camera_convention or WRIST_CAMERA_OFFSET_CONVENTION),
     )
 
 
@@ -249,6 +268,12 @@ def camera_rgb_uint8(camera) -> np.ndarray:
     if rgb.shape[-1] > 3:
         rgb = rgb[..., :3]
     return rgb
+
+
+def update_all_cameras(scene: dict[str, object], camera, dt: float) -> None:
+    camera.update(dt=dt)
+    for wrist_camera in scene.get("wrist_cameras", {}).values():
+        wrist_camera.update(dt=dt)
 
 
 def resolve_existing_joint_ids(robot, joint_names: list[str]) -> list[int]:
@@ -279,7 +304,7 @@ def settle_scene(scene: dict[str, object], camera, full_target: np.ndarray, sim,
         robot.update(dt=sim.get_physics_dt())
         for key in TASK_OBJECT_KEYS:
             scene[key].update(dt=sim.get_physics_dt())
-        camera.update(dt=sim.get_physics_dt())
+        update_all_cameras(scene, camera, dt=sim.get_physics_dt())
 
 
 def make_policy_server_env() -> dict[str, str]:
@@ -610,7 +635,7 @@ def main() -> None:
             robot.update(dt=sim_dt)
             for key in TASK_OBJECT_KEYS:
                 scene[key].update(dt=sim_dt)
-            camera.update(dt=sim_dt)
+            update_all_cameras(scene, camera, dt=sim_dt)
 
             if step % max(int(args_cli.video_every_n_steps), 1) == 0:
                 rgb = camera_rgb_uint8(camera)

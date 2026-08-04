@@ -131,6 +131,13 @@ class PinkBimanualTcpController:
             [DEFAULT_POSE[name] for name in self.isaac_order_joint_names],
             dtype=np.float64,
         )
+        self.posture_reference_controlled = self.home_controlled.copy()
+        self.lower_controlled = np.asarray(self.full_model.lowerPositionLimit, dtype=np.float64)[
+            self.controlled_q_indices
+        ]
+        self.upper_controlled = np.asarray(self.full_model.upperPositionLimit, dtype=np.float64)[
+            self.controlled_q_indices
+        ]
         self.frame_ids = {
             self.left_frame: int(self.full_model.getFrameId(self.left_frame)),
             self.right_frame: int(self.full_model.getFrameId(self.right_frame)),
@@ -149,6 +156,25 @@ class PinkBimanualTcpController:
             flush=True,
         )
 
+    def set_posture_reference(self, curr_joint_pos: np.ndarray) -> None:
+        """Keep the IK on the current continuous joint branch for a new phase."""
+        curr = np.asarray(curr_joint_pos, dtype=np.float64)
+        if curr.shape == (len(self.robot_joint_names),):
+            full_q = self._full_q_from_isaac(curr)
+            reference = full_q[self.controlled_q_indices]
+        elif curr.shape == (len(self.controlled_q_indices),):
+            reference = curr
+        else:
+            raise ValueError(
+                "IK posture reference must contain either all robot joints or the 14 controlled arm joints, "
+                f"got shape={curr.shape}"
+            )
+        self.posture_reference_controlled = np.clip(
+            reference,
+            self.lower_controlled + 1.0e-3,
+            self.upper_controlled - 1.0e-3,
+        )
+
     def _full_q_from_isaac(self, curr_joint_pos: np.ndarray) -> np.ndarray:
         full_q = self.full_q0.copy()
         curr = np.asarray(curr_joint_pos, dtype=np.float64)
@@ -158,12 +184,10 @@ class PinkBimanualTcpController:
                 full_q[q_i] = curr[isaac_i]
         return full_q
 
-    def _target_wrist_pose(self, pose: dict[str, list[float]]) -> tuple[np.ndarray, np.ndarray]:
-        tcp_pos = np.asarray(pose["pos"], dtype=np.float64)
-        quat = np.asarray(pose["quat_wxyz"], dtype=np.float64)
-        rotation = quat_wxyz_to_matrix(quat)
-        wrist_pos = tcp_pos - rotation @ np.asarray(DEFAULT_TCP_OFFSET_WRIST, dtype=np.float64)
-        return wrist_pos, rotation
+    @staticmethod
+    def _skew(vector: np.ndarray) -> np.ndarray:
+        x, y, z = np.asarray(vector, dtype=np.float64)
+        return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=np.float64)
 
     def _append_frame_task(
         self,
@@ -172,10 +196,15 @@ class PinkBimanualTcpController:
         frame_name: str,
         pose: dict[str, list[float]],
     ) -> None:
-        target_pos, target_rot = self._target_wrist_pose(pose)
+        target_pos = np.asarray(pose["pos"], dtype=np.float64)
+        target_rot = quat_wxyz_to_matrix(np.asarray(pose["quat_wxyz"], dtype=np.float64))
+        orientation_weight = float(np.clip(pose.get("orientation_weight", 1.0), 0.0, 1.0))
         frame_id = self.frame_ids[frame_name]
         current = self.full_data.oMf[frame_id]
-        pos_err = (target_pos - np.asarray(current.translation, dtype=np.float64)) * self.position_gain
+        current_rot = np.asarray(current.rotation, dtype=np.float64)
+        tcp_offset_world = current_rot @ np.asarray(DEFAULT_TCP_OFFSET_WRIST, dtype=np.float64)
+        current_tcp_pos = np.asarray(current.translation, dtype=np.float64) + tcp_offset_world
+        pos_err = (target_pos - current_tcp_pos) * self.position_gain
         rot_err = self.pin.log3(target_rot @ np.asarray(current.rotation, dtype=np.float64).T) * self.orientation_gain
         jac = self.pin.getFrameJacobian(
             self.full_model,
@@ -183,8 +212,14 @@ class PinkBimanualTcpController:
             frame_id,
             self.pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
         )
-        rows.append(np.asarray(jac, dtype=np.float64)[:, self.controlled_q_indices])
-        errors.append(np.concatenate([pos_err, rot_err]))
+        tcp_jac = np.asarray(jac, dtype=np.float64)[:, self.controlled_q_indices].copy()
+        # Shift the wrist Jacobian to the actual TCP point. This keeps TCP
+        # position control correct even when the requested wrist orientation is
+        # only a soft, partially reachable objective.
+        tcp_jac[:3] -= self._skew(tcp_offset_world) @ tcp_jac[3:]
+        weights = np.array([1.0, 1.0, 1.0, orientation_weight, orientation_weight, orientation_weight])
+        rows.append(weights[:, None] * tcp_jac)
+        errors.append(weights * np.concatenate([pos_err, rot_err]))
 
     def compute(
         self,
@@ -214,11 +249,25 @@ class PinkBimanualTcpController:
         jac_pinv = jac.T @ np.linalg.solve(lhs, np.eye(jac.shape[0], dtype=np.float64))
         dq_task = jac_pinv @ err
         if self.posture_gain > 0.0:
-            null_projector = np.eye(jac.shape[1], dtype=np.float64) - jac_pinv @ jac
-            posture_error = self.home_controlled - current_controlled
+            # The damped inverse used for the task is deliberately not used
+            # here: I - J_damped# J leaks posture motion into the TCP task.
+            # A Moore-Penrose projector keeps the posture term in the actual
+            # numerical null space and preserves the current phase's IK branch.
+            jac_pinv_projector = np.linalg.pinv(jac, rcond=1.0e-4)
+            null_projector = np.eye(jac.shape[1], dtype=np.float64) - jac_pinv_projector @ jac
+            posture_error = self.posture_reference_controlled - current_controlled
             dq_posture = null_projector @ (self.posture_gain * posture_error)
             dq = dq_task + dq_posture
         else:
             dq = dq_task
-        dq = np.clip(dq, -self.max_joint_delta, self.max_joint_delta)
-        return (current_controlled + dq).astype(np.float32)
+        # Preserve the DLS direction when limiting a step. Element-wise
+        # clipping changes the joint-space direction and can create wrist arcs.
+        max_abs_delta = float(np.max(np.abs(dq)))
+        if max_abs_delta > self.max_joint_delta:
+            dq *= self.max_joint_delta / max_abs_delta
+        q_next = np.clip(
+            current_controlled + dq,
+            self.lower_controlled + 1.0e-3,
+            self.upper_controlled - 1.0e-3,
+        )
+        return q_next.astype(np.float32)

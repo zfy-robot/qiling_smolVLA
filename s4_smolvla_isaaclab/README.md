@@ -103,17 +103,18 @@ If the drawer moves in the wrong direction, rerun with `--drawer-target -0.35`.
 This preview automatically uses CPU PhysX when driving the drawer, because
 runtime articulation drive targets are rejected by PhysX direct GPU API.
 
-To tune arm poses for pulling the drawer handle, print both hand TCP poses and
-the drawer handle frame:
+`bash run.sh sim` now starts the interactive drawer-task debug view with both
+TCP frames, the drawer-handle frame, wrist-camera frustums, and periodic TCP pose
+logging enabled by default:
 
 ```bash
-bash run.sh sim \
-  --print-layout \
-  --show-tcp-frames \
-  --show-drawer-handle-frame \
-  --print-tcp-pose \
-  --tcp-print-period 0.5
+bash run.sh sim
 ```
+
+The sim launcher uses frustum base depth `0.8`, base line width `8`, and the
+global default scale `0.30`. Pass the corresponding CLI option after `sim` to
+override a numeric value for one run. Dataset recording and evaluation do not
+enable these debug overlays.
 
 The log includes both world-frame and robot `base_link` TCP position,
 quaternion `wxyz`, and XYZ Euler angles in degrees. The hand TCP estimates are
@@ -125,6 +126,33 @@ The debug frames are shown at `/World/Visuals/LeftHandTCP`,
 frame defaults to `/World/DrawerTask/DrawerCabinet/drawer_handle_frame`;
 override it with `--drawer-handle-frame-prim <prim_path>` if the USD hierarchy
 changes.
+
+`--show-wrist-camera-frustums` draws the left/right wrist camera view ranges as
+real USD geometry below each camera's `DebugFrustum` child: thin cylinders for
+frustum edges and small spheres for each origin/corner. Left is cyan and right
+is orange. Geometry is authored in camera-local OpenGL coordinates with `-Z`
+forward, so it inherits the exact same Fabric parent transform as the rendered
+camera and follows every wrist movement. The USD Stage panel may still show an
+articulated link's initial authored transform; that does not affect the inherited
+Fabric rendering. Use
+`--wrist-camera-frustum-depth 0.45` to change the drawn range depth and
+`--wrist-camera-frustum-line-width 5` to change the cylinder thickness while
+tuning. The default `--wrist-camera-frustum-scale 0.30` uniformly scales the
+depth, line lengths, line radii, and point radii to 30% of their base size
+(70% smaller). A successful startup prints `[VIS] wrist camera frustums active`.
+The geometry is created before the first simulation reset so Fabric includes it
+in the live camera hierarchy. This flag is for interactive debugging; leave it
+off during dataset recording.
+
+To make the Stage transform inspector and built-in transform gizmos follow the
+current robot pose, use `--live-usd-transforms`. This debug mode switches physics
+to CPU and disables Fabric so PhysX synchronizes current transforms back to USD:
+
+```bash
+bash run.sh sim --show-wrist-camera-frustums --live-usd-transforms --print-tcp-pose
+```
+
+Do not use this mode for normal GPU data collection because it is slower.
 
 For live joint tuning in the drawer preview, add `--keyboard-jog` and use
 `[`/`]` to select a 26D arm/hand entry, `u`/`j` to increase/decrease it, `p` to
@@ -211,6 +239,39 @@ one 26D contract:
 left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
 ```
 
+The same YAML is also the single tuning surface for episode randomization and
+anchor-relative motion. Its main sections are:
+
+```text
+randomization.can_xy.x_range/y_range        # default [-0.05, +0.05] m
+randomization.drawer_initial_open.range     # default [0.00, 0.05] m
+randomization.drawer_initial_open.target_open_m # fixed final opening, 0.06 m
+hands.action_hold_seconds                    # default 1.0 s
+targets.left_handle_transition_1.offset
+targets.left_handle_transition_2.offset
+targets.right_can_pregrasp.offset
+targets.right_can_grasp.offset
+```
+
+All current target offsets use `offset_frame: base_link`, so each XYZ component
+is along the robot base axes. Set `offset_frame: anchor` only when an offset
+should rotate with the can/handle frame. The recorder samples a new can XY and
+drawer opening for every attempt, pulls every episode to the configured fixed
+`target_open_m`, reads the settled can pose from PhysX, then
+resolves all phase targets once for that episode. The sampled values are stored
+in each HDF5 demo's `episode_metadata` attribute.
+The primary cabinet is an IsaacLab `Articulation`; its `drawer_top_joint` is
+randomized through the tensor joint-state API without stopping the GPU timeline.
+
+The configured sequence is: open both hands and wait, left approach/grasp/pull,
+right pre-grasp/grasp/close/lift/place/release, right home, left close/release,
+left home. Every explicit hand open/close phase waits one simulated second.
+Any TCP phase that reaches `max_steps` without reaching tolerance is discarded
+and retried. Both position and quaternion angular error are checked (defaults:
+`0.035m` and `0.55rad`); the angular threshold reflects the measured residual
+near the cabinet and can be tightened per phase after pose calibration. The
+existing 120 second episode timeout is retained.
+
 Manual hand commands while the sim is running:
 
 ```bash
@@ -228,6 +289,21 @@ conda activate env_isaaclab
 cd /home/zfy/smolVLA/s4_smolvla_isaaclab
 bash run.sh activate-task drawer_insert_close
 bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+```
+
+First tune one rendered episode, then collect headless with the same YAML:
+
+```bash
+bash run.sh record-hdf5 --num-episodes 1 --render \
+  --output /tmp/drawer_tune.hdf5 --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 100 --no-render --episode-timeout-s 120
+```
+
+Use a separate tuning file without editing Python:
+
+```bash
+bash run.sh record-hdf5 --num-episodes 1 --render --output /tmp/drawer_tune.hdf5 \
+  --drawer-scripted-config configs/tasks/drawer_insert_close.scripted.yaml
 ```
 
 Convert and train:
@@ -314,6 +390,50 @@ The recorded LeRobot video `observation.images.chest_front_rgb` is converted dir
 re-record or reconvert with `--overwrite`; an old mp4 under `datasets/lerobot_data/.../videos` will not update
 by itself.
 
+Two wrist cameras are also attached to the robot for future multi-view training:
+
+```text
+left  wrist camera = /World/Robot/left_wrist_yaw_link/LeftWristCamera
+right wrist camera = /World/Robot/right_wrist_yaw_link/RightWristCamera
+left  local pos    = (-0.0445941356, -0.0209877889, -0.1614989107)
+left  quat wxyz    = (-0.1871460184, 0.6595136840, 0.6044971537, 0.4057108079)
+right local pos    = ( 0.0438948230, -0.0197078601, -0.1638273481)
+right quat wxyz    = (-0.1353444104, 0.6807588438, -0.5885558066, -0.4145495744)
+default convention = ros
+```
+
+These defaults come from the measured real-robot transforms
+`lh_hand_base_link -> camera` and `rh_hand_base_link -> camera`. IsaacSim merges
+the fixed `*_hand_base_link` links into `left_wrist_yaw_link` and
+`right_wrist_yaw_link`, so the code stores the composed
+`wrist_yaw_link -> camera` transform above. The camera frame is treated as a ROS
+optical camera frame (`+Z` forward), so the IsaacLab offset convention is `ros`.
+
+Tune the mounting in `s4_robot/simulation.py`, or pass
+`--left-wrist-camera-pos/--left-wrist-camera-quat-wxyz` and
+`--right-wrist-camera-pos/--right-wrist-camera-quat-wxyz` at startup. For quick
+manual UI experiments you can override with
+`--left-wrist-camera-rpy-deg/--right-wrist-camera-rpy-deg`, but final data
+collection should prefer the calibrated quaternion. Because the cameras are
+fixed children of the wrist links, they remain static relative to each wrist; if
+the wrist rotates, the camera rotates with it. HDF5 records them as
+`obs/left_wrist_rgb` and `obs/right_wrist_rgb`; LeRobot conversion maps them to
+`observation.images.left_wrist_rgb` and
+`observation.images.right_wrist_rgb`. Current online eval still sends the chest
+camera only; extend the policy server request before rolling out a checkpoint
+trained with all three camera views.
+
+Quick wrist-camera tuning example:
+
+```bash
+bash run.sh sim --print-layout \
+  --show-wrist-camera-frustums \
+  --left-wrist-camera-pos -0.0446 -0.0210 -0.1615 \
+  --left-wrist-camera-quat-wxyz -0.1871 0.6595 0.6045 0.4057 \
+  --right-wrist-camera-pos 0.0439 -0.0197 -0.1638 \
+  --right-wrist-camera-quat-wxyz -0.1353 0.6808 -0.5886 -0.4145
+```
+
 Look-at camera control is only for debugging. Pass `--camera-look-at
 --camera-target X Y Z` if you want the script to compute orientation from a
 camera position and a target point.
@@ -395,6 +515,7 @@ bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render
 ```
 
 The default recorded camera size is `680x480` RGB. This resolution is written into HDF5 and then propagated into the LeRobotDataset video metadata during conversion. If you change it, recollect and reconvert before training so rollout/eval uses the same image geometry.
+The left and right wrist cameras use the same resolution and frame rate as the chest camera.
 
 To speed up collection, run multiple independent IsaacLab workers. Start with 2-4 workers before trying 10, because each worker is a full IsaacSim process:
 
@@ -411,6 +532,16 @@ bash run.sh convert-lerobot \
 ```
 
 Each episode has a wall-clock timeout. If one scripted attempt exceeds `120s`, that attempt is discarded, the scene is reset, and the same episode index is retried. The final HDF5 still contains the requested number of saved episodes.
+
+Drawer collection prints one `[PROGRESS]` line per second. It reports the saved episode target, retry attempt, current phase, phase step budget, TCP position/orientation error versus tolerance, remaining error, active blocker, and episode timeout budget. `right_pregrasp_can` deliberately uses a `0.075m` coarse staging tolerance; the following can-grasp phase uses its own `0.050m` contact tolerance.
+
+All per-phase tuning poses are in `configs/tasks/drawer_insert_close.scripted.yaml` under `targets`. Change `offset: [x, y, z]` for the handle transition, can pre-grasp, can grasp/lift, or drawer placement targets; offsets are in robot `base_link` metres unless `offset_frame: anchor` is selected. `rpy` is in radians. `orientation_weight` controls how strongly IK preserves orientation (`1.0` hard, smaller values prioritize TCP position). `[PROGRESS] ... L_dxyz/R_dxyz` shows `target-current` in `base_link`, which is the most useful signal when tuning an offset.
+
+The left-hand handle approach uses three configurable points: `left_handle_transition_1`, `left_handle_transition_2`, and `left_handle_transition_3`. Their current offsets are `[-0.1435,-0.0230,0.0328]`, `[-0.0885,-0.0230,0.0578]`, and `[-0.0335,-0.0230,0.0828]`. Point 2 is the geometric midpoint of the two user-tuned poses; point 3 is the final pose held while the left hand closes.
+
+The can-grasp target uses `offset=[-0.08,-0.05,-0.02]`, `rpy=[0,-0.9,0]`, `orientation_weight=0.25`, and a phase-only `0.050m` position tolerance. This is intentionally different from the coarse pre-grasp tolerance and was checked offline at both ends of the configured can x randomization range.
+
+The imported articulation has 48 non-fixed joints: 38 independently driven joints and 10 hand mimic joints (`thumb_ip` plus four `dip` joints per hand). The mimic joints do not enter the 26D policy action; `control_mapping.py` deterministically derives their targets from the six controls per hand, and the actuator config applies the same PD gains as the active finger joints. This avoids both incomplete `38 != 48` coverage and loose zero-gain mimic joints. Drawer resets now move both hands to the YAML `left_open/right_open` targets during the settle period, before recording starts; `initial_open_hands` remains as a one-second stable hold for VLA timing. The handle phase budgets remain configurable in the YAML; `left_grasp_handle` is currently 500 steps because its final centimetres converge slowly.
 
 ```bash
 bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render --episode-timeout-s 120
@@ -590,6 +721,35 @@ This does not delete `models/`, so the local base SmolVLM weights are kept.
 
 ## Important Interface Rules
 
+### Simulation And Dataset Timebase
+
+The physics and arm-control loop runs at `120 Hz` (`dt=1/120 s`). Standard
+collection records every 6 physics steps, so HDF5 observations/actions and the
+converted LeRobotDataset run at `20 Hz` (`0.05 s` per sample). The task dataset
+configs also declare `fps: 20`.
+
+Online rollout keeps physics at `120 Hz` and, by default, queries/advances the
+policy every 6 steps (`20 Hz`). Its diagnostic video captures every 2 physics
+steps and is encoded at `60 fps`; this is a denser video of the same simulated
+time, not a 3x speed-up. Offline policy visualization and converted dataset
+videos are encoded at `20 fps`.
+
+These rates describe simulated time. Collection is not wall-clock paced:
+headless Isaac Sim may run faster than real time and rendered collection may
+run slower. Episode timeout uses wall-clock seconds, while YAML hand holds,
+settling delays, and phase step budgets use simulated time.
+
+`convert-lerobot` validates the HDF5 `record_fps` metadata against the active
+task's dataset fps. For the default timebase, use:
+
+```bash
+bash run.sh record-hdf5 --num-episodes 100 --record-every-n 6 --no-render
+```
+
+The `--record-every-n 6` argument is now also the default. Recordings created
+earlier by the direct command may contain `record_fps=120`; they must not be
+silently converted as 20 fps data.
+
 SmolVLA inference must follow the upstream LeRobot path:
 
 ```text
@@ -626,3 +786,16 @@ For a new task, keep the same flow:
 6. Preview offline before online rollout.
 
 More details are in [docs/ARCHITECTURE.md](/home/zfy/smolVLA/s4_smolvla_isaaclab/docs/ARCHITECTURE.md) and [docs/WORKFLOW.md](/home/zfy/smolVLA/s4_smolvla_isaaclab/docs/WORKFLOW.md).
+
+## Drawer IK And Joint Validation
+
+The drawer approach targets are configured in `configs/tasks/drawer_insert_close.scripted.yaml`. Their `orientation_weight` values are deliberately progressive (`0.20`, `0.35`, `0.60`) so early waypoints prioritize a smooth position approach instead of forcing the wrist to satisfy the final orientation immediately. The default `--tcp-posture-gain` is `0.05`; higher values can make the damped null-space term fight the TCP task near the cabinet.
+
+The primary cabinet is an IsaacLab articulation. Its `drawer_top_joint` is passive (`stiffness=0`, `damping=2`) and can be moved by hand contact. Script completion now checks the measured joint opening as well as TCP error:
+
+- `pull_drawer` requires `drawer_open >= 0.08 m` for the current `0.10 m` target.
+- `push_drawer_closed` requires `drawer_open <= 0.03 m`.
+
+During a test, inspect the `[PROGRESS] ... drawer_open=... waiting=...` fields. `drawer_not_open` means the hand reached its TCP goal but the physical drawer did not move far enough.
+
+The Pinocchio controller keeps IK solutions continuous across nearby scripted targets. At the first solve of every phase, the current 14 arm joints become that phase's null-space posture reference. The DLS inverse is used for the Cartesian task, while a separate Moore-Penrose inverse builds the null-space projector; this prevents damped-projector leakage from pulling the wrist toward `DEFAULT_POSE`. Joint increments are scaled as one vector and the resulting targets are restricted to URDF limits. This is important near drawer-handle poses, where several 7-DoF arm configurations can produce nearly the same TCP pose.

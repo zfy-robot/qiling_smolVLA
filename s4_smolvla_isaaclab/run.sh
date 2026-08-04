@@ -117,7 +117,19 @@ case "${1:-sim}" in
     sim)
         shift
         use_isaaclab_env
-        $ISAACLAB -p scripts/record_dataset.py --enable_cameras --kit_args "$ISAAC_LOCAL_KIT_ARGS" --print-layout --continuous "$@"
+        $ISAACLAB -p scripts/record_dataset.py \
+            --enable_cameras \
+            --kit_args "$ISAAC_LOCAL_KIT_ARGS" \
+            --print-layout \
+            --continuous \
+            --show-tcp-frames \
+            --show-drawer-handle-frame \
+            --show-wrist-camera-frustums \
+            --wrist-camera-frustum-depth 0.8 \
+            --wrist-camera-frustum-line-width 8 \
+            --print-tcp-pose \
+            --tcp-print-period 0.5 \
+            "$@"
         ;;
     record-hdf5)
         shift

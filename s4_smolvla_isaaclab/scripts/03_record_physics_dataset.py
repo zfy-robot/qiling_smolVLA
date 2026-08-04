@@ -47,6 +47,13 @@ parser.add_argument(
 )
 parser.add_argument("--camera-width", type=int, default=680)
 parser.add_argument("--camera-height", type=int, default=480)
+parser.add_argument("--left-wrist-camera-pos", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
+parser.add_argument("--right-wrist-camera-pos", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
+parser.add_argument("--left-wrist-camera-quat-wxyz", type=float, nargs=4, default=None, metavar=("W", "X", "Y", "Z"))
+parser.add_argument("--right-wrist-camera-quat-wxyz", type=float, nargs=4, default=None, metavar=("W", "X", "Y", "Z"))
+parser.add_argument("--left-wrist-camera-rpy-deg", type=float, nargs=3, default=None, metavar=("R", "P", "Y"))
+parser.add_argument("--right-wrist-camera-rpy-deg", type=float, nargs=3, default=None, metavar=("R", "P", "Y"))
+parser.add_argument("--wrist-camera-convention", choices=["opengl", "ros", "world"], default=None)
 parser.add_argument("--continuous", action="store_true", help="Run forever for debug.")
 parser.add_argument("--keyboard-jog", action="store_true", help="Enable live keyboard joint jogging.")
 parser.add_argument("--jog-step", type=float, default=0.03, help="Joint increment for keyboard jogging, in radians.")
@@ -66,7 +73,7 @@ parser.add_argument("--reach-posture-gain", type=float, default=0.30)
 parser.add_argument(
     "--tcp-posture-gain",
     type=float,
-    default=0.30,
+    default=0.05,
     help="Null-space posture gain for base_link TCP IK. Biases both arms toward DEFAULT_POSE while preserving TCP tasks.",
 )
 parser.add_argument("--tcp-ik-damping", type=float, default=0.08, help="DLS damping for base_link TCP IK.")
@@ -104,6 +111,20 @@ parser.add_argument(
 parser.add_argument("--gravity-comp-scale", type=float, default=1.0, help="Scale for gravity compensation feed-forward effort.")
 parser.add_argument("--show-tcp-frames", action="store_true", help="Visualize current hand TCP and target block TCP frames.")
 parser.add_argument("--show-drawer-handle-frame", action="store_true", help="Visualize the top drawer handle frame.")
+parser.add_argument("--show-wrist-camera-frustums", action="store_true", help="Visualize left/right wrist camera view frustums.")
+parser.add_argument("--wrist-camera-frustum-depth", type=float, default=0.45, help="Depth in meters for wrist camera frustum visualization.")
+parser.add_argument("--wrist-camera-frustum-line-width", type=float, default=5.0, help="Screen-space line width in pixels for wrist camera frustum visualization.")
+parser.add_argument(
+    "--wrist-camera-frustum-scale",
+    type=float,
+    default=0.30,
+    help="Uniform debug-frustum geometry scale. Default 0.30 means 70%% smaller than the configured base size.",
+)
+parser.add_argument(
+    "--live-usd-transforms",
+    action="store_true",
+    help="Debug only: run CPU PhysX without Fabric so Stage transform gizmos follow current articulation poses.",
+)
 parser.add_argument(
     "--drawer-handle-frame-prim",
     type=str,
@@ -120,7 +141,18 @@ parser.add_argument("--drawer-drive-damping", type=float, default=120.0)
 parser.add_argument("--drawer-drive-max-force", type=float, default=800.0)
 parser.add_argument("--record-output", type=Path, default=None, help="Write HDF5 episodes while running scripted grasp.")
 parser.add_argument("--record-episodes", type=int, default=1, help="Number of scripted grasp episodes to record.")
-parser.add_argument("--record-every-n", type=int, default=1, help="Record every N simulation steps.")
+parser.add_argument(
+    "--record-every-n",
+    type=int,
+    default=6,
+    help="Record every N simulation steps. Default 6 gives 20 Hz data from the 120 Hz physics loop.",
+)
+parser.add_argument(
+    "--drawer-scripted-config",
+    type=Path,
+    default=None,
+    help="Drawer scripted YAML. Defaults to configs/tasks/drawer_insert_close.scripted.yaml.",
+)
 parser.add_argument(
     "--record-episode-timeout-s",
     type=float,
@@ -201,10 +233,15 @@ from s4_robot.s4_robot_cfg import (
 )
 from s4_robot.simulation import (
     BLOCK_CYLINDER_RADIUS,
+    LEFT_WRIST_CAMERA_LOCAL_POS,
+    LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ,
     PLATE_RADIUS,
+    RIGHT_WRIST_CAMERA_LOCAL_POS,
+    RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ,
     SceneBuildCfg,
     TASK_OBJECT_KEYS,
     TaskLayout,
+    WRIST_CAMERA_OFFSET_CONVENTION,
     build_scene as build_default_scene,
     create_simulation_context,
     format_layout,
@@ -259,7 +296,20 @@ def make_scene_cfg() -> SceneBuildCfg:
         camera_convention=str(args_cli.camera_convention),
         camera_width=max(int(args_cli.camera_width), 1),
         camera_height=max(int(args_cli.camera_height), 1),
+        left_wrist_camera_pos=tuple(float(x) for x in (args_cli.left_wrist_camera_pos or LEFT_WRIST_CAMERA_LOCAL_POS)),
+        right_wrist_camera_pos=tuple(float(x) for x in (args_cli.right_wrist_camera_pos or RIGHT_WRIST_CAMERA_LOCAL_POS)),
+        left_wrist_camera_quat_wxyz=tuple(float(x) for x in (args_cli.left_wrist_camera_quat_wxyz or LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ)),
+        right_wrist_camera_quat_wxyz=tuple(float(x) for x in (args_cli.right_wrist_camera_quat_wxyz or RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ)),
+        left_wrist_camera_rpy_deg=None if args_cli.left_wrist_camera_rpy_deg is None else tuple(float(x) for x in args_cli.left_wrist_camera_rpy_deg),
+        right_wrist_camera_rpy_deg=None if args_cli.right_wrist_camera_rpy_deg is None else tuple(float(x) for x in args_cli.right_wrist_camera_rpy_deg),
+        wrist_camera_convention=str(args_cli.wrist_camera_convention or WRIST_CAMERA_OFFSET_CONVENTION),
     )
+
+
+def _fmt_tuple(values, precision: int = 4) -> tuple[float, ...] | None:
+    if values is None:
+        return None
+    return tuple(round(float(x), precision) for x in values)
 
 
 def resolve_scene_builder():
@@ -363,6 +413,12 @@ def camera_rgb_uint8(camera) -> np.ndarray:
     return rgb
 
 
+def update_all_cameras(scene: dict[str, object], camera, dt: float) -> None:
+    camera.update(dt=dt)
+    for wrist_camera in scene.get("wrist_cameras", {}).values():
+        wrist_camera.update(dt=dt)
+
+
 def append_record_frame(
     episode: EpisodeBuffer,
     scene: dict[str, object],
@@ -376,6 +432,11 @@ def append_record_frame(
     episode.full_joint_pos.append(robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32).copy())
     episode.active_joint_pos.append(control_action_from_sim(robot).astype(np.float32).copy())
     episode.chest_front_rgb.append(camera_rgb_uint8(camera))
+    wrist_cameras = scene.get("wrist_cameras", {})
+    if "left_wrist" in wrist_cameras:
+        episode.left_wrist_rgb.append(camera_rgb_uint8(wrist_cameras["left_wrist"]))
+    if "right_wrist" in wrist_cameras:
+        episode.right_wrist_rgb.append(camera_rgb_uint8(wrist_cameras["right_wrist"]))
     if reach_controller is not None:
         right_tcp = estimate_right_hand_tcp_pose(robot, reach_controller, tcp_offset_wrist)
         if right_tcp is not None:
@@ -387,6 +448,7 @@ def append_record_frame(
 
 def append_bimanual_record_frame(
     episode: EpisodeBuffer,
+    scene: dict[str, object],
     robot: Articulation,
     camera,
     action: np.ndarray,
@@ -397,6 +459,11 @@ def append_bimanual_record_frame(
     episode.active_joint_pos.append(control_action_from_sim(robot).astype(np.float32).copy())
     episode.task_descriptions.append(str(task_description))
     episode.chest_front_rgb.append(camera_rgb_uint8(camera))
+    wrist_cameras = scene.get("wrist_cameras", {})
+    if "left_wrist" in wrist_cameras:
+        episode.left_wrist_rgb.append(camera_rgb_uint8(wrist_cameras["left_wrist"]))
+    if "right_wrist" in wrist_cameras:
+        episode.right_wrist_rgb.append(camera_rgb_uint8(wrist_cameras["right_wrist"]))
     left_tcp = estimate_left_hand_tcp_pose_from_robot(robot)
     if left_tcp is not None:
         episode.left_eef_pose.append(np.concatenate([left_tcp[0], left_tcp[1]]).astype(np.float32))
@@ -446,7 +513,7 @@ def settle_scene_to_target(scene: dict[str, object], camera, full_target: np.nda
         robot.update(dt=sim.get_physics_dt())
         for key in TASK_OBJECT_KEYS:
             scene[key].update(dt=sim.get_physics_dt())
-        camera.update(dt=sim.get_physics_dt())
+        update_all_cameras(scene, camera, dt=sim.get_physics_dt())
     settled = robot.data.joint_pos[0].detach().cpu().numpy().copy()
     return settled
 
@@ -604,6 +671,261 @@ class TcpFrameVisualizer:
         self._visualize_marker(self.left_marker, left_tcp_pose)
         self.visualize(right_tcp_pose, target_tcp_pos, target_tcp_quat)
         self._visualize_marker(self.handle_marker, drawer_handle_pose)
+
+
+def quat_wxyz_to_matrix_np(quat: np.ndarray) -> np.ndarray:
+    w, x, y, z = [float(v) for v in quat]
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+class WristCameraFrustumVisualizer:
+    """Draw camera-local frustums that inherit each wrist camera's Fabric pose."""
+
+    def __init__(self, scene: dict[str, object], depth: float, line_width: float, visual_scale: float):
+        from pxr import Gf, UsdGeom
+
+        self.visual_scale = max(float(visual_scale), 0.01)
+        self.base_depth = max(float(depth), 0.02)
+        self.depth = self.base_depth * self.visual_scale
+        self.line_width = max(float(line_width), 1.0)
+        base_line_radius = max(0.003, min(0.03, self.line_width * 0.0015))
+        base_point_radius = max(0.025, base_line_radius * 2.5)
+        self.line_radius = base_line_radius * self.visual_scale
+        self.point_radius = base_point_radius * self.visual_scale
+        self.colors = {
+            "left_wrist": (0.1, 0.8, 1.0, 1.0),
+            "right_wrist": (1.0, 0.55, 0.1, 1.0),
+        }
+        import omni.usd
+
+        self.Gf = Gf
+        self.UsdGeom = UsdGeom
+        self.stage = omni.usd.get_context().get_stage()
+        self.legacy_root_path = "/World/Visuals/WristCameraFrustums"
+        self.camera_geometry: dict[str, dict[str, object]] = {}
+        # Remove old world-space attempts and stale camera-local geometry.
+        stale_paths = ["/World/Visuals/WristCameraFrustumPoints", self.legacy_root_path]
+        for camera in scene.get("wrist_cameras", {}).values():
+            stale_paths.append(f"{camera.cfg.prim_path}/DebugFrustum")
+        for stale_path in stale_paths:
+            if self.stage.GetPrimAtPath(stale_path).IsValid():
+                self.stage.RemovePrim(stale_path)
+        self.last_line_count = 0
+        self.last_point_count = 0
+        self._reported_ready = False
+        self._create_geometry(scene)
+        self.update(scene)
+
+    def _create_display_prim(self, kind: str, path: str, color: tuple[float, float, float, float]):
+        if kind == "line":
+            geom = self.UsdGeom.Cylinder.Define(self.stage, path)
+            geom.CreateRadiusAttr(1.0)
+            geom.CreateHeightAttr(1.0)
+            geom.CreateAxisAttr("Z")
+        else:
+            geom = self.UsdGeom.Sphere.Define(self.stage, path)
+            geom.CreateRadiusAttr(1.0)
+        geom.CreateDisplayColorAttr([self.Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+        xform = self.UsdGeom.Xformable(geom.GetPrim())
+        xform.ClearXformOpOrder()
+        translate_op = xform.AddTranslateOp(precision=self.UsdGeom.XformOp.PrecisionDouble)
+        orient_op = xform.AddOrientOp(precision=self.UsdGeom.XformOp.PrecisionDouble)
+        scale_op = xform.AddScaleOp(precision=self.UsdGeom.XformOp.PrecisionDouble)
+        return translate_op, orient_op, scale_op
+
+    def _create_geometry(self, scene: dict[str, object]) -> None:
+        wrist_cameras = scene.get("wrist_cameras", {})
+        for camera_name in ("left_wrist", "right_wrist"):
+            camera = wrist_cameras.get(camera_name)
+            if camera is None:
+                continue
+            root_path = f"{camera.cfg.prim_path}/DebugFrustum"
+            self.UsdGeom.Xform.Define(self.stage, root_path)
+            line_ops = []
+            point_ops = []
+            color = self.colors.get(camera_name, (1.0, 1.0, 1.0, 1.0))
+            for i in range(8):
+                line_ops.append(
+                    self._create_display_prim("line", f"{root_path}/line_{i:02d}", color)
+                )
+            for i in range(5):
+                point_ops.append(
+                    self._create_display_prim("point", f"{root_path}/point_{i:02d}", color)
+                )
+            self.camera_geometry[camera_name] = {
+                "root_path": root_path,
+                "line_ops": line_ops,
+                "point_ops": point_ops,
+            }
+
+    @staticmethod
+    def _quat_from_z_to_direction(direction: np.ndarray) -> np.ndarray:
+        direction = np.asarray(direction, dtype=np.float64)
+        norm = float(np.linalg.norm(direction))
+        if norm < 1e-9:
+            return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        target = direction / norm
+        source = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        dot = float(np.clip(np.dot(source, target), -1.0, 1.0))
+        if dot > 0.999999:
+            return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        if dot < -0.999999:
+            return np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+        axis = np.cross(source, target)
+        s = math.sqrt((1.0 + dot) * 2.0)
+        return np.array([0.5 * s, axis[0] / s, axis[1] / s, axis[2] / s], dtype=np.float64)
+
+    def _set_xform(
+        self,
+        ops,
+        translation: np.ndarray,
+        quat_wxyz: np.ndarray,
+        scale: tuple[float, float, float],
+    ) -> None:
+        translate_op, orient_op, scale_op = ops
+        translate_op.Set(self.Gf.Vec3d(float(translation[0]), float(translation[1]), float(translation[2])))
+        orient_op.Set(
+            self.Gf.Quatd(
+                float(quat_wxyz[0]),
+                self.Gf.Vec3d(float(quat_wxyz[1]), float(quat_wxyz[2]), float(quat_wxyz[3])),
+            )
+        )
+        scale_op.Set(self.Gf.Vec3d(float(scale[0]), float(scale[1]), float(scale[2])))
+
+    def _update_usd_geometry(
+        self,
+        line_ops,
+        point_ops,
+        starts: list[tuple[float, float, float]],
+        ends: list[tuple[float, float, float]],
+        points: list[tuple[float, float, float]],
+    ) -> None:
+        zero_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        hidden_scale = (1e-6, 1e-6, 1e-6)
+        for i, ops in enumerate(line_ops):
+            if i < len(starts):
+                start = np.asarray(starts[i], dtype=np.float64)
+                end = np.asarray(ends[i], dtype=np.float64)
+                delta = end - start
+                length = max(float(np.linalg.norm(delta)), 1e-6)
+                midpoint = 0.5 * (start + end)
+                quat = self._quat_from_z_to_direction(delta)
+                self._set_xform(ops, midpoint, quat, (self.line_radius, self.line_radius, length))
+            else:
+                self._set_xform(ops, np.zeros(3, dtype=np.float64), zero_quat, hidden_scale)
+        for i, ops in enumerate(point_ops):
+            if i < len(points):
+                point = np.asarray(points[i], dtype=np.float64)
+                self._set_xform(ops, point, zero_quat, (self.point_radius, self.point_radius, self.point_radius))
+            else:
+                self._set_xform(ops, np.zeros(3, dtype=np.float64), zero_quat, hidden_scale)
+
+    def _camera_intrinsic_from_usd(self, camera) -> tuple[float, float, float, float, int, int]:
+        height = int(camera.cfg.height)
+        width = int(camera.cfg.width)
+        focal_length = 18.0
+        horizontal_aperture = 20.955
+        vertical_aperture = horizontal_aperture * float(height) / max(float(width), 1.0)
+        prim = self.stage.GetPrimAtPath(str(camera.cfg.prim_path))
+        if prim.IsValid():
+            usd_camera = self.UsdGeom.Camera(prim)
+            focal_attr = usd_camera.GetFocalLengthAttr()
+            h_ap_attr = usd_camera.GetHorizontalApertureAttr()
+            v_ap_attr = usd_camera.GetVerticalApertureAttr()
+            if focal_attr and focal_attr.HasValue():
+                focal_length = float(focal_attr.Get())
+            if h_ap_attr and h_ap_attr.HasValue():
+                horizontal_aperture = max(float(h_ap_attr.Get()), 1e-6)
+            if v_ap_attr and v_ap_attr.HasValue():
+                vertical_aperture = max(float(v_ap_attr.Get()), 1e-6)
+        fx = focal_length / horizontal_aperture * float(width)
+        fy = focal_length / vertical_aperture * float(height)
+        cx = float(width) * 0.5
+        cy = float(height) * 0.5
+        return fx, fy, cx, cy, height, width
+
+    def _camera_local_frustum_geometry(
+        self,
+        camera,
+    ) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+        # These coordinates are authored directly under the Camera prim. The
+        # renderer applies the camera's current Fabric transform to both the image
+        # and this geometry, so no world-pose synchronization is required.
+        fx, fy, cx, cy, height, width = self._camera_intrinsic_from_usd(camera)
+        z = self.depth
+        pixel_corners = np.array(
+            [
+                [0.0, 0.0],
+                [float(width), 0.0],
+                [float(width), float(height)],
+                [0.0, float(height)],
+            ],
+            dtype=np.float64,
+        )
+        x_cam = (pixel_corners[:, 0] - float(cx)) / max(float(fx), 1e-6) * z
+        y_cam = (pixel_corners[:, 1] - float(cy)) / max(float(fy), 1e-6) * z
+        # USD/OpenGL camera frame: -Z forward, +X image right, +Y image up.
+        # Pixel v grows down, therefore y_cam is negated.
+        corners_cam = np.stack([x_cam, -y_cam, np.full(4, -z, dtype=np.float64)], axis=1)
+        origin = np.zeros(3, dtype=np.float64)
+        starts = []
+        ends = []
+        for corner in corners_cam:
+            starts.append(origin)
+            ends.append(corner)
+        for i in range(4):
+            starts.append(corners_cam[i])
+            ends.append(corners_cam[(i + 1) % 4])
+        points = [origin] + [corner for corner in corners_cam]
+        return (
+            [tuple(float(v) for v in p) for p in starts],
+            [tuple(float(v) for v in p) for p in ends],
+            [tuple(float(v) for v in p) for p in points],
+        )
+
+    def update(self, scene: dict[str, object]) -> None:
+        wrist_cameras = scene.get("wrist_cameras", {})
+        line_count = 0
+        point_count = 0
+        for name in ("left_wrist", "right_wrist"):
+            camera = wrist_cameras.get(name)
+            geometry = self.camera_geometry.get(name)
+            if camera is None or geometry is None:
+                continue
+            try:
+                starts, ends, points = self._camera_local_frustum_geometry(camera)
+            except Exception as exc:
+                print(f"[WARN] failed to update {name} camera frustum: {type(exc).__name__}: {exc}", flush=True)
+                continue
+            self._update_usd_geometry(
+                geometry["line_ops"],
+                geometry["point_ops"],
+                starts,
+                ends,
+                points,
+            )
+            line_count += len(starts)
+            point_count += len(points)
+        self.last_line_count = line_count
+        self.last_point_count = point_count
+        if self.last_line_count > 0 and not self._reported_ready:
+            print(
+                f"[VIS] wrist camera frustums active: lines={self.last_line_count} "
+                f"points={self.last_point_count} scale={self.visual_scale:.2f} "
+                f"base_depth={self.base_depth:.3f}m effective_depth={self.depth:.3f}m "
+                "attachment=camera_local optical_axis=local_-Z "
+                f"left_prim={self.camera_geometry.get('left_wrist', {}).get('root_path')} "
+                f"right_prim={self.camera_geometry.get('right_wrist', {}).get('root_path')}",
+                flush=True,
+            )
+            self._reported_ready = True
 
 
 def estimate_right_hand_tcp_pose(
@@ -1063,12 +1385,87 @@ def configure_drawer_drive() -> list[str]:
 
 def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
     robot: Articulation = scene["robot"]
+    drawer: Articulation | None = scene.get("drawer")
     camera = scene["camera"]
     sim_dt = sim.get_physics_dt()
     reset_settle_steps = max(
         int(args_cli.reset_settle_steps),
         int(math.ceil(max(float(args_cli.reset_settle_s), 0.0) / max(float(sim_dt), 1.0e-6))),
     )
+
+    drawer_scripted_config = None
+    drawer_randomization_cfg: dict[str, object] = {}
+    drawer_rng = None
+    episode_context: dict[str, object] = {}
+    closed_handle_pose_w = get_drawer_handle_top_pose() if scene.get("task_id") == "drawer_insert_close" else None
+    if scene.get("task_id") == "drawer_insert_close":
+        from tasks.drawer_insert_close_controller import DEFAULT_SCRIPTED_CONFIG, load_scripted_config
+
+        drawer_scripted_config = Path(args_cli.drawer_scripted_config or DEFAULT_SCRIPTED_CONFIG).resolve()
+        scripted_cfg = load_scripted_config(drawer_scripted_config)
+        drawer_randomization_cfg = scripted_cfg.get("randomization", {})
+        drawer_rng = np.random.default_rng(int(drawer_randomization_cfg.get("seed", 42)))
+
+    def sample_drawer_episode() -> dict[str, object]:
+        if drawer_rng is None:
+            return {}
+        can_cfg = drawer_randomization_cfg.get("can_xy", {})
+        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
+        x_range = can_cfg.get("x_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
+        y_range = can_cfg.get("y_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
+        open_range = drawer_cfg.get("range", [0.0, 0.0]) if drawer_cfg.get("enabled", True) else [0.0, 0.0]
+        return {
+            "can_xy_offset": [
+                float(drawer_rng.uniform(float(x_range[0]), float(x_range[1]))),
+                float(drawer_rng.uniform(float(y_range[0]), float(y_range[1]))),
+            ],
+            "drawer_initial_open_m": float(
+                drawer_rng.uniform(float(open_range[0]), float(open_range[1]))
+            ),
+        }
+
+    drawer_top_joint_id = None
+    if drawer is not None:
+        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
+        drawer_joint_name = str(drawer_cfg.get("joint_name", "drawer_top_joint"))
+        drawer_joint_ids, _ = drawer.find_joints(f"^{drawer_joint_name}$")
+        if len(drawer_joint_ids) != 1:
+            raise RuntimeError(f"Expected one {drawer_joint_name}, found ids={drawer_joint_ids}")
+        drawer_top_joint_id = int(drawer_joint_ids[0])
+        drawer_limits = drawer.data.soft_joint_pos_limits[0, drawer_top_joint_id].detach().cpu().numpy()
+        print(
+            f"[DRAWER] {drawer_joint_name} passive joint limits="
+            f"[{float(drawer_limits[0]):.3f},{float(drawer_limits[1]):.3f}]m "
+            "stiffness=0.0 damping=2.0",
+            flush=True,
+        )
+
+    def reset_drawer(context: dict[str, object]) -> None:
+        if drawer is None or drawer_top_joint_id is None:
+            return
+        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
+        amount = float(context.get("drawer_initial_open_m", 0.0))
+        sign = float(drawer_cfg.get("joint_position_sign", 1.0))
+        drawer.reset()
+        joint_pos = drawer.data.default_joint_pos.clone()
+        joint_vel = drawer.data.default_joint_vel.clone()
+        joint_pos[:, drawer_top_joint_id] = sign * amount
+        joint_vel.zero_()
+        drawer.write_joint_state_to_sim(joint_pos, joint_vel)
+
+    def current_drawer_open_m() -> float | None:
+        if drawer is None or drawer_top_joint_id is None:
+            return None
+        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
+        sign = float(drawer_cfg.get("joint_position_sign", 1.0))
+        return sign * float(drawer.data.joint_pos[0, drawer_top_joint_id].item())
+
+    def current_drawer_velocity_m_s() -> float | None:
+        if drawer is None or drawer_top_joint_id is None:
+            return None
+        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
+        sign = float(drawer_cfg.get("joint_position_sign", 1.0))
+        return sign * float(drawer.data.joint_vel[0, drawer_top_joint_id].item())
 
     def settle_static_target(full_target: np.ndarray) -> np.ndarray:
         target_tensor = torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1)
@@ -1077,38 +1474,72 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             robot.write_data_to_sim()
             sim.step(render=True)
             robot.update(dt=sim_dt)
+            if drawer is not None:
+                drawer.update(dt=sim_dt)
             for obj in scene.get("dynamic_objects", []):
                 obj.update(dt=sim_dt)
-            camera.update(dt=sim_dt)
+            update_all_cameras(scene, camera, dt=sim_dt)
         return robot.data.joint_pos[0].detach().cpu().numpy().copy()
 
-    def reset_static_objects() -> None:
+    def reset_static_objects(context: dict[str, object]) -> None:
+        can_offset = np.asarray(context.get("can_xy_offset", [0.0, 0.0]), dtype=np.float32)
         for obj, pos, quat in scene.get("object_initial_poses", []):
-            write_object_pose(obj, np.asarray(pos, dtype=np.float32), sim.device, quat)
+            object_pos = np.asarray(pos, dtype=np.float32).copy()
+            if obj is scene.get("named_objects", {}).get("can"):
+                object_pos[:2] += can_offset
+            write_object_pose(obj, object_pos, sim.device, quat)
             obj.update(dt=sim_dt)
 
     def reset_static_attempt() -> np.ndarray:
+        nonlocal episode_context
+        episode_context = sample_drawer_episode()
         sim.reset()
         next_target = reset_robot_only(scene, sim)
-        reset_static_objects()
+        if scene.get("task_id") == "drawer_insert_close":
+            hand_cfg = scripted_cfg.get("hands", {})
+            reset_action = control_action_from_full_target(next_target, robot)
+            reset_action[ACTION_SLICES.left_hand] = np.asarray(
+                hand_cfg.get("left_open", [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]),
+                dtype=np.float32,
+            )
+            reset_action[ACTION_SLICES.right_hand] = np.asarray(
+                hand_cfg.get("right_open", [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]),
+                dtype=np.float32,
+            )
+            write_action_to_full_target(next_target, robot, reset_action)
+        reset_drawer(episode_context)
+        reset_static_objects(episode_context)
         robot.set_joint_position_target(torch.tensor(next_target, device=sim.device).view(1, -1))
         robot.write_data_to_sim()
         reset_camera(camera, sim, cfg)
         settled = settle_static_target(next_target)
         next_target[:] = settled
+        if episode_context:
+            offset = episode_context.get("can_xy_offset", [0.0, 0.0])
+            print(
+                f"[RANDOMIZE] can_xy=({float(offset[0]):+.3f},{float(offset[1]):+.3f}) "
+                f"drawer_initial_open={float(episode_context.get('drawer_initial_open_m', 0.0)):.3f}m",
+                flush=True,
+            )
         return next_target
 
-    target = reset_robot_only(scene, sim)
-    reset_static_objects()
-    robot.set_joint_position_target(torch.tensor(target, device=sim.device).view(1, -1))
-    robot.write_data_to_sim()
-    reset_camera(camera, sim, cfg)
-    if reset_settle_steps > 0:
-        target[:] = settle_static_target(target)
+    target = reset_static_attempt()
     print(scene.get("layout_text", "[SCENE] static task scene ready."))
+    print(
+        "Wrist cameras: "
+        f"left_pos={_fmt_tuple(cfg.left_wrist_camera_pos, 4)} "
+        f"left_quat_wxyz={_fmt_tuple(cfg.left_wrist_camera_quat_wxyz, 4)} "
+        f"left_rpy_override_deg={_fmt_tuple(cfg.left_wrist_camera_rpy_deg, 2)} "
+        f"right_pos={_fmt_tuple(cfg.right_wrist_camera_pos, 4)} "
+        f"right_quat_wxyz={_fmt_tuple(cfg.right_wrist_camera_quat_wxyz, 4)} "
+        f"right_rpy_override_deg={_fmt_tuple(cfg.right_wrist_camera_rpy_deg, 2)} "
+        f"convention={cfg.wrist_camera_convention} optical_axis={'local_+Z' if cfg.wrist_camera_convention == 'ros' else 'local_-Z'}"
+    )
     drawer_drive_paths = configure_drawer_drive() if args_cli.drawer_open else []
     if drawer_drive_paths:
         print("[SCENE] drawer drive preview: physics is stepped so the driven joint can move.")
+    elif args_cli.show_wrist_camera_frustums and not args_cli.headless:
+        print("[SCENE] static preview mode: physics/render is stepped so wrist camera frustums can refresh.")
     else:
         print("[SCENE] static preview mode: GUI keeps rendering; physics is not stepped unless headless.")
     tcp_visualizer = None
@@ -1117,6 +1548,15 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         print(
             "Debug frames: /World/Visuals/LeftHandTCP, /World/Visuals/RightHandTCP, "
             "/World/Visuals/DrawerHandleTop"
+        )
+    wrist_frustum_visualizer = None
+    if args_cli.show_wrist_camera_frustums and not args_cli.headless:
+        wrist_frustum_visualizer = scene.get("wrist_frustum_visualizer")
+        if wrist_frustum_visualizer is None:
+            raise RuntimeError("wrist frustum geometry was not created before SimulationContext.reset()")
+        print(
+            "Wrist camera frustums: camera-local USD geometry "
+            "(LeftWristCamera/DebugFrustum=cyan, RightWristCamera/DebugFrustum=orange)"
         )
     action = control_action_from_full_target(target, robot)
     keyboard_jog = None
@@ -1138,6 +1578,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     writer = None
     recording_episode = None
     recorded_episodes = 0
+    record_attempt = 1
     record_complete = False
     record_step = 0
     record_wall_start = None
@@ -1168,6 +1609,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "record_episode_timeout_s": float(max(float(args_cli.record_episode_timeout_s), 1.0)),
                 "reset_settle_s": float(max(float(args_cli.reset_settle_s), 0.0)),
                 "reset_settle_steps": int(reset_settle_steps),
+                "scripted_config": str(drawer_scripted_config) if drawer_scripted_config is not None else None,
+                "randomization": drawer_randomization_cfg,
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),
@@ -1190,6 +1633,53 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             flush=True,
         )
 
+    def current_drawer_anchors_base() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
+        if base_pose_w is None:
+            raise RuntimeError("Robot base_link pose is unavailable for drawer task anchors")
+        can_obj = scene.get("named_objects", {}).get("can")
+        if can_obj is None:
+            raise RuntimeError("Drawer task scene did not expose named_objects.can")
+        can_pose_tensor = can_obj.data.root_pose_w[0]
+        can_pose_w = (
+            can_pose_tensor[0:3].detach().cpu().numpy(),
+            can_pose_tensor[3:7].detach().cpu().numpy(),
+        )
+        can_pose_b = pose_world_to_base(can_pose_w, base_pose_w)
+        closed_handle_pose_b = pose_world_to_base(closed_handle_pose_w, base_pose_w) if closed_handle_pose_w else None
+        if can_pose_b is None or closed_handle_pose_b is None:
+            raise RuntimeError("Can or closed drawer-handle pose is unavailable")
+        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
+        opening_axis = np.asarray(drawer_cfg.get("opening_axis_base", [-1.0, 0.0, 0.0]), dtype=np.float32)
+        axis_norm = float(np.linalg.norm(opening_axis))
+        if axis_norm < 1.0e-6:
+            raise ValueError("randomization.drawer_initial_open.opening_axis_base must be non-zero")
+        opening_axis /= axis_norm
+        initial_open = float(episode_context.get("drawer_initial_open_m", 0.0))
+        target_open = float(drawer_cfg.get("target_open_m", 0.06))
+        initial_handle_pose_b = (
+            closed_handle_pose_b[0] + opening_axis * initial_open,
+            closed_handle_pose_b[1].copy(),
+        )
+        open_handle_pose_b = (
+            closed_handle_pose_b[0] + opening_axis * target_open,
+            closed_handle_pose_b[1].copy(),
+        )
+        return {
+            "can": can_pose_b,
+            "drawer_handle_closed": closed_handle_pose_b,
+            "drawer_handle_initial": initial_handle_pose_b,
+            "drawer_handle_open": open_handle_pose_b,
+        }
+
+    def make_recording_episode() -> EpisodeBuffer:
+        return EpisodeBuffer(
+            metadata={
+                "randomization": dict(episode_context),
+                "scripted_config": str(drawer_scripted_config) if drawer_scripted_config is not None else None,
+            }
+        )
+
     def new_drawer_controller(initial_action: np.ndarray):
         nonlocal pink_tcp_controller
         if pink_tcp_controller is None:
@@ -1205,11 +1695,25 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             print("[DRAWER] Pinocchio DLS bimanual TCP controller ready (target frame: base_link)", flush=True)
         from tasks.drawer_insert_close_controller import DrawerInsertCloseController
 
-        return DrawerInsertCloseController(pink_tcp_controller, initial_action=initial_action)
+        anchors = current_drawer_anchors_base()
+        print(
+            "[DRAWER] episode anchors base_link: "
+            f"can={np.round(anchors['can'][0], 4).tolist()} "
+            f"handle_initial={np.round(anchors['drawer_handle_initial'][0], 4).tolist()} "
+            f"handle_open={np.round(anchors['drawer_handle_open'][0], 4).tolist()} "
+            f"handle_closed={np.round(anchors['drawer_handle_closed'][0], 4).tolist()}",
+            flush=True,
+        )
+        return DrawerInsertCloseController(
+            pink_tcp_controller,
+            config_path=drawer_scripted_config,
+            initial_action=initial_action,
+            anchors=anchors,
+        )
 
     if scripted_drawer_enabled:
         drawer_controller = new_drawer_controller(action)
-        recording_episode = EpisodeBuffer() if writer is not None else None
+        recording_episode = make_recording_episode() if writer is not None else None
         record_wall_start = time.monotonic() if writer is not None else None
         arm_control_active = True
         print(
@@ -1217,6 +1721,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             f"config={drawer_controller.config_path}",
             flush=True,
         )
+        if writer is not None:
+            print(
+                f"[RECORD][START] episode={recorded_episodes + 1}/{max_record_episodes} "
+                f"attempt={record_attempt}",
+                flush=True,
+            )
     try:
         while simulation_app.is_running():
             try:
@@ -1311,7 +1821,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         drawer_controller = None
                         if scripted_drawer_enabled:
                             drawer_controller = new_drawer_controller(action)
-                            recording_episode = EpisodeBuffer() if writer is not None else None
+                            recording_episode = make_recording_episode() if writer is not None else None
                             record_wall_start = time.monotonic() if writer is not None else None
                             record_step = 0
                         arm_control_active = False
@@ -1340,6 +1850,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         max(sim_dt, 1.0 / 120.0),
                         left_pose_b,
                         right_pose_b,
+                        current_drawer_open_m(),
                     )
                     next_action = smooth_command(
                         action,
@@ -1381,7 +1892,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     traceback.print_exc()
                     tcp_pose_active = False
             target_tensor = torch.tensor(target, device=sim.device).view(1, -1)
-            if args_cli.headless or drawer_drive_paths or keyboard_jog is not None or arm_control_active:
+            if (
+                args_cli.headless
+                or drawer_drive_paths
+                or keyboard_jog is not None
+                or arm_control_active
+                or wrist_frustum_visualizer is not None
+            ):
                 robot.set_joint_position_target(target_tensor)
                 last_gravity_comp_stats = apply_gravity_compensation(
                     robot,
@@ -1392,9 +1909,11 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 robot.write_data_to_sim()
                 sim.step(render=True)
                 robot.update(dt=sim.get_physics_dt())
+                if drawer is not None:
+                    drawer.update(dt=sim.get_physics_dt())
                 for obj in scene.get("dynamic_objects", []):
                     obj.update(dt=sim.get_physics_dt())
-                camera.update(dt=sim.get_physics_dt())
+                update_all_cameras(scene, camera, dt=sim.get_physics_dt())
             else:
                 robot.set_joint_position_target(target_tensor)
                 last_gravity_comp_stats = apply_gravity_compensation(
@@ -1410,21 +1929,29 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
                 if wall_elapsed >= record_timeout_s:
                     print(
-                        f"[RECORD][TIMEOUT] discarded drawer episode index={recorded_episodes} "
+                        f"[RECORD][TIMEOUT] episode={recorded_episodes + 1}/{max_record_episodes} "
+                        f"attempt={record_attempt} "
                         f"wall_seconds={wall_elapsed:.1f}s timeout={record_timeout_s:.1f}s frames={len(recording_episode)}",
                         flush=True,
                     )
-                    recording_episode = EpisodeBuffer()
-                    record_wall_start = time.monotonic()
-                    record_step = 0
                     target = reset_static_attempt()
                     action = control_action_from_full_target(target, robot)
                     pink_tcp_controller = None
                     drawer_controller = new_drawer_controller(action)
+                    recording_episode = make_recording_episode()
+                    record_wall_start = time.monotonic()
+                    record_step = 0
+                    record_attempt += 1
+                    print(
+                        f"[RECORD][RETRY] episode={recorded_episodes + 1}/{max_record_episodes} "
+                        f"attempt={record_attempt}",
+                        flush=True,
+                    )
                     continue
                 if record_step % record_every_n == 0:
                     append_bimanual_record_frame(
                         recording_episode,
+                        scene,
                         robot,
                         camera,
                         action,
@@ -1432,6 +1959,27 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     )
                 record_step += 1
                 if scripted_done:
+                    if drawer_controller.failed:
+                        print(
+                            f"[RECORD][DISCARD] episode={recorded_episodes + 1}/{max_record_episodes} "
+                            f"attempt={record_attempt} "
+                            f"reason={drawer_controller.failure_reason} frames={len(recording_episode)}",
+                            flush=True,
+                        )
+                        target = reset_static_attempt()
+                        action = control_action_from_full_target(target, robot)
+                        pink_tcp_controller = None
+                        drawer_controller = new_drawer_controller(action)
+                        recording_episode = make_recording_episode()
+                        record_wall_start = time.monotonic()
+                        record_step = 0
+                        record_attempt += 1
+                        print(
+                            f"[RECORD][RETRY] episode={recorded_episodes + 1}/{max_record_episodes} "
+                            f"attempt={record_attempt}",
+                            flush=True,
+                        )
+                        continue
                     demo_name = writer.write_episode(recording_episode) if writer is not None else "demo"
                     sim_seconds = record_step * sim_dt
                     wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
@@ -1445,19 +1993,27 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     if writer is not None and recorded_episodes >= max_record_episodes:
                         record_complete = True
                         break
-                    recording_episode = EpisodeBuffer()
-                    record_wall_start = time.monotonic()
-                    record_step = 0
                     target = reset_static_attempt()
                     action = control_action_from_full_target(target, robot)
                     pink_tcp_controller = None
                     drawer_controller = new_drawer_controller(action)
+                    recording_episode = make_recording_episode()
+                    record_wall_start = time.monotonic()
+                    record_step = 0
+                    record_attempt = 1
+                    print(
+                        f"[RECORD][START] episode={recorded_episodes + 1}/{max_record_episodes} "
+                        f"attempt={record_attempt}",
+                        flush=True,
+                    )
             if tcp_visualizer is not None:
                 tcp_visualizer.visualize_task_frames(
                     left_tcp_pose=estimate_left_hand_tcp_pose_from_robot(robot),
                     right_tcp_pose=estimate_right_hand_tcp_pose_from_robot(robot),
                     drawer_handle_pose=get_drawer_handle_top_pose() if args_cli.show_drawer_handle_frame else None,
                 )
+            if wrist_frustum_visualizer is not None:
+                wrist_frustum_visualizer.update(scene)
             if args_cli.print_tcp_pose:
                 now = time.monotonic()
                 if now - last_tcp_print >= max(float(args_cli.tcp_print_period), 0.05):
@@ -1468,7 +2024,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     last_tcp_print = now
             if arm_control_active:
                 now = time.monotonic()
-                if now - last_arm_debug >= 0.5:
+                if now - last_arm_debug >= 1.0:
                     q = robot.data.joint_pos[0].detach().cpu().numpy()
                     right_err = 0.0
                     left_err = 0.0
@@ -1480,12 +2036,30 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         if name in robot.joint_names:
                             idx = robot.joint_names.index(name)
                             left_err = max(left_err, abs(float(target[idx] - q[idx])))
-                    print(
-                        f"[ARMDBG] active={arm_control_active} tcp_pose={tcp_pose_active} "
-                        f"left_q_max_err={left_err:.4f} right_q_max_err={right_err:.4f} "
-                        f"gravity_comp=max:{last_gravity_comp_stats[0]:.2f}/mean:{last_gravity_comp_stats[1]:.2f}",
-                        flush=True,
-                    )
+                    if drawer_controller is not None:
+                        base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
+                        left_pose_w = estimate_left_hand_tcp_pose_from_robot(robot)
+                        right_pose_w = estimate_right_hand_tcp_pose_from_robot(robot)
+                        left_pose_b = pose_world_to_base(left_pose_w, base_pose_w) if left_pose_w is not None else None
+                        right_pose_b = pose_world_to_base(right_pose_w, base_pose_w) if right_pose_w is not None else None
+                        wall_elapsed = time.monotonic() - record_wall_start if record_wall_start is not None else 0.0
+                        record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
+                        print(
+                            f"[PROGRESS] episode={recorded_episodes + 1}/{max_record_episodes} "
+                            f"attempt={record_attempt} "
+                            f"{drawer_controller.progress_summary(left_pose_b, right_pose_b, current_drawer_open_m())} "
+                            f"drawer_vel={float(current_drawer_velocity_m_s() or 0.0):+.3f}m/s "
+                            f"episode_time={wall_elapsed:.1f}/{record_timeout_s:.1f}s "
+                            f"q_track(L/R)={left_err:.3f}/{right_err:.3f}rad",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[ARMDBG] tcp_pose={tcp_pose_active} "
+                            f"q_track(L/R)={left_err:.3f}/{right_err:.3f}rad "
+                            f"gravity=max:{last_gravity_comp_stats[0]:.2f}/mean:{last_gravity_comp_stats[1]:.2f}",
+                            flush=True,
+                        )
                     last_arm_debug = now
     finally:
         if keyboard_jog is not None:
@@ -1606,6 +2180,11 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
         reach_controller = make_right_reach_controller(robot, sim.device)
         if args_cli.verbose_status:
             print(f"[ARM] reach resolution: {reach_controller.resolution_summary()}")
+    wrist_frustum_visualizer = None
+    if args_cli.show_wrist_camera_frustums and not args_cli.headless:
+        wrist_frustum_visualizer = scene.get("wrist_frustum_visualizer")
+        if wrist_frustum_visualizer is None:
+            raise RuntimeError("wrist frustum geometry was not created before SimulationContext.reset()")
 
     keyboard_jog = None
     if args_cli.keyboard_jog and not args_cli.headless:
@@ -1626,10 +2205,25 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
         f"rpy_deg={cfg.camera_rpy_deg} convention={cfg.camera_convention} "
         f"size={cfg.camera_width}x{cfg.camera_height} sensor_render=True ui_headless={bool(args_cli.headless)}"
     )
+    print(
+        "Wrist cameras: "
+        f"left_pos={_fmt_tuple(cfg.left_wrist_camera_pos, 4)} "
+        f"left_quat_wxyz={_fmt_tuple(cfg.left_wrist_camera_quat_wxyz, 4)} "
+        f"left_rpy_override_deg={_fmt_tuple(cfg.left_wrist_camera_rpy_deg, 2)} "
+        f"right_pos={_fmt_tuple(cfg.right_wrist_camera_pos, 4)} "
+        f"right_quat_wxyz={_fmt_tuple(cfg.right_wrist_camera_quat_wxyz, 4)} "
+        f"right_rpy_override_deg={_fmt_tuple(cfg.right_wrist_camera_rpy_deg, 2)} "
+        f"convention={cfg.wrist_camera_convention} optical_axis={'local_+Z' if cfg.wrist_camera_convention == 'ros' else 'local_-Z'}"
+    )
     if tcp_visualizer is not None:
         print(
             "Debug frames: /World/Visuals/LeftHandTCP, /World/Visuals/RightHandTCP, "
             "/World/Visuals/TargetBlockTCP, /World/Visuals/DrawerHandleTop"
+        )
+    if wrist_frustum_visualizer is not None:
+        print(
+            "Wrist camera frustums: camera-local USD geometry "
+            "(LeftWristCamera/DebugFrustum=cyan, RightWristCamera/DebugFrustum=orange)"
         )
     if keyboard_jog is not None:
         print("Keyboard jog: '['/']' select joint, 'u' increase, 'j' decrease, 'r' reset, 'p' print selected.")
@@ -2272,7 +2866,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
             robot.update(dt=sim_dt)
             for key in TASK_OBJECT_KEYS:
                 scene[key].update(dt=sim_dt)
-            camera.update(dt=sim_dt)
+            update_all_cameras(scene, camera, dt=sim_dt)
             if recording_episode is not None:
                 wall_elapsed = time.monotonic() - record_wall_start if record_wall_start is not None else 0.0
                 record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
@@ -2417,6 +3011,8 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                     target_tcp_pos=target_tcp_pos,
                     target_tcp_quat=target_tcp_quat,
                 )
+            if wrist_frustum_visualizer is not None:
+                wrist_frustum_visualizer.update(scene)
 
             now = time.monotonic()
             if args_cli.print_tcp_pose and now - last_tcp_report >= max(float(args_cli.tcp_print_period), 0.05):
@@ -2505,17 +3101,36 @@ def main() -> None:
 
     print("[BOOT] creating SimulationContext...", flush=True)
     sim_device = args_cli.device
+    use_fabric = True
+    if args_cli.live_usd_transforms:
+        sim_device = "cpu"
+        use_fabric = False
+        print(
+            "[DEBUG] --live-usd-transforms: CPU PhysX + Fabric disabled; "
+            "Stage transforms will follow current articulation poses.",
+            flush=True,
+        )
     if args_cli.drawer_open and str(sim_device).startswith("cuda"):
         sim_device = "cpu"
         print(
             "[DRAWER] --drawer-open uses CPU PhysX because direct GPU API forbids runtime articulation drive targets.",
             flush=True,
         )
-    sim = create_simulation_context(sim_device)
+    sim = create_simulation_context(sim_device, use_fabric=use_fabric)
     print("[BOOT] building scene...", flush=True)
     scene_builder = resolve_scene_builder()
     print(f"[BOOT] scene builder: {scene_builder.__module__}:{scene_builder.__name__}", flush=True)
     scene = scene_builder(cfg)
+    if args_cli.show_wrist_camera_frustums and not args_cli.headless:
+        # Fabric population happens during the first reset/play. Create camera-local
+        # debug children beforehand so they inherit the live camera hierarchy.
+        print("[BOOT] creating camera-local wrist frustums before Fabric population...", flush=True)
+        scene["wrist_frustum_visualizer"] = WristCameraFrustumVisualizer(
+            scene,
+            depth=float(args_cli.wrist_camera_frustum_depth),
+            line_width=float(args_cli.wrist_camera_frustum_line_width),
+            visual_scale=float(args_cli.wrist_camera_frustum_scale),
+        )
     print("[BOOT] resetting simulation...", flush=True)
     sim.reset()
     print("[BOOT] resetting camera...", flush=True)

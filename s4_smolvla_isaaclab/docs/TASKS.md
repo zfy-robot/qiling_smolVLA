@@ -155,6 +155,27 @@ left/right TCP targets in robot `base_link`, independent left/right hand
 targets (`open`, `close`, `hold`, or explicit 6D values), optional home-arm
 targets, `min_steps`, `max_steps`, and a TCP distance `tolerance`.
 
+The drawer task now uses named episode anchors rather than fixed world poses:
+
+```text
+can                    settled randomized can pose
+drawer_handle_initial  handle pose at this episode's randomized opening
+drawer_handle_open     handle pose at the fixed configured target opening
+drawer_handle_closed   fully closed handle pose
+```
+
+Edit `randomization` to tune can XY ranges and initial drawer opening. Edit the
+named entries under `targets` to tune the two left-handle transition offsets,
+right-can pre-grasp/grasp offsets, lift, placement, and close target. Current
+offsets are in `base_link`; `offset_frame: anchor` is available for local-frame
+offsets. `hands.action_hold_seconds: 1.0` is automatically applied to every
+phase that issues an open/close command.
+
+Each episode records its sampled `can_xy_offset`, `drawer_initial_open_m`, and
+scripted config path in the HDF5 demo attribute `episode_metadata`. A controller
+phase timeout marks the attempt failed, discards its buffer, resets the scene,
+and samples another attempt so failed trajectories are not counted.
+
 The current YAML starts from the manually tested poses:
 
 ```bash
@@ -276,6 +297,7 @@ bash run.sh sim \
   --print-layout \
   --show-tcp-frames \
   --show-drawer-handle-frame \
+  --show-wrist-camera-frustums \
   --print-tcp-pose \
   --tcp-print-period 0.5
 ```
@@ -305,11 +327,36 @@ If a saved scene changes the hierarchy, override it with
 script also searches the stage by the leaf name, for example
 `drawer_handle_frame`.
 
-For live arm tuning in this drawer preview:
+The wrist camera frustums are drawn as real USD geometry under each camera's
+`DebugFrustum` child: thin cylinders for frustum edges and small spheres for each
+origin/corner. Their coordinates are local to `LeftWristCamera` and
+`RightWristCamera`, with the same OpenGL `-Z` optical axis as the image. They
+therefore inherit each camera's current Fabric transform and follow wrist motion
+without copying world transforms back into USD. Do not use the USD Stage
+transform inspector to validate an articulated camera while Fabric is enabled:
+it may still show the authored initial link transform. Left is cyan and right is
+orange. Change the drawn range with
+`--wrist-camera-frustum-depth <meters>`; this only affects the debug drawing,
+not camera capture. The default `--wrist-camera-frustum-scale 0.30` uniformly
+reduces depth, line lengths, line radii, and point radii by 70%. A successful startup prints
+`[VIS] wrist camera frustums active`.
+
+The frustum children are created before the first `SimulationContext.reset()` so
+Fabric discovers them together with the camera hierarchy. Leave the visualization
+flag off while recording datasets. If the built-in Stage transform inspector must
+also show live link transforms, add `--live-usd-transforms`; this uses CPU PhysX
+without Fabric and is intended only for interactive coordinate debugging.
+
+For live arm tuning in this drawer preview, the required frame and frustum
+overlays are now defaults of the `sim` launcher:
 
 ```bash
-bash run.sh sim --print-layout --show-tcp-frames --show-drawer-handle-frame --print-tcp-pose --keyboard-jog
+bash run.sh sim
 ```
+
+Add `--keyboard-jog` only when keyboard joint tuning is needed. Add
+`--live-usd-transforms` only when the Stage inspector itself must track current
+link transforms; it switches to the slower CPU/no-Fabric debug mode.
 
 Keyboard jog controls:
 

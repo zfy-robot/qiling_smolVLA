@@ -174,6 +174,37 @@ the HDF5 array `obs/chest_front_rgb`, which is written by the IsaacLab `Camera` 
 If `datasets/lerobot_data/.../videos/.../file-000.mp4` shows an old or wrong angle, rebuild that LeRobotDataset
 from a freshly recorded HDF5 using `bash run.sh convert-lerobot --root-path ... --overwrite`.
 
+New recordings also store wrist-camera RGB arrays:
+
+```text
+obs/left_wrist_rgb  -> observation.images.left_wrist_rgb
+obs/right_wrist_rgb -> observation.images.right_wrist_rgb
+```
+
+Both sensors are fixed under the corresponding wrist yaw link and use the same
+`680x480` resolution as the chest camera. The default mount comes from the
+real-robot hand-eye calibration matrices `lh_hand_base_link -> camera` and
+`rh_hand_base_link -> camera`. Since IsaacSim merges those hand base links into
+the wrist yaw links, `s4_robot/simulation.py` stores the composed
+`wrist_yaw_link -> camera` transforms:
+
+```text
+left  pos=(-0.0445941356, -0.0209877889, -0.1614989107)
+left  quat_wxyz=(-0.1871460184, 0.6595136840, 0.6044971537, 0.4057108079)
+right pos=( 0.0438948230, -0.0197078601, -0.1638273481)
+right quat_wxyz=(-0.1353444104, 0.6807588438, -0.5885558066, -0.4145495744)
+convention=ros
+```
+
+Override with `--left-wrist-camera-pos/--left-wrist-camera-quat-wxyz` and
+`--right-wrist-camera-pos/--right-wrist-camera-quat-wxyz` for calibrated data.
+RPY overrides are still available for quick UI tuning, but should not replace
+the measured quaternion defaults without a new calibration.
+
+The canonical defaults live only in `s4_robot/simulation.py`. Simulation,
+recording, and evaluation CLI arguments default to `None` and inherit those
+constants; command-line values are temporary per-run overrides.
+
 Logs are concise by default. Add `--verbose-status` only when you need detailed TCP/Jacobian/arm tracking diagnostics.
 
 Useful overrides:

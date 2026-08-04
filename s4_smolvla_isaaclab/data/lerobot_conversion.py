@@ -7,6 +7,8 @@ without the training environment installed.
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 import shutil
 
@@ -35,6 +37,40 @@ def discover_hdf5_files(root_path: Path) -> list[Path]:
     if root_path.is_dir():
         return sorted(root_path.glob("*.hdf5"))
     raise FileNotFoundError(f"HDF5 root does not exist: {root_path}")
+
+
+def validate_recording_fps(hdf5_files: list[Path], expected_fps: int) -> None:
+    """Reject HDF5 inputs whose recorded timebase differs from the dataset timebase."""
+    recorded_rates: list[tuple[Path, float]] = []
+    for hdf5_path in hdf5_files:
+        with h5py.File(hdf5_path, "r") as f:
+            raw_env_args = f["data"].attrs.get("env_args")
+            if raw_env_args is None:
+                continue
+            if isinstance(raw_env_args, bytes):
+                raw_env_args = raw_env_args.decode("utf-8")
+            env_args = json.loads(raw_env_args) if isinstance(raw_env_args, str) else dict(raw_env_args)
+            record_fps = env_args.get("record_fps")
+            if record_fps is None:
+                sim_dt = env_args.get("sim_dt")
+                record_every_n = env_args.get("record_every_n")
+                if sim_dt and record_every_n:
+                    record_fps = 1.0 / (float(sim_dt) * int(record_every_n))
+            if record_fps is not None:
+                recorded_rates.append((hdf5_path, float(record_fps)))
+
+    mismatches = [
+        (path, rate)
+        for path, rate in recorded_rates
+        if not math.isclose(rate, float(expected_fps), rel_tol=1e-4, abs_tol=1e-4)
+    ]
+    if mismatches:
+        details = "\n".join(f"  {path}: {rate:.3f} Hz" for path, rate in mismatches)
+        raise ValueError(
+            f"HDF5 recording rate does not match configured LeRobot fps={expected_fps}:\n{details}\n"
+            "For the 120 Hz simulator, record with --record-every-n 6 to produce 20 Hz data. "
+            "Do not relabel an existing recording with a different fps."
+        )
 
 
 def inspect_first_demo(hdf5_path: Path, camera_path: str, control_mode: str) -> tuple[int, int, tuple[int, ...]]:
@@ -100,6 +136,7 @@ def convert_hdf5_to_lerobot(
     hdf5_files = discover_hdf5_files(root_path)
     if not hdf5_files:
         raise FileNotFoundError(f"No .hdf5 files found under {root_path}")
+    validate_recording_fps(hdf5_files, fps)
 
     state_dim, action_dim, camera_shape = inspect_first_demo(hdf5_files[0], camera_paths[0], control_mode)
     features = build_lerobot_features(camera_paths, state_dim, action_dim, camera_shape, fps=fps)

@@ -10,12 +10,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from isaaclab.assets import RigidObject, RigidObjectCfg
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
 import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import Camera, CameraCfg
 from isaaclab.sim import schemas
 
-from s4_robot.simulation import SceneBuildCfg, build_robot, configure_usdz_rigid_meshes, spawn_background_and_table
+from s4_robot.simulation import (
+    SceneBuildCfg,
+    build_robot,
+    configure_usdz_rigid_meshes,
+    make_rgb_camera,
+    make_wrist_cameras,
+    spawn_background_and_table,
+)
 
 
 ISAAC_ROOT = Path("/home/zfy/isaacsim_assets/Assets/Isaac/5.1")
@@ -31,7 +38,7 @@ DRAWER_PLACEMENTS = (
     ("DrawerCabinet", (DRAWER_X, DRAWER_Y_OFFSET, DRAWER_Z)),
     ("DrawerCabinetSecondary", (DRAWER_X, -DRAWER_Y_OFFSET, DRAWER_Z)),
 )
-TOMATO_SOUP_CAN_POSITION = (0.56, -0.08, 1.16)
+TOMATO_SOUP_CAN_POSITION = (0.54, -0.08, 1.16)
 OBJECT_ROTATE_X_NEG_90_QUAT = (0.7071068, -0.7071068, 0.0, 0.0)
 TOMATO_CAN_MASS_KG = 0.08
 TOMATO_CAN_STATIC_FRICTION = 2.2
@@ -248,6 +255,36 @@ def _spawn_dynamic_usd_object(item: DrawerAssetPlacement) -> RigidObject:
     return obj
 
 
+def _spawn_primary_drawer() -> Articulation:
+    """Spawn the task cabinet as an IsaacLab articulation for tensor joint reset."""
+    name, position = DRAWER_PLACEMENTS[0]
+    drawer_cfg = ArticulationCfg(
+        prim_path=f"/World/DrawerTask/{name}",
+        spawn=sim_utils.UsdFileCfg(usd_path=str(DRAWER_USD)),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=position,
+            rot=DRAWER_YAW_180_QUAT,
+            joint_pos={".*": 0.0},
+            joint_vel={".*": 0.0},
+        ),
+        actuators={
+            "task_drawer": ImplicitActuatorCfg(
+                joint_names_expr=["drawer_top_joint"],
+                stiffness=0.0,
+                damping=2.0,
+                effort_limit_sim=500.0,
+            ),
+            "unused_cabinet_joints": ImplicitActuatorCfg(
+                joint_names_expr=["drawer_bottom_joint", "door_left_joint", "door_right_joint"],
+                stiffness=800.0,
+                damping=80.0,
+                effort_limit_sim=500.0,
+            ),
+        },
+    )
+    return Articulation(cfg=drawer_cfg)
+
+
 def format_drawer_layout(cfg: SceneBuildCfg, drawer_top_z: float | None) -> str:
     objects = "\n".join(
         f"  {item.name}=({item.position[0]:.3f}, {item.position[1]:.3f}, {item.position[2]:.3f}) "
@@ -280,7 +317,9 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
     spawn_background_and_table(cfg)
 
     print(f"[BOOT] loading drawers: {DRAWER_USD}", flush=True)
-    for name, position in DRAWER_PLACEMENTS:
+    primary_drawer = _spawn_primary_drawer()
+    print("[BOOT] drawer articulation loaded: /World/DrawerTask/DrawerCabinet", flush=True)
+    for name, position in DRAWER_PLACEMENTS[1:]:
         _spawn_usd(
             f"/World/DrawerTask/{name}",
             DRAWER_USD,
@@ -295,28 +334,16 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         print(f"[BOOT] primary drawer bbox top z={drawer_top_z:.3f}", flush=True)
 
     dynamic_objects: list[RigidObject] = []
+    named_objects: dict[str, RigidObject] = {}
     object_initial_poses: list[tuple[RigidObject, tuple[float, float, float], tuple[float, float, float, float]]] = []
     for item in _object_placements():
         print(f"[BOOT] loading drawer task object: {item.name} <- {item.usd_path.name}", flush=True)
         obj = _spawn_dynamic_usd_object(item)
         dynamic_objects.append(obj)
+        named_objects["can"] = obj
         object_initial_poses.append((obj, item.position, item.orientation))
 
-    camera = Camera(
-        cfg=CameraCfg(
-            prim_path="/World/DebugFrontCamera",
-            update_period=0,
-            height=int(cfg.camera_height),
-            width=int(cfg.camera_width),
-            data_types=["rgb"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=18.0,
-                focus_distance=1.2,
-                horizontal_aperture=20.955,
-                clipping_range=(0.05, 5.0),
-            ),
-        )
-    )
+    camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
     robot = build_robot(
         "/World/Robot",
         cfg.joint_stiffness,
@@ -324,13 +351,17 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         cfg.joint_effort_limit,
         cfg.robot_base_z,
     )
+    wrist_cameras = make_wrist_cameras(cfg)
     print("[BOOT] drawer task scene objects constructed.", flush=True)
     return {
         "task_id": "drawer_insert_close",
         "task_description": "Open the drawer with the left hand, grasp the can with the right hand, put it into the drawer, and close the drawer.",
         "robot": robot,
+        "drawer": primary_drawer,
         "camera": camera,
+        "wrist_cameras": wrist_cameras,
         "dynamic_objects": dynamic_objects,
+        "named_objects": named_objects,
         "object_initial_poses": object_initial_poses,
         "layout_text": format_drawer_layout(cfg, drawer_top_z),
     }

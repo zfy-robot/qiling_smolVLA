@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from data.hdf5_schema import CHEST_FRONT_RGB
+from data.hdf5_schema import CHEST_FRONT_RGB, LEFT_WRIST_RGB, RIGHT_WRIST_RGB
 from data.lerobot_conversion import convert_hdf5_to_lerobot
 from s4_pipeline.config import load_project_config
 
@@ -37,7 +37,10 @@ def main() -> None:
     if args.extra_root_path_parts:
         root_path = Path(root_path, *args.extra_root_path_parts)
     output_root = args.output_root or cfg.dataset.lerobot_root
-    camera_paths = args.camera_path or [CHEST_FRONT_RGB]
+    camera_paths = args.camera_path or cfg.raw.get("dataset", {}).get(
+        "camera_paths",
+        [CHEST_FRONT_RGB, LEFT_WRIST_RGB, RIGHT_WRIST_RGB],
+    )
     control_mode = args.control_mode or cfg.raw.get("dataset", {}).get("control_mode", "right_only")
     dataset_root = convert_hdf5_to_lerobot(
         root_path=root_path,

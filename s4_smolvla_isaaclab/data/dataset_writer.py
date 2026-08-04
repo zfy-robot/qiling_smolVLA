@@ -38,11 +38,14 @@ def _image_dataset_kwargs(data: np.ndarray) -> dict[str, Any]:
 
 @dataclass
 class EpisodeBuffer:
+    metadata: dict[str, Any] = field(default_factory=dict)
     actions: list[np.ndarray] = field(default_factory=list)
     full_joint_pos: list[np.ndarray] = field(default_factory=list)
     active_joint_pos: list[np.ndarray] = field(default_factory=list)
     chest_front_rgb: list[np.ndarray] = field(default_factory=list)
     task_descriptions: list[str] = field(default_factory=list)
+    left_wrist_rgb: list[np.ndarray] = field(default_factory=list)
+    right_wrist_rgb: list[np.ndarray] = field(default_factory=list)
     left_eef_pose: list[np.ndarray] = field(default_factory=list)
     right_eef_pose: list[np.ndarray] = field(default_factory=list)
     red_block_pose: list[np.ndarray] = field(default_factory=list)
@@ -80,6 +83,8 @@ class Hdf5DemoWriter:
         episode.validate()
         name = f"demo_{self._episode_index}"
         group = self._data.create_group(name)
+        if episode.metadata:
+            group.attrs["episode_metadata"] = json.dumps(episode.metadata, ensure_ascii=False)
         _create_nested_dataset(group, schema.PROCESSED_ACTIONS, np.asarray(episode.actions, dtype=np.float32))
         _create_nested_dataset(group, schema.FULL_JOINT_POS, np.asarray(episode.full_joint_pos, dtype=np.float32))
         if episode.active_joint_pos:
@@ -94,6 +99,12 @@ class Hdf5DemoWriter:
             )
         rgb = np.asarray(episode.chest_front_rgb, dtype=np.uint8)
         _create_nested_dataset(group, schema.CHEST_FRONT_RGB, rgb, **_image_dataset_kwargs(rgb))
+        if episode.left_wrist_rgb:
+            left_rgb = np.asarray(episode.left_wrist_rgb, dtype=np.uint8)
+            _create_nested_dataset(group, schema.LEFT_WRIST_RGB, left_rgb, **_image_dataset_kwargs(left_rgb))
+        if episode.right_wrist_rgb:
+            right_rgb = np.asarray(episode.right_wrist_rgb, dtype=np.uint8)
+            _create_nested_dataset(group, schema.RIGHT_WRIST_RGB, right_rgb, **_image_dataset_kwargs(right_rgb))
         if episode.left_eef_pose:
             _create_nested_dataset(group, schema.LEFT_EEF_POSE, np.asarray(episode.left_eef_pose, dtype=np.float32))
         if episode.right_eef_pose:

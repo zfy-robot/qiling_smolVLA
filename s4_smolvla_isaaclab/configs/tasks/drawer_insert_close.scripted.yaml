@@ -1,143 +1,209 @@
+# Scripted demonstration parameters for drawer_insert_close.
+# Positions and offsets are metres. RPY values are radians. Unless a target
+# explicitly says offset_frame: anchor, offsets are expressed in base_link.
+
 controller:
   task: "Open the drawer with the left hand, grasp the can with the right hand, put it into the drawer, and close the drawer."
   default_tolerance: 0.035
+  default_orientation_tolerance: 0.55
+
+randomization:
+  seed: 42
+  can_xy:
+    enabled: true
+    x_range: [-0.05, 0.05]
+    y_range: [-0.05, 0.05]
+  drawer_initial_open:
+    enabled: true
+    range: [0.00, 0.05]
+    joint_name: "drawer_top_joint"
+    # The USD joint range is [0.0, 0.4] m. Positive joint motion opens the
+    # cabinet; the cabinet's 180-degree yaw maps that motion to base_link -X.
+    joint_position_sign: 1.0
+    opening_axis_base: [-1.0, 0.0, 0.0]
+    target_open_m: 0.10
 
 hands:
+  # Six policy controls: thumb yaw, thumb pitch, index, middle, ring, pinky.
   left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
   left_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
   right_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
   right_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
+  action_hold_seconds: 1.0
+
+# These are the main task-tuning parameters. The can and handle anchors are
+# measured from the current simulation state at the beginning of each episode.
+targets:
+  left_handle_transition_1:
+    anchor: drawer_handle_initial
+    offset_frame: base_link
+    offset: [-0.1135, -0.0130, 0.108]
+    rpy: [-1.5, 0.0, 1.5]
+    orientation_weight: 0.20
+  left_handle_transition_2:
+    anchor: drawer_handle_initial
+    offset_frame: base_link
+    offset: [-0.1085, -0.0130, 0.0818]
+    rpy: [-1.5, 0.0, 1.5]
+    orientation_weight: 0.35
+  left_handle_transition_3:
+    anchor: drawer_handle_initial
+    offset_frame: base_link
+    offset: [-0.0985, -0.0110, 0.0188]
+    rpy: [-1.5, 0.0, 1.5]
+    orientation_weight: 0.60
+  left_drawer_open:
+    anchor: drawer_handle_open
+    offset_frame: base_link
+    # Keep the same tool-to-handle offset used at grasp. The open anchor
+    # already contains the configured drawer travel along base -X.
+    offset: [-0.0985, -0.0110, 0.0188]
+    rpy: [-1.5, 0.0, 1.6]
+    orientation_weight: 0.60
+  left_drawer_closed:
+    anchor: drawer_handle_closed
+    offset_frame: base_link
+    offset: [-0.0985, -0.0110, 0.0188]
+    rpy: [-1.5, 0.0, 1.5]
+    orientation_weight: 0.60
+  right_can_pregrasp:
+    anchor: can
+    offset_frame: base_link
+    offset: [-0.06, -0.07, 0.07]
+    rpy: [0.0, -1.5, 0.0]
+  right_can_grasp:
+    anchor: can
+    offset_frame: base_link
+    offset: [-0.07, -0.04, 0.02]
+    rpy: [0.0, -0.9, 0.0]
+    orientation_weight: 0.25
+  right_can_lift:
+    anchor: can
+    offset_frame: base_link
+    offset: [-0.08, -0.05, 0.12]
+    rpy: [0.0, -0.9, 0.0]
+    orientation_weight: 0.25
+  right_place_in_drawer:
+    anchor: drawer_handle_closed
+    offset_frame: base_link
+    offset: [-0.0035, -0.2830, 0.1528]
+    rpy: [0.0, -1.5, 1.5]
 
 phases:
-  - name: left_approach_handle
-    task: "Move the left hand near the drawer handle."
-    left:
-      pos: [0.30, 0.36, 0.08]
-      rpy: [-1.5, 0.0, 1.5]
+  - name: initial_open_hands
+    task: "Open both hands and wait before approaching the drawer."
     left_hand: open
     right_hand: open
-    min_steps: 30
-    max_steps: 360
+    hold_seconds: 1.0
+    max_steps: 1000
+
+  - name: left_approach_handle
+    task: "Move the left hand near the drawer handle."
+    left: {target: left_handle_transition_1}
+    min_steps: 20
+    max_steps: 1000
+
+  - name: left_approach_handle_fine
+    task: "Move the left hand through the intermediate drawer-handle approach pose."
+    left: {target: left_handle_transition_2}
+    min_steps: 20
+    max_steps: 1000
 
   - name: left_grasp_handle
     task: "Move the left hand onto the drawer handle."
-    left:
-      pos: [0.36, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    left_hand: open
+    left: {target: left_handle_transition_3}
     min_steps: 20
-    max_steps: 240
+    max_steps: 1000
 
   - name: left_close_hand
-    task: "Close the left hand around the drawer handle."
-    left:
-      pos: [0.36, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
+    task: "Close the left hand around the drawer handle and wait."
+    left: {target: left_handle_transition_3}
     left_hand: close
-    min_steps: 90
-    max_steps: 120
+    hold_seconds: 2.0
+    max_steps: 1000
 
   - name: pull_drawer
     task: "Pull the drawer open with the left hand."
-    left:
-      pos: [0.36, 0.30, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    left_hand: close
-    min_steps: 40
-    max_steps: 300
+    left: {target: left_drawer_open}
+    min_steps: 30
+    max_steps: 1000
+    # target_open_m is 0.10 m; require most of that travel while leaving
+    # tolerance for compliant hand-handle contact.
+    drawer_open_min: 0.08
 
   - name: right_pregrasp_can
-    task: "Move the right hand above the can while the left hand holds the drawer."
-    left:
-      pos: [0.36, 0.30, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    right:
-      pos: [0.50, -0.15, 0.25]
-      rpy: [0.0, -1.5, 0.0]
-    left_hand: close
-    right_hand: open
-    min_steps: 30
-    max_steps: 360
+    task: "Move the right hand to the pre-grasp pose above the can."
+    left: {target: left_drawer_open}
+    right: {target: right_can_pregrasp}
+    tolerance: 0.075
+    min_steps: 20
+    max_steps: 1000
 
   - name: right_grasp_can
-    task: "Move the right hand to the can grasp pose."
-    left:
-      pos: [0.32, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    right:
-      pos: [0.54, -0.13, 0.16]
-      rpy: [0.0, -1.5, 0.0]
-    left_hand: close
-    right_hand: open
+    task: "Move the right hand from the pre-grasp pose to the can."
+    left: {target: left_drawer_open}
+    right: {target: right_can_grasp}
+    tolerance: 0.050
     min_steps: 20
-    max_steps: 300
+    max_steps: 1000
 
   - name: right_close_hand
-    task: "Close the right hand around the can."
-    left:
-      pos: [0.32, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    right:
-      pos: [0.54, -0.13, 0.16]
-      rpy: [0.0, -1.5, 0.0]
-    left_hand: close
+    task: "Close the right hand around the can and wait."
+    left: {target: left_drawer_open}
+    right: {target: right_can_grasp}
     right_hand: close
-    min_steps: 90
-    max_steps: 120
+    tolerance: 0.050
+    hold_seconds: 1.0
+    max_steps: 1000
+
+  - name: right_lift_can
+    task: "Lift the grasped can clear of the support surface."
+    left: {target: left_drawer_open}
+    right: {target: right_can_lift}
+    min_steps: 20
+    max_steps: 1000
 
   - name: right_place_in_drawer
-    task: "Place the can into the open drawer with the right hand."
-    left:
-      pos: [0.32, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    right:
-      pos: [0.44, 0.10, 0.18]
-      rpy: [0.0, -1.5, 1.5]
-    left_hand: close
-    right_hand: close
+    task: "Move the grasped can into the open drawer."
+    left: {target: left_drawer_open}
+    right: {target: right_place_in_drawer}
     min_steps: 30
-    max_steps: 420
+    max_steps: 2000
 
   - name: right_open_hand
-    task: "Open the right hand to release the can inside the drawer."
-    left:
-      pos: [0.32, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    right:
-      pos: [0.44, 0.10, 0.18]
-      rpy: [0.0, -1.5, 1.5]
-    left_hand: close
+    task: "Open the right hand to release the can and wait."
+    left: {target: left_drawer_open}
+    right: {target: right_place_in_drawer}
     right_hand: open
-    min_steps: 80
-    max_steps: 120
+    hold_seconds: 1.0
+    max_steps: 1000
 
-  - name: push_drawer_closed_right_home
-    task: "Push the drawer closed with the left hand while the right arm returns home."
-    left:
-      pos: [0.36, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    left_hand: close
-    right_hand: open
+  - name: right_home
+    task: "Return the right arm home while the left hand holds the open drawer."
+    left: {target: left_drawer_open}
     right_arm_home: true
-    min_steps: 50
-    max_steps: 300
+    min_steps: 60
+    max_steps: 1000
+
+  - name: push_drawer_closed
+    task: "Push the drawer closed with the left hand."
+    left: {target: left_drawer_closed}
+    right_arm_home: true
+    min_steps: 40
+    max_steps: 1000
+    drawer_open_max: 0.03
 
   - name: left_open_hand
-    task: "Open the left hand after closing the drawer."
-    left:
-      pos: [0.36, 0.36, 0.10]
-      rpy: [-1.5, 0.0, 1.5]
-    left_hand: open
-    right_hand: open
+    task: "Open the left hand after closing the drawer and wait."
+    left: {target: left_drawer_closed}
     right_arm_home: true
-    min_steps: 80
-    max_steps: 120
+    left_hand: open
+    hold_seconds: 1.0
+    max_steps: 1000
 
-  - name: both_home
-    task: "Return both arms to the home pose after finishing the task."
+  - name: left_home
+    task: "Return the left arm home after completing the task."
     left_arm_home: true
     right_arm_home: true
-    left_hand: open
-    right_hand: open
     min_steps: 120
-    max_steps: 180
+    max_steps: 1000

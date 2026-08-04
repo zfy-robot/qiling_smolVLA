@@ -572,7 +572,7 @@ bash run.sh record-hdf5 --num-episodes 1 --block blue
 
 ```bash
 bash run.sh record-hdf5 --num-episodes 1 --block blue \
-  --camera-width 680 --camera-height 480 --record-every-n 1
+  --camera-width 680 --camera-height 480 --record-every-n 6
 ```
 
 默认输出：
@@ -1788,3 +1788,86 @@ bash run.sh sim --print-layout --camera-eye X Y Z --camera-target X Y Z
 - 默认模式下，`--camera-rpy-deg R P Y` 表示相机世界姿态，当前默认是用户 UI 里的 `(0,-23,-90)`。
 - `--camera-target X Y Z` 只在显式传 `--camera-look-at` 时生效，此时脚本会忽略 rpy，根据 eye 指向 target 自动计算相机姿态。
 - 以后如果用户在 UI 里给的是 position + orientation，就不要再用 look-at target 去近似，应直接设置 `--camera-eye ... --camera-rpy-deg ...`，并保持 `--camera-look-at` 为 false。
+
+## 2026-08-03 左右腕部相机初始接入
+
+用户希望在左右手腕/末端附近固定腕部相机，后续把腕相机和胸前相机一起输入 SmolVLA 训练框架。本次完成第一版传感器和数据链路：
+
+- 场景构建会在机器人左右腕 yaw link 下挂载 RGB Camera：
+  - `/World/Robot/left_wrist_yaw_link/LeftWristCamera`
+  - `/World/Robot/right_wrist_yaw_link/RightWristCamera`
+- 默认腕相机局部安装参数写在 `s4_robot/simulation.py`。2026-08-04 已从用户提供的真机手眼标定矩阵更新：用户给的是 `lh_hand_base_link -> camera` 和 `rh_hand_base_link -> camera`；由于 IsaacSim 导入 URDF 时把 `lh_hand_base_link/rh_hand_base_link` 固定合并到 `left_wrist_yaw_link/right_wrist_yaw_link`，代码里实际保存的是组合后的 `wrist_yaw_link -> camera`：
+  - `LEFT_WRIST_CAMERA_LOCAL_POS=(-0.0445941356, -0.0209877889, -0.1614989107)`
+  - `LEFT_WRIST_CAMERA_LOCAL_QUAT_WXYZ=(-0.1871460184, 0.6595136840, 0.6044971537, 0.4057108079)`
+  - `RIGHT_WRIST_CAMERA_LOCAL_POS=(0.0438948230, -0.0197078601, -0.1638273481)`
+  - `RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ=(-0.1353444104, 0.6807588438, -0.5885558066, -0.4145495744)`
+  - `WRIST_CAMERA_LOCAL_RPY_DEG=None`
+  - `WRIST_CAMERA_OFFSET_CONVENTION="ros"`
+- 第一版曾用 `convention="ros"` 和 identity quaternion，用户反馈 UI 中看到的腕相机方向与实际图像不一致。根因是 IsaacLab Camera offset 会把 ROS 相机约定自动转换成 USD/OpenGL 相机约定：ROS 光轴是 `+Z`，USD Camera 实际看 `-Z`，所以 UI 里看坐标轴/旋转值很容易误判方向。
+- 旧的 `±0.10m + RPY(0,-90,0) + opengl` 方案只是无标定占位，已经被真机标定结果替换。现在默认使用四元数和 `convention="ros"`，含义是把用户给的相机 frame 当作 ROS/OpenCV 光学相机坐标系（`+Z` 为光轴）。IsaacLab 会转换到底层 USD Camera 表示，所以 UI 中看到的 Camera local axes/rotation 可能和直觉不完全一致；判断是否正确应以采集到的图像为准。
+- 若后续要微调腕相机，优先改 `--left-wrist-camera-pos/--left-wrist-camera-quat-wxyz`、`--right-wrist-camera-pos/--right-wrist-camera-quat-wxyz` 或 `simulation.py` 常量；`--left/right-wrist-camera-rpy-deg` 只作为临时 UI 调试覆盖项，不建议用于正式采集。相机作为 wrist link 子节点会相对手腕保持静止，手腕转动时相机也会随手腕转动，不能同时长期保持世界 `+X` 朝向，除非后续改成每帧主动补偿姿态的非刚性挂载。
+- `scripts/03_record_physics_dataset.py` 的仿真步进现在会同时 update 胸前相机、左腕相机、右腕相机。
+- HDF5 新增可选图像字段：
+  - `obs/left_wrist_rgb`
+  - `obs/right_wrist_rgb`
+- `EpisodeBuffer` 和 `Hdf5DemoWriter` 已支持写入左右腕相机帧。
+- `convert-lerobot` 默认相机路径改为：
+  - `obs/chest_front_rgb`
+  - `obs/left_wrist_rgb`
+  - `obs/right_wrist_rgb`
+- LeRobotDataset 默认视频 feature 变为：
+  - `observation.images.chest_front_rgb`
+  - `observation.images.left_wrist_rgb`
+  - `observation.images.right_wrist_rgb`
+- `configs/s4_bimanual_dataset.json` 和 `configs/tasks/drawer_insert_close.dataset.json` 已记录三路相机 paths/features，分辨率仍统一为 `[480, 680, 3]`。
+- 当前在线 `eval-smolvla`/`09_smolvla_policy_server.py` 仍是单图像请求路径，默认只把 checkpoint 的第一个视觉键接入策略。等真正用三路相机训练 checkpoint 后，必须再把 policy server 和 eval payload 扩展成多图像输入，否则 rollout 不会使用腕相机。
+- 2026-08-04 新增 `--show-wrist-camera-frustums`，用于在 IsaacSim GUI 中持续显示左右腕相机视锥范围。初版使用 USD `BasisCurves`，用户反馈启动后界面没有任何视锥显示；随后改为 `debug_draw`/`VisualizationMarkers`，日志显示已经计算出 `lines=16, points=10`，但用户 GUI 仍不可见，说明 viewport overlay/PointInstancer 在当前 Fabric 配置下不可靠。当前最终方案改为真正的 USD 几何体：`/World/Visuals/WristCameraFrustums` 下用细 Cylinder 画 16 条视锥边，用 Sphere 画 10 个相机原点/角点。只要启用 `--show-wrist-camera-frustums`，静态 GUI 预览也走 `sim.step(render=True)` 并刷新所有相机。左腕 cyan、右腕 orange。实现位置在 `scripts/03_record_physics_dataset.py::WristCameraFrustumVisualizer`。初版几何计算曾读取 IsaacLab Camera sensor 的 ROS 姿态；后续已按下方记录改为直接读取 USD Camera prim，保证与界面相机一致。调试命令示例：`bash run.sh sim --print-layout --show-wrist-camera-frustums --wrist-camera-frustum-depth 0.45 --wrist-camera-frustum-line-width 5`。成功启动后应打印 `[VIS] wrist camera frustums active`；该参数只影响 GUI 辅助显示，不改变 HDF5 采集图像。
+- 2026-08-04 曾尝试通过 `warmup_camera_sensors(..., steps=2)` 后读取世界姿态，解决第一次 sensor 数据未更新的问题；该世界空间视锥方案随后被 camera-local 方案替代。当前正确日志不再是 `usd_prim=/World/Visuals/WristCameraFrustums`，而必须包含 `attachment=camera_local optical_axis=local_-Z`，并列出 `LeftWristCamera/DebugFrustum` 与 `RightWristCamera/DebugFrustum`。如果仍出现 `points_prim`、`debug_draw lines` 或全局 `/World/Visuals/WristCameraFrustums` 作为当前输出，说明运行的是旧进程/旧代码。
+- 2026-08-04 用户在 Stage 中看到视锥 prim 的 translate 为 `NaN`、rotation 为 0。根因是 `WristCameraFrustumVisualizer` 直接读取 `camera.data.pos_w / quat_w_ros / intrinsic_matrices`，但 IsaacLab Camera sensor 在某些 GUI/Fabric 初始化时机会产出 NaN；原代码没有做 `np.isfinite` 校验，于是把 NaN 写进 USD Cylinder/Sphere 的 transform。已修复为：`_camera_frustum_geometry()` 先校验 sensor pose、quat、intrinsic 是否全是有限值且 `fx/fy > 0`；无效时打印 `[VIS][WARN] camera sensor pose/intrinsics invalid; using USD Camera prim fallback`，并从实际 USD Camera prim 的 `LocalToWorldTransform` 和 camera focal/aperture 属性计算视锥。`update()` 不再因为 `camera.data.* is None` 提前跳过，而是统一进入 fallback 逻辑。后续排查要看日志里的 `left_origin/right_origin` 是否为正常世界坐标，不能再只看 Stage 里是否创建了 prim。
+- 2026-08-04 视锥可见后发现方向与 Isaac Sim 界面直接查看腕部相机不一致。第一层原因是可视化使用了 `quat_w_ros`（ROS 光学轴 `+Z`），而相机图像按 OpenGL 光学轴 `-Z` 渲染。进一步排查发现仿真默认 `SimulationCfg.use_fabric=True`：机器人关节和 link 的当前姿态在 Fabric/PhysX 中更新，Stage 属性面板及 USD `XformCache` 可能仍显示/返回初始 authored transform。因此不能长期用 USD Camera prim 的父级变换计算运动中的腕相机。最终实现改为读取 IsaacLab CameraData 的 Fabric 当前 `pos_w`、`quat_w_opengl` 和 `intrinsic_matrices`，统一按 OpenGL `-Z` 生成视锥；仅在传感器初始化数据无效时临时回退 USD 初始姿态。机器人 Stage 坐标轴滞后属于 Fabric 模式的预期表现，不影响基于 `robot.data.body_pose_w`、CameraData 或实际渲染图像的控制/采集，但会影响任何错误读取 USD Xform 的运行时调试代码。
+- 2026-08-04 继续验证发现：即使由 CameraData 计算出正确世界坐标，把调试 Cylinder/Sphere 放在 `/World/Visuals` 后每帧写 USD 世界 transform，在 Fabric 成为渲染权威后也可能不持续传播，导致视锥停在创建时姿态。最终方案不再复制任何运行时世界姿态：左右视锥分别创建在 `LeftWristCamera/DebugFrustum` 与 `RightWristCamera/DebugFrustum` 下，所有点线直接使用相机局部 OpenGL 坐标（`-Z` 前向）。关键修正是 DebugFrustum 必须在第一次 `sim.reset()`/Fabric population 之前创建；此前在仿真启动后动态添加，Stage 虽有 prim 但 Fabric viewport 不一定接纳。现在相机图像和视锥从启动起就在同一 Camera/Fabric 层级，机器人运动时同步。为保证当前 viewport 可见性，DebugFrustum 使用默认 render purpose；`--show-wrist-camera-frustums` 仅用于交互调试，采集时不要开启。
+- 2026-08-04 新增 `--live-usd-transforms` 专用坐标调试模式。该参数强制 `SimulationCfg(device="cpu", use_fabric=False)`，让 PhysX 当前 articulation/link transform 同步回 USD，因此 Stage Transform 面板和内置坐标 gizmo 能跟随机器人当前状态。默认 GPU 模式仍保持 `use_fabric=True`，用于正常控制、渲染和数据采集；Stage 显示初始 authored transform 是该高性能模式的预期行为，不代表控制链或 CameraData 错误。不要用 `--live-usd-transforms` 进行正式批量采集。
+- 2026-08-04 腕相机视锥默认统一缩小 70%，即保留基础几何尺寸的 30%。新增 `--wrist-camera-frustum-scale`，默认 `0.30`，同时作用于有效深度、视锥线段长度、Cylinder 线半径和 Sphere 点半径，保证整体比例不变。`--wrist-camera-frustum-depth` 和 `--wrist-camera-frustum-line-width` 仍表示缩放前基础尺寸；启动日志同时打印 `scale/base_depth/effective_depth`。
+- 2026-08-04 清理腕相机默认参数的重复定义。此前 `simulation.py`、`03_record_physics_dataset.py`、`06_eval_smolvla_in_isaaclab.py` 分别硬编码位置和四元数，入口脚本的 argparse 默认值会覆盖 `SceneBuildCfg`，造成只改 `simulation.py` 不生效。现在 `s4_robot/simulation.py` 中的 `LEFT/RIGHT_WRIST_CAMERA_LOCAL_POS`、`LEFT/RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ` 和 `WRIST_CAMERA_OFFSET_CONVENTION` 是唯一默认来源；sim/record/eval 的对应 CLI 默认均为 `None`，未显式传参时继承这些常量。右腕相机默认 X 已更新为 `0.0438948230`。以后永久修改安装外参只改 `simulation.py`，CLI 参数仅用于单次调试覆盖。
+- 2026-08-04 将交互调试参数收进 `run.sh sim` 默认启动项。现在直接运行 `bash run.sh sim` 会自动启用 `--print-layout --continuous --show-tcp-frames --show-drawer-handle-frame --show-wrist-camera-frustums --wrist-camera-frustum-depth 0.8 --wrist-camera-frustum-line-width 8 --print-tcp-pose --tcp-print-period 0.5`；视锥统一缩放仍使用脚本默认 `0.30`。这些默认只属于 `sim` 子命令，`record-hdf5` 与 `eval-smolvla` 不启用调试几何，避免污染采集图像。`--live-usd-transforms` 不设为普通 sim 默认，因为它会切换到 CPU/no-Fabric；需要 Stage 内置坐标实时同步时再显式添加。
+- 2026-08-04 修正右腕相机画面倒置。左右 `wrist_yaw_link -> hand_base_link` 的 URDF 固定安装姿态是镜像关系，原右相机外参使其世界画面 up 轴与左相机相反。经 GUI 实测，在原右相机姿态后附加相机局部 ROS 光轴 `+Z` 的 180 度旋转可保持观察方向不变并校正画面上下。默认 `RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ` 已更新为 `(-0.1353444104, 0.6807588438, -0.5885558066, -0.4145495744)`；sim、record 和 eval 均从 `simulation.py` 继承该值，不再需要命令行覆盖。
+
+## 2026-08-04 Drawer 随机化与锚点式采集状态机
+
+本次将抽屉任务从绝对 TCP 坐标脚本改为逐回合锚点解析，并把采集调试参数集中到 `configs/tasks/drawer_insert_close.scripted.yaml`：
+
+- `randomization.can_xy.x_range/y_range` 默认均为 `[-0.05,+0.05]m`，每次 attempt 独立均匀采样。
+- `randomization.drawer_initial_open.range` 默认 `[0.00,0.05]m`。主 Sektion cabinet 已从普通 USD reference 改为 IsaacLab `Articulation`，每回合通过 tensor API `write_joint_state_to_sim()` 设置 `drawer_top_joint`；`joint_position_sign` 与 `opening_axis_base` 均可在 YAML 调整。第一次正式采集前必须看日志和 GUI 验证该 Sektion 资产的符号；如果日志开度增加而抽屉向内移动，只改 YAML 的这两个参数，不要改控制器代码。
+- 第一版随机抽屉曾在进入 run loop 后执行 `sim.stop() -> 写 JointStateAPI -> sim.reset()`，用户日志卡在 `[BOOT] entering run loop...`，且没有打印 `[RANDOMIZE]`。根因是当前 GPU/Fabric 场景不适合通过运行期 stop/reparse 修改 USD articulation。该方案已删除；以后不要恢复运行期 USD drive/state 修改，也不要调用会触发 direct GPU API 限制的 `setDriveTarget`。现在主抽屉与机器人一样作为长期 Articulation 对象管理，重置不再停止 timeline。
+- 场景现在通过 `named_objects.can` 暴露可抓罐子。两秒 settle 后从 `RigidObject.data.root_pose_w` 读取真实罐子位姿，再转到机器人 `base_link`，因此右手预抓取、抓取和抬升会跟随真实随机位置。
+- 每回合建立四个锚点：`can`、`drawer_handle_initial`、`drawer_handle_open`、`drawer_handle_closed`。`drawer_handle_open` 使用 YAML 的固定 `target_open_m=0.06`，避免在随机初始开度上重复增加固定拉程。YAML 的 TCP target 支持 `anchor + offset + offset_frame`，也支持把常用目标集中放在顶层 `targets` 后由 phase 使用 `{target: name}` 引用。
+- 当前 `offset_frame: base_link` 表示 XYZ 沿机器人 base 轴；设为 `anchor` 时才会由锚点 quaternion 旋转。不要混淆这两种语义。
+- 主要调试项是 `targets.left_handle_transition_1/2.offset`、`targets.right_can_pregrasp.offset`、`targets.right_can_grasp.offset`；另外保留 drawer open、can lift、drawer place、drawer closed 等目标，整个任务无需改 Python 即可调整。
+- 新状态机顺序为：双手张开等待 -> 左手靠近/抓把手/闭合/拉开 -> 右手预抓取/抓取/闭合/抬升/放入/张开 -> 右臂 home -> 左手推闭/张开 -> 左臂 home。
+- `hands.action_hold_seconds=1.0` 会自动应用到每个实际发出 open/close 的 phase，时长按仿真 `dt` 换算，而不是按墙钟时间或硬编码 120 步。
+- 修复旧状态机的数据污染缺陷：以前 TCP phase 达到 `max_steps` 即使没有到达目标也会继续并最终写入 HDF5；现在这种情况设置 `controller.failed`，整条 episode buffer 丢弃、重置并重新采样，成功总条数不减少。外层 120 秒 wall-time timeout 仍保留。
+- phase 到达条件同时检查位置误差和 quaternion 最短角误差，位置阈值默认 `0.035m`。姿态阈值第一版设为 `0.20rad`，实测 `left_approach_handle` 已到 `left_dist=0.017m`，但当前 7-DoF IK 在柜体附近稳定残留 `left_angle=0.464rad`，导致 420 步后错误丢弃。默认姿态阈值因此按实测放宽为 `0.55rad`；仍可在单 phase 用 `orientation_tolerance` 收紧。不要把这种“位置已到、姿态阈值过严”误判为左臂没有运动或抽屉随机化失败。
+- `EpisodeBuffer` 新增 metadata，HDF5 每个 `demo_N` 的 `episode_metadata` 属性记录本回合 `can_xy_offset`、`drawer_initial_open_m` 和 YAML 路径；文件级 `env_args` 同时记录完整 randomization 配置。
+- `--drawer-scripted-config PATH` 可临时选择另一份 YAML，默认仍是项目内标准配置。
+
+调试一条和正式采集命令：
+
+```bash
+conda activate env_isaaclab
+cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+bash run.sh record-hdf5 --num-episodes 1 --render --output /tmp/drawer_tune.hdf5 --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 100 --no-render --episode-timeout-s 120
+```
+
+验证日志至少应包含 `[RANDOMIZE] can_xy=... drawer_initial_open=...` 和 `[DRAWER] episode anchors base_link: ...`。当前 Codex 执行沙箱无法访问 NVIDIA 驱动，已完成 `py_compile`、YAML 解析、锚点解析和 `git diff --check`，但无法代替用户机器完成 Isaac/PhysX 动态 smoke test。
+- 2026-08-04 抽屉任务运行到 `right_pregrasp_can` 时曾在 `480` 步超时。日志显示左手保持误差 `0.014m/0.005rad`，右手姿态误差 `0.163rad` 已合格，唯一阻塞项是右手位置误差稳定在 `0.071m`，高于全局 `0.035m`。该点只是抓取前的无碰撞过渡点，不是最终抓取点，因此在 YAML 中给 `right_pregrasp_can` 单独设置 `tolerance: 0.075`；后续 `right_grasp_can` 仍使用 `0.035m`，不能把全局抓取精度一起放宽。抽屉采集日志同时重构为每秒一条 `[PROGRESS]`：包含 `episode/总轮数`、当前 `attempt`、`phase序号/总阶段数`、阶段步数、左右 TCP 的位置/姿态当前误差、阈值、剩余误差、阻塞原因、整轮超时进度和关节跟踪误差。失败重试打印 `[RECORD][DISCARD]` 与 `[RECORD][RETRY]`，成功后下一轮打印 `[RECORD][START]`，避免旧 `[ARMDBG]` 重复刷屏却无法说明阶段为什么不能完成。
+- 2026-08-04 随后 `right_grasp_can` 在右手位置误差约 `0.164m` 时超时。不能继续放宽容差：离线用同一 URDF、同一 base_link 目标和不同 null-space gain 复现后，发现完整抓取姿态本身位于工作空间边缘。进一步检查确认旧 IK 把目标 TCP 通过目标姿态反算成 wrist target；当姿态不可完全达到时，实际 TCP 位置也必然偏离。`s4_robot/pink_bimanual_ik.py` 已改成直接使用当前腕姿态构造偏移点雅可比 `J_tcp.linear = J_wrist.linear - skew(R*offset) * J_wrist.angular`，直接控制实际 TCP 位置；每个 YAML target 新增可选 `orientation_weight`，可将姿态作为软约束。抓取 TCP 改为相对罐子 `[-0.08,-0.05,-0.02]`、姿态 `[0,-0.9,0]`、姿态权重 `0.25`，`right_grasp_can` 和复用同一目标的 `right_close_hand` 均使用 `0.05m` 位置容差，lift 使用相同 x/y/姿态。该配置通过生产版 controller 离线检查：can x 随机范围 `0.51/0.56/0.61m` 时位置误差约 `0.006/0.017/0.043m`。日志新增 `L_dxyz/R_dxyz=(target-current)`，后续所有阶段 offset 均在 `configs/tasks/drawer_insert_close.scripted.yaml -> targets` 调整，不要进控制器代码硬改。
+- 2026-08-04 每次失败重置时重复出现 `Not all actuators are configured: 38 != 48`。这不是任务失败原因：URDF 导入后有 38 个独立驱动关节和 10 个手部 mimic 从动关节，旧 `ArticulationCfg` 只声明了前 38 个。`s4_robot/simulation.py::build_robot()` 现把左右 `thumb_ip/index_dip/middle_dip/ring_dip/pinky_dip` 注册为 stiffness/damping 均为零的被动 actuator，补齐 IsaacLab 关节归属但不增加动作维度、不独立驱动从动指节。用户当前 YAML 已将 `left_grasp_handle.max_steps` 调到 500；该阶段日志从 `0.057m` 持续下降到 `0.044m`，应保留更长收敛预算，而不是把把手抓取精度直接放宽。
+- 2026-08-04 用户误覆盖了 `drawer_insert_close.scripted.yaml`，导致 `default_orientation_tolerance=0.55`、`joint_name=drawer_top_joint`、右手抓取 `offset/rpy/orientation_weight` 以及 pregrasp/grasp/close 阶段容差丢失，已按最后验证版本恢复，同时保留用户当前 `left_grasp_handle.max_steps=500` 与 `pull_drawer.max_steps=500`。启动时双手半闭合并抖动还有两个原因：reset 的 `DEFAULT_POSE` 手值为半闭合，控制器启动后才渐变到 YAML open；且上一版把 10 个 mimic actuator 设为零增益，可能让被导入成普通自由度的从动指节变软。现改为在 2 秒 settle 内先将双手及其确定性 mimic 映射移动到 YAML open，记录开始后的 `initial_open_hands` 只稳定保持一秒；mimic actuator 使用与主动指节相同的 PD 增益，但仍不进入 26D action。
+- 2026-08-04 用户已将左手把手路径调为点 1 `[-0.1435,-0.0230,0.0328]` 和最终点 `[-0.0335,-0.0230,0.0828]`，并要求增加第三个过渡点。新增 `left_handle_transition_2=[-0.0885,-0.0230,0.0578]`，即两点几何中点；原最终点改名 `left_handle_transition_3`。阶段顺序现为 `left_approach_handle -> left_approach_handle_fine -> left_grasp_handle -> left_close_hand`，闭手阶段锁定第三点。保留用户当前各把手阶段 `max_steps=700` 和闭手 `hold_seconds=2.0`，后续只需在 YAML `targets` 中微调三个 offset。
+- 2026-08-04 排查左手在把手路径点之间绕腕：三个过渡点原先都用 `orientation_weight=1.0` 强制完整姿态，同时阻尼伪逆的 null-space home 偏置会泄漏进 TCP 任务，容易在柜体附近切换关节支路。保留用户当前位置 offset 不变，将左手 transition 1/2/3 的姿态权重依次设为 `0.20/0.35/0.60`，拉开和推回目标设为 `0.60`；`--tcp-posture-gain` 默认降为 `0.05`。抽屉主模型确认由 IsaacLab `Articulation` 管理，顶部 `drawer_top_joint` 为被动关节，刚度为零，阻尼由 `8.0` 降为 `2.0` 以便接触拉动。此前状态机只检查手 TCP，无法证明抽屉真的移动；现在 `pull_drawer` 还要求实测开度至少 `0.12m`，`push_drawer_closed` 要求开度不大于 `0.03m`，`[PROGRESS]` 会输出 `drawer_open` 和 `drawer_not_open/drawer_not_closed`。静态编译、YAML 解析和 diff 检查通过；当前 Codex 环境没有可用 CUDA context，不能替代用户执行 PhysX 动态验证。
+- 同次检查发现 `drawer_handle_open` 锚点已包含 `target_open_m=0.16m` 的 base `-X` 位移，但旧 `left_drawer_open.offset.x=-0.1935` 又相对抓取 offset 多减了 `0.15m`，使抓取点到拉出点总跳变约 `0.31m`。这属于锚点位移和 offset 重复计算。现将 open offset 改为与抓取/关闭相同的 `[-0.0435,-0.0130,0.0258]`，因此拉动 TCP 轨迹严格跟随抽屉锚点的 `0.16m` 行程。
+- 继续检查“相邻路径点间手腕绕圈”后确认 Pinocchio 的 Jacobian 约定没有错误：当前版本 `LINEAR=0/ANGULAR=3`，TCP point shift 也与 `LOCAL_WORLD_ALIGNED` 一致。实际连续性问题来自零空间实现：旧代码以固定 `DEFAULT_POSE` 为所有阶段参考，并用任务 DLS 的阻尼伪逆构造 `I-J#J`；阻尼投影器不是严格零空间，姿态权重切换时会把回 home 的运动泄漏到 TCP 主任务，并可能切换腕关节解支。现改为每个 phase 第一次求解时锁定当前 14 维双臂关节状态作为该阶段 posture reference；任务仍用 DLS，零空间投影单独使用 Moore-Penrose `pinv(J)`；IK 输出按最大绝对关节增量进行整体缩放以保持求解方向，不再逐关节裁剪；最终命令同时裁剪到 URDF 上下限内。该修复针对关节解连续性，不改变用户 YAML 的 TCP 路径点。
+- 2026-08-04 排查抽屉始终拉不开时直接读取 Sektion USD：`drawer_top_joint` 是启用的 `PhysicsPrismaticJoint`，连接 `/cabinet/sektion -> /cabinet/drawer_top`，真实限位为 `[0.0,0.4]m`，并未固定；正关节方向为柜体局部 `+X`，经过场景 180° yaw 后对应机器人 base `-X`。旧 YAML 错写 `joint_position_sign=-1.0`，导致随机重置写入非法负关节值且实际开度符号反转。现改为 `+1.0`，`opening_axis_base` 保持 `[-1,0,0]`。同时删除 settle 和任务主循环中每帧重复写初始 `drawer_target` 的逻辑，交互阶段让顶部关节保持真正被动（stiffness=0、damping=2）；启动打印关节限位，进度日志新增 `drawer_vel`。如果后续 `drawer_open/velocity` 始终为零，问题就是手指与把手未形成有效接触，而不再可能是符号或位置目标保持造成的假象。
+- 同次检查发现用户当前配置已将 `target_open_m` 改为 `0.10m`，而旧验收条件仍要求 `drawer_open_min=0.12m`，形成目标值低于成功阈值的必然失败。按当前配置将拉开成功阈值改为 `0.08m`，为柔性手指与把手接触保留 `0.02m` 跟踪余量；以后修改 `target_open_m` 时必须同步检查该阈值。
+- 2026-08-04 核对仿真、采集、转换和回放时间轴时发现：物理循环固定为 `120Hz`，pipeline 与旧包装脚本默认每 6 步采样（`20Hz`），但 `run.sh record-hdf5` 直达的底层脚本默认每 1 步采样（`120Hz`），而转换仍按任务配置写成 `20fps`。这会把直接采集数据的时间轴错误放慢 6 倍。底层 `--record-every-n` 默认现统一为 `6`；`convert-lerobot` 会读取每个 HDF5 的 `env_args.record_fps`（或由 `sim_dt * record_every_n` 推导）并与任务 `fps` 校验，不一致时拒绝转换。默认链路现为：Physics/控制 `120Hz`、HDF5/LeRobot/策略更新 `20Hz`、eval rollout 视频 `60fps`（每 2 个物理步一帧，模拟时长不变）。墙钟运行速度不保证 1x；headless 可快于实时，渲染与推理可慢于实时。
