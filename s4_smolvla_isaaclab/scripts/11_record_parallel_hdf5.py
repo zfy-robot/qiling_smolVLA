@@ -33,7 +33,7 @@ def main() -> None:
     parser.add_argument("--randomize-blue-xy", type=float, default=0.03)
     parser.add_argument("--random-seed", type=int, default=42)
     parser.add_argument("--record-every-n", type=int, default=6)
-    parser.add_argument("--episode-timeout-s", type=float, default=120.0)
+    parser.add_argument("--episode-timeout-s", type=float, default=300.0)
     parser.add_argument("--reset-settle-s", type=float, default=2.0)
     parser.add_argument("--camera-width", type=int, default=680)
     parser.add_argument("--camera-height", type=int, default=480)

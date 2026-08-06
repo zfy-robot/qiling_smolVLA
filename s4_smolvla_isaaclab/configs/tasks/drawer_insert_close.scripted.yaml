@@ -21,15 +21,43 @@ randomization:
     # cabinet; the cabinet's 180-degree yaw maps that motion to base_link -X.
     joint_position_sign: 1.0
     opening_axis_base: [-1.0, 0.0, 0.0]
-    target_open_m: 0.10
+    target_open_m: 0.18
 
 hands:
   # Six policy controls: thumb yaw, thumb pitch, index, middle, ring, pinky.
   left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
-  left_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
+  left_close: [1.0, 0.22, 0.85, 0.85, 0.85, 0.85]
   right_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
   right_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
   action_hold_seconds: 1.0
+
+# Final arm targets. Joint order is shoulder pitch/roll/yaw, elbow, then wrist
+# roll/pitch/yaw. Values are radians in the robot joint convention.
+home_poses:
+  left_arm: [0.7,0.2,0.0,-1.6,0.0,0.0,0.0]
+  right_arm: [0.7,-0.2,0.0,-1.6,0.0,0.0,0.0]
+  tolerance: 0.03
+
+# Final dataset acceptance is evaluated from live simulation state before an
+# episode is written. The can check uses its root height in world coordinates.
+success:
+  drawer_open_abs_max: 0.040
+  can_world_z:
+    min_m: 0.80
+    max_m: 1.15
+
+logging:
+  progress_dashboard:
+    enabled: true
+    refresh_seconds: 0.5
+    width: 78
+    bar_width: 24
+    # Display thresholds only. Phase completion tolerances remain configured
+    # under controller defaults or individual phases.
+    left_position_tolerance_m: 0.050
+    left_rotation_tolerance_rad: 0.500
+    right_position_tolerance_m: 0.050
+    right_rotation_tolerance_rad: 0.500
 
 # These are the main task-tuning parameters. The can and handle anchors are
 # measured from the current simulation state at the beginning of each episode.
@@ -37,34 +65,43 @@ targets:
   left_handle_transition_1:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    offset: [-0.1135, -0.0130, 0.108]
+    offset: [-0.1235, -0.0130, 0.108]
     rpy: [-1.5, 0.0, 1.5]
     orientation_weight: 0.20
   left_handle_transition_2:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    offset: [-0.1085, -0.0130, 0.0818]
-    rpy: [-1.5, 0.0, 1.5]
+    offset: [-0.1185, -0.0120, 0.0818]
+    rpy: [-1.5, -0.10, 1.5]
     orientation_weight: 0.35
   left_handle_transition_3:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    offset: [-0.0985, -0.0110, 0.0188]
-    rpy: [-1.5, 0.0, 1.5]
+    offset: [-0.0915, -0.0105, 0.0218]
+    rpy: [-1.5, -0.10, 1.5]
     orientation_weight: 0.60
   left_drawer_open:
     anchor: drawer_handle_open
     offset_frame: base_link
-    # Keep the same tool-to-handle offset used at grasp. The open anchor
-    # already contains the configured drawer travel along base -X.
-    offset: [-0.0985, -0.0110, 0.0188]
-    rpy: [-1.5, 0.0, 1.6]
+    # TCP = closed_handle + opening_axis_base * target_open_m + offset.
+    # Keep the grasp offset unchanged; target_open_m supplies the pull travel.
+    offset: [-0.0850, -0.0105, 0.0188]
+    rpy: [-1.5, -0.10, 1.5]
     orientation_weight: 0.60
   left_drawer_closed:
+    # Fallback TCP pose and orientation weight for close/release phases. During
+    # right_retreat_and_start_close, the live TCP position is replaced by a
+    # target derived from the measured drawer opening.
+    pos: [0.3550, 0.3725, 0.0760]
+    rpy: [-1.5, 0.05, 1.5]
+    orientation_weight: 0.60
+  left_lift_after_release:
+    # Position is replaced at phase entry by current TCP + configured offset;
+    # this target independently configures the lift orientation in base_link.
     anchor: drawer_handle_closed
     offset_frame: base_link
-    offset: [-0.0985, -0.0110, 0.0188]
-    rpy: [-1.5, 0.0, 1.5]
+    offset: [0.0, 0.0, 0.0]
+    rpy: [-1.5, 0.05, 1.5]
     orientation_weight: 0.60
   right_can_pregrasp:
     anchor: can
@@ -74,19 +111,19 @@ targets:
   right_can_grasp:
     anchor: can
     offset_frame: base_link
-    offset: [-0.07, -0.04, 0.02]
-    rpy: [0.0, -0.9, 0.0]
+    offset: [-0.04, -0.025, 0.02]
+    rpy: [0.0, -1.5, 0.0]
     orientation_weight: 0.25
   right_can_lift:
     anchor: can
     offset_frame: base_link
-    offset: [-0.08, -0.05, 0.12]
-    rpy: [0.0, -0.9, 0.0]
+    offset: [-0.08, -0.05, 0.14]
+    rpy: [0.0, -1.5, 0.0]
     orientation_weight: 0.25
   right_place_in_drawer:
     anchor: drawer_handle_closed
     offset_frame: base_link
-    offset: [-0.0035, -0.2830, 0.1528]
+    offset: [-0.0235, -0.3330, 0.1728]
     rpy: [0.0, -1.5, 1.5]
 
 phases:
@@ -127,8 +164,8 @@ phases:
     left: {target: left_drawer_open}
     min_steps: 30
     max_steps: 1000
-    # target_open_m is 0.10 m; require most of that travel while leaving
-    # tolerance for compliant hand-handle contact.
+    # The commanded anchor is 0.18 m open. Require at least 0.08 m of measured
+    # physical opening before continuing; tune this separately from the target.
     drawer_open_min: 0.08
 
   - name: right_pregrasp_can
@@ -178,32 +215,51 @@ phases:
     hold_seconds: 1.0
     max_steps: 1000
 
-  - name: right_home
-    task: "Return the right arm home while the left hand holds the open drawer."
-    left: {target: left_drawer_open}
-    right_arm_home: true
-    min_steps: 60
-    max_steps: 1000
-
-  - name: push_drawer_closed
-    task: "Push the drawer closed with the left hand."
+  - name: right_retreat_and_start_close
+    task: "Retreat the open right hand while the left hand starts closing the drawer."
     left: {target: left_drawer_closed}
-    right_arm_home: true
-    min_steps: 40
+    # Fallback target supplies IK weights; position/orientation are replaced at
+    # phase entry using the measured right TCP in base_link.
+    right: {target: right_place_in_drawer}
+    right_offset_from_current: [-0.10, -0.20, 0.0]
+    # The right retreat runs concurrently but never gates phase completion.
+    # The next phase sends the right arm Home.
+    require_right_tcp_reached: false
+    # Closing is judged from the live drawer joint, not from an ideal rigid
+    # hand-to-handle TCP displacement.
+    require_left_tcp_reached: false
+    close_drawer_from_current: true
+    # Command exactly to the logical q=0 closed pose for one fixed-duration
+    # push. No TCP or drawer-distance condition gates this phase.
+    drawer_close_target_open_m: 0.000
+    drawer_close_overtravel_m: 0.000
+    min_steps: 360
     max_steps: 1000
-    drawer_open_max: 0.03
 
   - name: left_open_hand
-    task: "Open the left hand after closing the drawer and wait."
+    task: "Open the left hand after the single drawer-close push and wait."
     left: {target: left_drawer_closed}
     right_arm_home: true
     left_hand: open
+    hold_current_left_pose: true
     hold_seconds: 1.0
+    max_steps: 1000
+
+  - name: left_lift_after_release
+    task: "Lift the open left hand upward clear of the closed drawer."
+    # Position resolves from the measured post-release TCP in base_link;
+    # orientation comes from targets.left_lift_after_release.rpy.
+    left: {target: left_lift_after_release}
+    left_offset_from_current: [-0.04, 0.0, 0.07]
+    right_arm_home: true
+    min_steps: 30
     max_steps: 1000
 
   - name: left_home
     task: "Return the left arm home after completing the task."
     left_arm_home: true
     right_arm_home: true
+    target_alpha: 0.20
+    max_joint_step: 0.025
     min_steps: 120
     max_steps: 1000

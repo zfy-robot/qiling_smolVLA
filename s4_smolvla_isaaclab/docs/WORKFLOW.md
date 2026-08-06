@@ -124,7 +124,7 @@ observations. It should remove the UI window, not disable RGB sensor rendering.
 Episode timeout is enabled by default:
 
 ```bash
-bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render
 ```
 
 If one attempt exceeds the timeout, its buffered frames are discarded, the scene is reset, and the same episode index is retried. This keeps the final saved episode count equal to `--num-episodes`.
@@ -296,7 +296,21 @@ Retrain when:
 
 Do not retrain only because preview/eval code was fixed. That fix changes inference usage, not checkpoint weights.
 
-## 11. Clean Generated Files
+## 11. Drawer Episode Acceptance
+
+The drawer recorder validates the physical end state before writing HDF5:
+
+- `abs(drawer_top_joint) < 0.015m`
+- the can root world height satisfies `0.80m < z < 1.15m` (X/Y are not checked)
+
+Tune both criteria in
+`configs/tasks/drawer_insert_close.scripted.yaml -> success`. The can bounds
+are relative to `drawer_handle_current` and use `base_link` XYZ axes. A failed
+attempt prints `[DISCARD]`, resets the scene, and retries the same
+episode number. Therefore `--num-episodes 100` produces 100 accepted demos,
+not 100 attempts.
+
+## 12. Clean Generated Files
 
 Dry run:
 

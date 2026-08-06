@@ -19,7 +19,7 @@ NO_RENDER=true
 RANDOMIZE_BLUE_XY=0.03
 RANDOM_SEED=42
 RECORD_EVERY_N=6
-EPISODE_TIMEOUT_S=120
+EPISODE_TIMEOUT_S=300
 RESET_SETTLE_S=2.0
 SUCCESS_CHECK=true
 SUCCESS_XY_TOLERANCE=""
@@ -56,7 +56,7 @@ Main options:
   --randomize-blue-xy M     Per-episode blue cylinder x/y randomization range. Default: 0.03
   --random-seed N           Random seed. Default: 42
   --record-every-n N        Record every N sim steps. Default: 6
-  --episode-timeout-s S     Discard/retry stuck episode after S wall seconds. Default: 120
+  --episode-timeout-s S     Discard/retry stuck episode after S wall seconds. Default: 300
   --reset-settle-s S        Sim seconds to settle after scene load/reset before starting task. Default: 2.0
   --success-check           Only keep episodes where the cylinder finishes inside the plate. Default
   --no-success-check        Disable final success filtering.

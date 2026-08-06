@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -63,9 +64,9 @@ parser.add_argument("--print-layout", action="store_true")
 parser.add_argument("--joint-stiffness", type=float, default=600.0)
 parser.add_argument("--joint-damping", type=float, default=80.0)
 parser.add_argument("--joint-effort-limit", type=float, default=300.0)
-parser.add_argument("--target-alpha", type=float, default=0.18)
-parser.add_argument("--max-joint-step", type=float, default=0.030)
-parser.add_argument("--hand-max-joint-step", type=float, default=0.008)
+parser.add_argument("--target-alpha", type=float, default=0.32)
+parser.add_argument("--max-joint-step", type=float, default=0.050)
+parser.add_argument("--hand-max-joint-step", type=float, default=0.015)
 parser.add_argument("--reach-max-cart-step", type=float, default=0.020)
 parser.add_argument("--reach-max-joint-delta", type=float, default=0.050)
 parser.add_argument("--reach-damping", type=float, default=0.16)
@@ -77,7 +78,7 @@ parser.add_argument(
     help="Null-space posture gain for base_link TCP IK. Biases both arms toward DEFAULT_POSE while preserving TCP tasks.",
 )
 parser.add_argument("--tcp-ik-damping", type=float, default=0.08, help="DLS damping for base_link TCP IK.")
-parser.add_argument("--tcp-max-joint-delta", type=float, default=0.025, help="Per-step joint delta limit for base_link TCP IK.")
+parser.add_argument("--tcp-max-joint-delta", type=float, default=0.050, help="Per-step joint delta limit for base_link TCP IK.")
 parser.add_argument("--reach-max-error", type=float, default=0.85)
 parser.add_argument(
     "--reach-jacobian-body-shift",
@@ -139,6 +140,14 @@ parser.add_argument("--drawer-target", type=float, default=0.35, help="Drawer jo
 parser.add_argument("--drawer-drive-stiffness", type=float, default=800.0)
 parser.add_argument("--drawer-drive-damping", type=float, default=120.0)
 parser.add_argument("--drawer-drive-max-force", type=float, default=800.0)
+parser.add_argument(
+    "--drawer-coast-diagnostic",
+    action="store_true",
+    help="Run an isolated top-drawer coast test with the can moved away, then exit.",
+)
+parser.add_argument("--drawer-coast-start", type=float, default=0.18, help="Initial drawer position for coast test.")
+parser.add_argument("--drawer-coast-velocity", type=float, default=-0.15, help="Initial drawer velocity for coast test.")
+parser.add_argument("--drawer-coast-steps", type=int, default=600, help="Physics steps for coast test.")
 parser.add_argument("--record-output", type=Path, default=None, help="Write HDF5 episodes while running scripted grasp.")
 parser.add_argument("--record-episodes", type=int, default=1, help="Number of scripted grasp episodes to record.")
 parser.add_argument(
@@ -156,7 +165,7 @@ parser.add_argument(
 parser.add_argument(
     "--record-episode-timeout-s",
     type=float,
-    default=120.0,
+    default=300.0,
     help="Discard the active recorded episode and reset if it exceeds this wall-clock timeout.",
 )
 parser.add_argument(
@@ -196,6 +205,12 @@ parser.add_argument(
     "--verbose-status",
     action="store_true",
     help="Print high-frequency TCP/Jacobian/status diagnostics. Default keeps logs concise.",
+)
+parser.add_argument(
+    "--color-logs",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Color important collection events. Default enables colors only on an interactive terminal.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -252,6 +267,7 @@ from s4_robot.simulation import (
 from s4_pipeline.config import load_project_config
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
 from tasks import get_task_spec
+from tasks.progress_dashboard import DashboardSnapshot, format_compact, format_dashboard
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -259,6 +275,67 @@ CONFIG_PATH = PROJECT_DIR / "configs" / "s4_bimanual_dataset.json"
 JOINT_LIMITS = get_joint_limits()
 OPEN_LEFT_HAND = OPEN_RIGHT_HAND.copy()
 CLOSE_LEFT_HAND = CLOSE_RIGHT_HAND.copy()
+
+
+_LOG_COLORS = {
+    "cyan": "\033[36;1m",
+    "blue": "\033[34;1m",
+    "yellow": "\033[33;1m",
+    "red": "\033[31;1m",
+    "green": "\033[32;1m",
+    "magenta": "\033[35;1m",
+    "gray": "\033[90m",
+}
+_LOG_RESET = "\033[0m"
+_DASHBOARD_ACTIVE = False
+
+
+def _color_logs_enabled() -> bool:
+    if args_cli.color_logs is not None:
+        return bool(args_cli.color_logs)
+    return sys.stdout.isatty() and "NO_COLOR" not in os.environ
+
+
+def log_collection_event(tag: str, message: str, color: str = "cyan") -> None:
+    global _DASHBOARD_ACTIVE
+    if _DASHBOARD_ACTIVE:
+        print("\033[2J\033[H", end="")
+        _DASHBOARD_ACTIVE = False
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    prefix = f"[{timestamp}] [{tag}]"
+    if _color_logs_enabled():
+        time_prefix = f"{_LOG_COLORS['gray']}[{timestamp}]{_LOG_RESET}"
+        event = f"{_LOG_COLORS[color]}[{tag}] {message}{_LOG_RESET}"
+        print(f"{time_prefix} {event}", flush=True)
+        return
+    print(f"{prefix} {message}", flush=True)
+
+
+def render_collection_dashboard(
+    snapshot: DashboardSnapshot,
+    config: dict[str, object],
+) -> None:
+    """Refresh an interactive panel or emit one compact redirected-log line."""
+    global _DASHBOARD_ACTIVE
+    interactive = (
+        bool(config.get("enabled", True))
+        and sys.stdout.isatty()
+        and os.environ.get("TERM", "") != "dumb"
+    )
+    if interactive:
+        panel = format_dashboard(
+            snapshot,
+            width=int(config.get("width", 78)),
+            bar_width=int(config.get("bar_width", 24)),
+            color=_color_logs_enabled(),
+        )
+        print("\033[2J\033[H" + panel, end="", flush=True)
+        _DASHBOARD_ACTIVE = True
+        return
+    print(
+        "[PROGRESS] " + format_compact(snapshot, bar_width=int(config.get("bar_width", 24))),
+        flush=True,
+    )
 
 
 def load_table_top_z() -> float:
@@ -1395,6 +1472,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
 
     drawer_scripted_config = None
     drawer_randomization_cfg: dict[str, object] = {}
+    drawer_dashboard_cfg: dict[str, object] = {}
     drawer_rng = None
     episode_context: dict[str, object] = {}
     closed_handle_pose_w = get_drawer_handle_top_pose() if scene.get("task_id") == "drawer_insert_close" else None
@@ -1404,6 +1482,11 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         drawer_scripted_config = Path(args_cli.drawer_scripted_config or DEFAULT_SCRIPTED_CONFIG).resolve()
         scripted_cfg = load_scripted_config(drawer_scripted_config)
         drawer_randomization_cfg = scripted_cfg.get("randomization", {})
+        logging_cfg = scripted_cfg.get("logging", {})
+        if isinstance(logging_cfg, dict):
+            dashboard_cfg = logging_cfg.get("progress_dashboard", {})
+            if isinstance(dashboard_cfg, dict):
+                drawer_dashboard_cfg = dashboard_cfg
         drawer_rng = np.random.default_rng(int(drawer_randomization_cfg.get("seed", 42)))
 
     def sample_drawer_episode() -> dict[str, object]:
@@ -1433,10 +1516,23 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             raise RuntimeError(f"Expected one {drawer_joint_name}, found ids={drawer_joint_ids}")
         drawer_top_joint_id = int(drawer_joint_ids[0])
         drawer_limits = drawer.data.soft_joint_pos_limits[0, drawer_top_joint_id].detach().cpu().numpy()
+        drawer_stiffness = float(drawer.data.joint_stiffness[0, drawer_top_joint_id].item())
+        drawer_damping = float(drawer.data.joint_damping[0, drawer_top_joint_id].item())
+        drawer_static_friction = float(
+            drawer.data.joint_friction_coeff[0, drawer_top_joint_id].item()
+        )
+        drawer_dynamic_friction = float(
+            drawer.data.joint_dynamic_friction_coeff[0, drawer_top_joint_id].item()
+        )
+        drawer_viscous_friction = float(
+            drawer.data.joint_viscous_friction_coeff[0, drawer_top_joint_id].item()
+        )
         print(
             f"[DRAWER] {drawer_joint_name} passive joint limits="
             f"[{float(drawer_limits[0]):.3f},{float(drawer_limits[1]):.3f}]m "
-            "stiffness=0.0 damping=2.0",
+            f"stiffness={drawer_stiffness:.3f} damping={drawer_damping:.3f} "
+            f"friction={drawer_static_friction:.3f}/{drawer_dynamic_friction:.3f}/"
+            f"{drawer_viscous_friction:.3f}",
             flush=True,
         )
 
@@ -1460,12 +1556,36 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         sign = float(drawer_cfg.get("joint_position_sign", 1.0))
         return sign * float(drawer.data.joint_pos[0, drawer_top_joint_id].item())
 
-    def current_drawer_velocity_m_s() -> float | None:
-        if drawer is None or drawer_top_joint_id is None:
-            return None
-        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
-        sign = float(drawer_cfg.get("joint_position_sign", 1.0))
-        return sign * float(drawer.data.joint_vel[0, drawer_top_joint_id].item())
+    def evaluate_drawer_task_success() -> tuple[bool, dict[str, object]]:
+        """Validate the final physical task state before persisting an episode."""
+        success_cfg = scripted_cfg.get("success", {})
+        drawer_open = current_drawer_open_m()
+        drawer_open_abs_max = float(success_cfg.get("drawer_open_abs_max", 0.040))
+        drawer_closed = drawer_open is not None and np.isfinite(drawer_open) and abs(drawer_open) < drawer_open_abs_max
+
+        can_cfg = success_cfg.get("can_world_z", {})
+        min_z = float(can_cfg.get("min_m", 0.80))
+        max_z = float(can_cfg.get("max_m", 1.15))
+        if not np.isfinite(min_z) or not np.isfinite(max_z) or min_z >= max_z:
+            raise ValueError("success.can_world_z requires finite min_m < max_m")
+
+        can_obj = scene.get("named_objects", {}).get("can")
+        can_world_z = float("nan")
+        if can_obj is not None:
+            can_pose_tensor = can_obj.data.root_pose_w[0]
+            can_world_z = float(can_pose_tensor[2].item())
+        can_height_valid = bool(np.isfinite(can_world_z) and min_z < can_world_z < max_z)
+        details: dict[str, object] = {
+            "accepted": bool(drawer_closed and can_height_valid),
+            "drawer_closed": bool(drawer_closed),
+            "drawer_open_m": None if drawer_open is None else float(drawer_open),
+            "drawer_open_abs_max_m": drawer_open_abs_max,
+            "can_height_valid": can_height_valid,
+            "can_world_z_m": can_world_z,
+            "can_world_z_min_m": min_z,
+            "can_world_z_max_m": max_z,
+        }
+        return bool(drawer_closed and can_height_valid), details
 
     def settle_static_target(full_target: np.ndarray) -> np.ndarray:
         target_tensor = torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1)
@@ -1514,16 +1634,52 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         reset_camera(camera, sim, cfg)
         settled = settle_static_target(next_target)
         next_target[:] = settled
-        if episode_context:
-            offset = episode_context.get("can_xy_offset", [0.0, 0.0])
-            print(
-                f"[RANDOMIZE] can_xy=({float(offset[0]):+.3f},{float(offset[1]):+.3f}) "
-                f"drawer_initial_open={float(episode_context.get('drawer_initial_open_m', 0.0)):.3f}m",
-                flush=True,
-            )
         return next_target
 
     target = reset_static_attempt()
+
+    if args_cli.drawer_coast_diagnostic:
+        if drawer is None or drawer_top_joint_id is None:
+            raise RuntimeError("--drawer-coast-diagnostic requires the drawer task articulation")
+        # Remove task contacts from the experiment. This isolates the authored
+        # drawer joint, cabinet collision geometry, and PhysX articulation.
+        for obj, pos, quat in scene.get("object_initial_poses", []):
+            isolated_pos = np.asarray(pos, dtype=np.float32).copy()
+            isolated_pos[2] += 3.0
+            write_object_pose(obj, isolated_pos, sim.device, quat)
+            obj.update(dt=sim_dt)
+        joint_pos = drawer.data.joint_pos.clone()
+        joint_vel = drawer.data.joint_vel.clone()
+        joint_pos[:, drawer_top_joint_id] = float(args_cli.drawer_coast_start)
+        joint_vel.zero_()
+        joint_vel[:, drawer_top_joint_id] = float(args_cli.drawer_coast_velocity)
+        drawer.write_joint_state_to_sim(joint_pos, joint_vel)
+        print(
+            f"[DRAWER-DIAG] isolated coast start q={float(args_cli.drawer_coast_start):+.6f}m "
+            f"qd={float(args_cli.drawer_coast_velocity):+.6f}m/s steps={int(args_cli.drawer_coast_steps)}",
+            flush=True,
+        )
+        for step in range(max(int(args_cli.drawer_coast_steps), 1)):
+            robot.set_joint_position_target(torch.tensor(target, device=sim.device).view(1, -1))
+            robot.write_data_to_sim()
+            sim.step(render=False)
+            robot.update(dt=sim_dt)
+            drawer.update(dt=sim_dt)
+            for obj in scene.get("dynamic_objects", []):
+                obj.update(dt=sim_dt)
+            if step % 12 == 0 or step == int(args_cli.drawer_coast_steps) - 1:
+                q = float(drawer.data.joint_pos[0, drawer_top_joint_id].item())
+                qd = float(drawer.data.joint_vel[0, drawer_top_joint_id].item())
+                print(f"[DRAWER-DIAG] step={step:04d} q={q:+.6f}m qd={qd:+.6f}m/s", flush=True)
+        q = float(drawer.data.joint_pos[0, drawer_top_joint_id].item())
+        qd = float(drawer.data.joint_vel[0, drawer_top_joint_id].item())
+        print(f"[DRAWER-DIAG] final q={q:+.6f}m qd={qd:+.6f}m/s", flush=True)
+        # Kit can hang while tearing down camera/render resources after this
+        # short diagnostic, leaving a multi-GB GPU process behind. No state
+        # needs to be persisted here, so terminate after flushing diagnostics.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     print(scene.get("layout_text", "[SCENE] static task scene ready."))
     print(
         "Wrist cameras: "
@@ -1579,11 +1735,14 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     recording_episode = None
     recorded_episodes = 0
     record_attempt = 1
+    failed_attempts_total = 0
     record_complete = False
     record_step = 0
     record_wall_start = None
+    collection_wall_start = None
     current_scripted_task = str(scene.get("task_description", "Open the drawer, place the object inside, and close the drawer."))
     current_scripted_phase = "idle"
+    last_logged_phase_index = -1
     max_record_episodes = max(int(args_cli.record_episodes), 1)
     record_every_n = max(int(args_cli.record_every_n), 1)
     arm_control_active = False
@@ -1611,6 +1770,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "reset_settle_steps": int(reset_settle_steps),
                 "scripted_config": str(drawer_scripted_config) if drawer_scripted_config is not None else None,
                 "randomization": drawer_randomization_cfg,
+                "success_filter": scripted_cfg.get("success", {}),
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),
@@ -1627,10 +1787,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 },
             },
         )
-        print(
-            f"[RECORD] drawer HDF5: {args_cli.record_output} episodes={max_record_episodes} "
-            f"every_n={record_every_n} timeout={max(float(args_cli.record_episode_timeout_s), 1.0):.1f}s",
-            flush=True,
+        log_collection_event(
+            "COLLECT",
+            f"output={args_cli.record_output} | target_successes={max_record_episodes} | "
+            f"fps={1.0 / (sim_dt * record_every_n):.1f} | "
+            f"timeout={max(float(args_cli.record_episode_timeout_s), 1.0):.1f}s",
+            "cyan",
         )
 
     def current_drawer_anchors_base() -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -1692,18 +1854,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 damping=args_cli.tcp_ik_damping,
                 max_joint_delta=args_cli.tcp_max_joint_delta,
             )
-            print("[DRAWER] Pinocchio DLS bimanual TCP controller ready (target frame: base_link)", flush=True)
+            log_collection_event("IK", "Pinocchio DLS ready | target_frame=base_link", "cyan")
         from tasks.drawer_insert_close_controller import DrawerInsertCloseController
 
         anchors = current_drawer_anchors_base()
-        print(
-            "[DRAWER] episode anchors base_link: "
-            f"can={np.round(anchors['can'][0], 4).tolist()} "
-            f"handle_initial={np.round(anchors['drawer_handle_initial'][0], 4).tolist()} "
-            f"handle_open={np.round(anchors['drawer_handle_open'][0], 4).tolist()} "
-            f"handle_closed={np.round(anchors['drawer_handle_closed'][0], 4).tolist()}",
-            flush=True,
-        )
         return DrawerInsertCloseController(
             pink_tcp_controller,
             config_path=drawer_scripted_config,
@@ -1711,22 +1865,38 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             anchors=anchors,
         )
 
+    def log_attempt_start(controller) -> None:
+        log_collection_event(
+            "EPISODE",
+            f"EP{recorded_episodes + 1:03d}/{max_record_episodes:03d} "
+            f"TRY{record_attempt:02d} | phases={len(controller.phases)}",
+            "cyan",
+        )
+
+    def log_current_phase(controller) -> None:
+        phase = controller.current_phase
+        log_collection_event(
+            "PHASE",
+            f"EP{recorded_episodes + 1:03d}/{max_record_episodes:03d} TRY{record_attempt:02d} | "
+            f"PHASE {controller.phase_index + 1:02d}/{len(controller.phases):02d} {phase.name}",
+            "blue",
+        )
+
     if scripted_drawer_enabled:
         drawer_controller = new_drawer_controller(action)
         recording_episode = make_recording_episode() if writer is not None else None
-        record_wall_start = time.monotonic() if writer is not None else None
+        record_wall_start = time.monotonic()
+        collection_wall_start = record_wall_start
         arm_control_active = True
-        print(
-            f"[DRAWER] scripted YAML controller active: phases={len(drawer_controller.phases)} "
-            f"config={drawer_controller.config_path}",
-            flush=True,
+        log_collection_event(
+            "TASK",
+            f"drawer_insert_close | config={drawer_controller.config_path}",
+            "cyan",
         )
         if writer is not None:
-            print(
-                f"[RECORD][START] episode={recorded_episodes + 1}/{max_record_episodes} "
-                f"attempt={record_attempt}",
-                flush=True,
-            )
+            log_attempt_start(drawer_controller)
+            log_current_phase(drawer_controller)
+            last_logged_phase_index = drawer_controller.phase_index
     try:
         while simulation_app.is_running():
             try:
@@ -1822,8 +1992,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         if scripted_drawer_enabled:
                             drawer_controller = new_drawer_controller(action)
                             recording_episode = make_recording_episode() if writer is not None else None
-                            record_wall_start = time.monotonic() if writer is not None else None
+                            record_wall_start = time.monotonic()
                             record_step = 0
+                            last_logged_phase_index = -1
+                            if writer is not None:
+                                log_attempt_start(drawer_controller)
+                                log_current_phase(drawer_controller)
+                                last_logged_phase_index = drawer_controller.phase_index
                         arm_control_active = False
                         tcp_pose_active = False
                         tcp_pose_goal_left = None
@@ -1852,11 +2027,25 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         right_pose_b,
                         current_drawer_open_m(),
                     )
+                    if drawer_controller.phase_index != last_logged_phase_index and not drawer_controller.failed:
+                        log_current_phase(drawer_controller)
+                        last_logged_phase_index = drawer_controller.phase_index
+                    active_phase = drawer_controller.current_phase
+                    phase_alpha = float(
+                        active_phase.target_alpha
+                        if active_phase.target_alpha is not None
+                        else args_cli.target_alpha
+                    )
+                    phase_max_joint_step = float(
+                        active_phase.max_joint_step
+                        if active_phase.max_joint_step is not None
+                        else args_cli.max_joint_step
+                    )
                     next_action = smooth_command(
                         action,
                         desired_action,
-                        alpha=float(args_cli.target_alpha),
-                        max_joint_step=float(args_cli.max_joint_step),
+                        alpha=phase_alpha,
+                        max_joint_step=phase_max_joint_step,
                     )
                     for action_slice in (ACTION_SLICES.left_hand, ACTION_SLICES.right_hand):
                         hand_delta = np.clip(
@@ -1928,11 +2117,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 wall_elapsed = time.monotonic() - record_wall_start if record_wall_start is not None else 0.0
                 record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
                 if wall_elapsed >= record_timeout_s:
-                    print(
-                        f"[RECORD][TIMEOUT] episode={recorded_episodes + 1}/{max_record_episodes} "
-                        f"attempt={record_attempt} "
-                        f"wall_seconds={wall_elapsed:.1f}s timeout={record_timeout_s:.1f}s frames={len(recording_episode)}",
-                        flush=True,
+                    failed_attempts_total += 1
+                    log_collection_event(
+                        "TIMEOUT",
+                        f"episode={recorded_episodes + 1:03d}/{max_record_episodes:03d} attempt={record_attempt:02d} | "
+                        f"elapsed={wall_elapsed:.1f}/{record_timeout_s:.1f}s | frames={len(recording_episode)} | discarded",
+                        "red",
                     )
                     target = reset_static_attempt()
                     action = control_action_from_full_target(target, robot)
@@ -1942,11 +2132,11 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     record_wall_start = time.monotonic()
                     record_step = 0
                     record_attempt += 1
-                    print(
-                        f"[RECORD][RETRY] episode={recorded_episodes + 1}/{max_record_episodes} "
-                        f"attempt={record_attempt}",
-                        flush=True,
-                    )
+                    last_logged_phase_index = -1
+                    log_collection_event("RETRY", "scene reset; retrying the same required success", "yellow")
+                    log_attempt_start(drawer_controller)
+                    log_current_phase(drawer_controller)
+                    last_logged_phase_index = drawer_controller.phase_index
                     continue
                 if record_step % record_every_n == 0:
                     append_bimanual_record_frame(
@@ -1960,11 +2150,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 record_step += 1
                 if scripted_done:
                     if drawer_controller.failed:
-                        print(
-                            f"[RECORD][DISCARD] episode={recorded_episodes + 1}/{max_record_episodes} "
-                            f"attempt={record_attempt} "
-                            f"reason={drawer_controller.failure_reason} frames={len(recording_episode)}",
-                            flush=True,
+                        failed_attempts_total += 1
+                        log_collection_event(
+                            "DISCARD",
+                            f"episode={recorded_episodes + 1:03d}/{max_record_episodes:03d} attempt={record_attempt:02d} | "
+                            f"frames={len(recording_episode)} | {drawer_controller.failure_reason}",
+                            "red",
                         )
                         target = reset_static_attempt()
                         action = control_action_from_full_target(target, robot)
@@ -1974,20 +2165,63 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         record_wall_start = time.monotonic()
                         record_step = 0
                         record_attempt += 1
-                        print(
-                            f"[RECORD][RETRY] episode={recorded_episodes + 1}/{max_record_episodes} "
-                            f"attempt={record_attempt}",
-                            flush=True,
-                        )
+                        last_logged_phase_index = -1
+                        log_collection_event("RETRY", "scene reset; retrying the same required success", "yellow")
+                        log_attempt_start(drawer_controller)
+                        log_current_phase(drawer_controller)
+                        last_logged_phase_index = drawer_controller.phase_index
                         continue
+                    task_success, success_details = evaluate_drawer_task_success()
+                    drawer_open_text = success_details["drawer_open_m"]
+                    drawer_open_value = float("nan") if drawer_open_text is None else float(drawer_open_text)
+                    can_world_z = float(success_details["can_world_z_m"])
+                    log_collection_event(
+                        "VERIFY",
+                        f"accepted={task_success} | drawer={drawer_open_value:+.4f}m "
+                        f"(required |q|<{float(success_details['drawer_open_abs_max_m']):.4f}m) | "
+                        f"can_z={can_world_z:+.3f}m "
+                        f"(required {float(success_details['can_world_z_min_m']):.3f}<z<"
+                        f"{float(success_details['can_world_z_max_m']):.3f}m) | "
+                        f"can_height_valid={success_details['can_height_valid']}",
+                        "green" if task_success else "red",
+                    )
+                    if not task_success:
+                        failed_attempts_total += 1
+                        failed_checks = []
+                        if not success_details["drawer_closed"]:
+                            failed_checks.append("drawer_not_closed")
+                        if not success_details["can_height_valid"]:
+                            failed_checks.append("can_world_z_out_of_range")
+                        reason = ",".join(failed_checks) or "final_state_invalid"
+                        log_collection_event(
+                            "DISCARD",
+                            f"episode={recorded_episodes + 1:03d}/{max_record_episodes:03d} attempt={record_attempt:02d} | "
+                            f"reason={reason} | frames={len(recording_episode)}",
+                            "red",
+                        )
+                        target = reset_static_attempt()
+                        action = control_action_from_full_target(target, robot)
+                        pink_tcp_controller = None
+                        drawer_controller = new_drawer_controller(action)
+                        recording_episode = make_recording_episode()
+                        record_wall_start = time.monotonic()
+                        record_step = 0
+                        record_attempt += 1
+                        last_logged_phase_index = -1
+                        log_collection_event("RETRY", "scene reset; retrying the same required success", "yellow")
+                        log_attempt_start(drawer_controller)
+                        log_current_phase(drawer_controller)
+                        last_logged_phase_index = drawer_controller.phase_index
+                        continue
+                    recording_episode.metadata["final_success"] = success_details
                     demo_name = writer.write_episode(recording_episode) if writer is not None else "demo"
                     sim_seconds = record_step * sim_dt
                     wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
-                    print(
-                        f"[RECORD] wrote {demo_name}: phase={current_scripted_phase} "
-                        f"frames={len(recording_episode)} sim_steps={record_step} "
-                        f"sim_seconds={sim_seconds:.2f}s wall_seconds={wall_seconds:.2f}s",
-                        flush=True,
+                    log_collection_event(
+                        "ACCEPT",
+                        f"{demo_name} | success={recorded_episodes + 1:03d}/{max_record_episodes:03d} | "
+                        f"frames={len(recording_episode)} | sim={sim_seconds:.2f}s | wall={wall_seconds:.2f}s",
+                        "green",
                     )
                     recorded_episodes += 1
                     if writer is not None and recorded_episodes >= max_record_episodes:
@@ -2001,11 +2235,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     record_wall_start = time.monotonic()
                     record_step = 0
                     record_attempt = 1
-                    print(
-                        f"[RECORD][START] episode={recorded_episodes + 1}/{max_record_episodes} "
-                        f"attempt={record_attempt}",
-                        flush=True,
-                    )
+                    last_logged_phase_index = -1
+                    log_attempt_start(drawer_controller)
+                    log_current_phase(drawer_controller)
+                    last_logged_phase_index = drawer_controller.phase_index
             if tcp_visualizer is not None:
                 tcp_visualizer.visualize_task_frames(
                     left_tcp_pose=estimate_left_hand_tcp_pose_from_robot(robot),
@@ -2024,18 +2257,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     last_tcp_print = now
             if arm_control_active:
                 now = time.monotonic()
-                if now - last_arm_debug >= 1.0:
-                    q = robot.data.joint_pos[0].detach().cpu().numpy()
-                    right_err = 0.0
-                    left_err = 0.0
-                    for name in RIGHT_ARM_JOINTS:
-                        if name in robot.joint_names:
-                            idx = robot.joint_names.index(name)
-                            right_err = max(right_err, abs(float(target[idx] - q[idx])))
-                    for name in LEFT_ARM_JOINTS:
-                        if name in robot.joint_names:
-                            idx = robot.joint_names.index(name)
-                            left_err = max(left_err, abs(float(target[idx] - q[idx])))
+                refresh_period = (
+                    max(float(drawer_dashboard_cfg.get("refresh_seconds", 0.5)), 0.05)
+                    if drawer_controller is not None
+                    else 1.0
+                )
+                if now - last_arm_debug >= refresh_period:
                     if drawer_controller is not None:
                         base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
                         left_pose_w = estimate_left_hand_tcp_pose_from_robot(robot)
@@ -2044,16 +2271,74 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         right_pose_b = pose_world_to_base(right_pose_w, base_pose_w) if right_pose_w is not None else None
                         wall_elapsed = time.monotonic() - record_wall_start if record_wall_start is not None else 0.0
                         record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
-                        print(
-                            f"[PROGRESS] episode={recorded_episodes + 1}/{max_record_episodes} "
-                            f"attempt={record_attempt} "
-                            f"{drawer_controller.progress_summary(left_pose_b, right_pose_b, current_drawer_open_m())} "
-                            f"drawer_vel={float(current_drawer_velocity_m_s() or 0.0):+.3f}m/s "
-                            f"episode_time={wall_elapsed:.1f}/{record_timeout_s:.1f}s "
-                            f"q_track(L/R)={left_err:.3f}/{right_err:.3f}rad",
-                            flush=True,
+                        errors = drawer_controller.tcp_error_metrics(left_pose_b, right_pose_b)
+                        phase = drawer_controller.current_phase
+                        dashboard_drawer_open = current_drawer_open_m()
+                        render_collection_dashboard(
+                            DashboardSnapshot(
+                                episode=recorded_episodes + 1,
+                                episode_total=max_record_episodes,
+                                attempt=record_attempt,
+                                clock_time=datetime.now().astimezone().strftime("%H:%M:%S"),
+                                success_count=recorded_episodes,
+                                failure_count=failed_attempts_total,
+                                phase_index=drawer_controller.phase_index + 1,
+                                phase_total=len(drawer_controller.phases),
+                                phase_name=phase.name,
+                                step=drawer_controller.phase_steps,
+                                step_total=phase.max_steps,
+                                elapsed_s=wall_elapsed,
+                                timeout_s=record_timeout_s,
+                                episode_sim_s=record_step * sim_dt,
+                                collection_elapsed_s=(
+                                    now - collection_wall_start
+                                    if collection_wall_start is not None
+                                    else 0.0
+                                ),
+                                frames=len(recording_episode) if recording_episode is not None else 0,
+                                left_pos=errors["left_pos"],
+                                left_rot=errors["left_rot"],
+                                right_pos=errors["right_pos"],
+                                right_rot=errors["right_rot"],
+                                left_pos_limit=max(float(
+                                    drawer_dashboard_cfg.get("left_position_tolerance_m", 0.050)
+                                ), 1.0e-6),
+                                left_rot_limit=max(float(
+                                    drawer_dashboard_cfg.get("left_rotation_tolerance_rad", 0.500)
+                                ), 1.0e-6),
+                                right_pos_limit=max(float(
+                                    drawer_dashboard_cfg.get("right_position_tolerance_m", 0.050)
+                                ), 1.0e-6),
+                                right_rot_limit=max(float(
+                                    drawer_dashboard_cfg.get("right_rotation_tolerance_rad", 0.500)
+                                ), 1.0e-6),
+                                left_tcp_gate=phase.require_left_tcp_reached,
+                                right_tcp_gate=phase.require_right_tcp_reached,
+                                drawer_open_m=(
+                                    float(dashboard_drawer_open)
+                                    if dashboard_drawer_open is not None
+                                    else float("nan")
+                                ),
+                                drawer_open_limit_m=(
+                                    float(phase.drawer_open_max)
+                                    if phase.drawer_open_max is not None
+                                    else float("nan")
+                                ),
+                            ),
+                            drawer_dashboard_cfg,
                         )
                     else:
+                        q = robot.data.joint_pos[0].detach().cpu().numpy()
+                        right_err = 0.0
+                        left_err = 0.0
+                        for name in RIGHT_ARM_JOINTS:
+                            if name in robot.joint_names:
+                                idx = robot.joint_names.index(name)
+                                right_err = max(right_err, abs(float(target[idx] - q[idx])))
+                        for name in LEFT_ARM_JOINTS:
+                            if name in robot.joint_names:
+                                idx = robot.joint_names.index(name)
+                                left_err = max(left_err, abs(float(target[idx] - q[idx])))
                         print(
                             f"[ARMDBG] tcp_pose={tcp_pose_active} "
                             f"q_track(L/R)={left_err:.3f}/{right_err:.3f}rad "
@@ -2067,7 +2352,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         if writer is not None:
             writer.close()
         if record_complete and args_cli.record_output is not None:
-            print(f"[RECORD] complete: wrote {recorded_episodes} drawer episode(s) to {args_cli.record_output}", flush=True)
+            log_collection_event(
+                "COMPLETE",
+                f"accepted={recorded_episodes}/{max_record_episodes} | "
+                f"failed_attempts={failed_attempts_total} | output={args_cli.record_output}",
+                "green",
+            )
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(0)

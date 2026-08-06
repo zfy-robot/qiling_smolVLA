@@ -76,9 +76,9 @@ bash run.sh activate-task drawer_insert_close
 bash run.sh sim --print-layout
 ```
 
-This currently loads the base warehouse, adds two aligned Sektion cabinets and only `005_tomato_soup_can.usd`, removes stale old-task prims if present, and adds the S4 robot plus DebugFrontCamera. It intentionally does not load the old PackingTable or the other three YCB objects. Current placement is explicit: drawers at `(0.80, 0.383, 0.70)` and `(0.80, -0.383, 0.70)`, tomato can root `(0.56, -0.08, 1.16)`.
+This currently loads the base warehouse, adds two aligned Sektion cabinets and only `005_tomato_soup_can.usd`, removes stale old-task prims if present, and adds the S4 robot plus DebugFrontCamera. It intentionally does not load the old PackingTable or the other three YCB objects. Current placement is explicit: drawers at `(0.80, 0.383, 0.70)` and `(0.80, -0.400, 0.70)`, tomato can root `(0.56, -0.08, 1.16)`. The asymmetric Y spacing is intentional: the previous `+/-0.383m` placement left only `2.23mm` between cabinet collision bounds, causing the primary top drawer to collide with the secondary cabinet and stop reproducibly at `q=0.028929m`.
 
-The tomato can is spawned as an IsaacLab `RigidObject`, not as a passive visual USD reference. It has explicit mass, rigid-body solver/damping settings, convex mesh collision, small contact/rest offsets, and high-friction material so the hand can physically grasp it:
+The tomato can is spawned as an IsaacLab `RigidObject`, not as a passive visual USD reference. It has explicit mass, rigid-body solver/damping settings, convex mesh collision, small contact/rest offsets, and high-friction material so the hand can physically grasp it. Its authored local Y axis becomes world Z after the spawn rotation, so `TOMATO_SOUP_CAN_SCALE = (1.0, 0.90, 1.0)` reduces only its world-space height to 90% while preserving the grasping diameter. The root scale applies to both rendering and collision geometry:
 
 ```text
 mass = 0.08 kg
@@ -187,9 +187,9 @@ converts it to the wrist frame using the current `(0, 0, -0.10)m` TCP offset and
 solves continuously while the command is active. It also adds a null-space home
 posture bias, `dq = dq_task + (I - J#J) * k * (q_home - q)`, so redundant arm
 motion tends to keep the elbows out and away from the body without directly
-overwriting the TCP task. The default is now `--tcp-posture-gain 0.30`, matching
-the current reach-controller posture default. Lower it if TCP tracking gets
-worse.
+overwriting the TCP task. The current scripted TCP default is
+`--tcp-posture-gain 0.05`; higher values can fight Cartesian tracking near the
+cabinet.
 
 ```bash
 bash run.sh control tcp-pose \
@@ -211,9 +211,9 @@ bash run.sh sim \
   --show-tcp-frames \
   --show-drawer-handle-frame \
   --print-tcp-pose \
-  --tcp-posture-gain 0.30 \
+  --tcp-posture-gain 0.05 \
   --tcp-ik-damping 0.08 \
-  --tcp-max-joint-delta 0.025
+  --tcp-max-joint-delta 0.040
 ```
 
 Equivalent shorter command using defaults:
@@ -245,7 +245,7 @@ anchor-relative motion. Its main sections are:
 ```text
 randomization.can_xy.x_range/y_range        # default [-0.05, +0.05] m
 randomization.drawer_initial_open.range     # default [0.00, 0.05] m
-randomization.drawer_initial_open.target_open_m # fixed final opening, 0.06 m
+randomization.drawer_initial_open.target_open_m # fixed final opening, 0.18 m
 hands.action_hold_seconds                    # default 1.0 s
 targets.left_handle_transition_1.offset
 targets.left_handle_transition_2.offset
@@ -264,13 +264,21 @@ The primary cabinet is an IsaacLab `Articulation`; its `drawer_top_joint` is
 randomized through the tensor joint-state API without stopping the GPU timeline.
 
 The configured sequence is: open both hands and wait, left approach/grasp/pull,
-right pre-grasp/grasp/close/lift/place/release, right home, left close/release,
-left home. Every explicit hand open/close phase waits one simulated second.
+right pre-grasp/grasp/close/lift/place/release, concurrent right retreat/single
+closed-hand drawer push, left-hand release, left lift, and home. Every
+explicit hand open/close phase waits one simulated second.
 Any TCP phase that reaches `max_steps` without reaching tolerance is discarded
 and retried. Both position and quaternion angular error are checked (defaults:
 `0.035m` and `0.55rad`); the angular threshold reflects the measured residual
 near the cabinet and can be tightened per phase after pose calibration. The
-existing 120 second episode timeout is retained.
+default episode timeout is 300 wall-clock seconds.
+
+The collection/control speed defaults are `target_alpha=0.32`,
+`max_joint_step=0.050`, `tcp_max_joint_delta=0.050`, and
+`hand_max_joint_step=0.015`. The final arm poses are configured under
+`home_poses.left_arm/right_arm` in the task YAML. Home phases check actual arm
+joint error against `home_poses.tolerance`; they no longer finish after
+`min_steps` alone.
 
 Manual hand commands while the sim is running:
 
@@ -288,16 +296,109 @@ Record drawer demonstrations:
 conda activate env_isaaclab
 cd /home/zfy/smolVLA/s4_smolvla_isaaclab
 bash run.sh activate-task drawer_insert_close
-bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 10 --no-render
 ```
 
 First tune one rendered episode, then collect headless with the same YAML:
 
 ```bash
 bash run.sh record-hdf5 --num-episodes 1 --render \
-  --output /tmp/drawer_tune.hdf5 --episode-timeout-s 120
-bash run.sh record-hdf5 --num-episodes 100 --no-render --episode-timeout-s 120
+  --output /tmp/drawer_tune.hdf5
+bash run.sh record-hdf5 --num-episodes 100 --no-render
 ```
+
+Drawer episodes are written only when the final live simulation state passes
+both checks in `configs/tasks/drawer_insert_close.scripted.yaml -> success`:
+the absolute top-drawer opening is below `0.040m`, and the can root height in
+world coordinates satisfies `0.80m < z < 1.15m`. Can X/Y no longer affect
+acceptance.
+Failed attempts are discarded before HDF5 writing, reset, and retried, so
+`--num-episodes N` means `N` accepted episodes.
+Look for `[VERIFY]`, `[DISCARD]`, and `[ACCEPT]`.
+Important collection events are colored on interactive terminals: cyan marks
+episode/configuration events, blue marks phase changes, yellow marks progress
+or retries, red marks discarded attempts, and green marks accepted episodes.
+Use `--no-color-logs` to disable colors or `--color-logs` to force them.
+
+During a drawer attempt, an interactive terminal displays a fixed dashboard
+that refreshes in place. Unicode `█/░` bars show the current scripted `TASK`
+and requested `DATA` episode progress. The panel includes episode/attempt,
+phase/step, clock time, L/R TCP position and rotation errors, current episode
+wall/simulation durations, buffered frame count, total collection duration,
+ETA, completed attempts, accepted/failed counts, and acceptance rate. ETA is
+estimated from elapsed time per accepted episode and remains unavailable until
+the first success. A `GATES` row shows whether each TCP error participates in
+phase completion and, when active, the live drawer opening versus its limit.
+Redirected output uses the same information in one line
+without ANSI clear-screen sequences. Configure refresh rate, panel size, bar
+width, and four display thresholds under `logging.progress_dashboard` in the
+drawer scripted YAML. Display thresholds do not change phase completion rules.
+Event lines include a local `YYYY-MM-DD HH:MM:SS` timestamp. Interactive color
+coding uses cyan for task/configuration, blue for phase transitions, yellow for
+retry notices, red for timeout/discard/failure, and green for verification and
+accepted/completed episodes. The timestamp is gray. Redirected logs remain
+plain text unless `--color-logs` is explicitly requested.
+
+Drawer target anchors are absolute states measured from the fully closed handle:
+
+```text
+drawer_handle_initial = drawer_handle_closed + opening_axis * randomized_initial_open
+drawer_handle_open    = drawer_handle_closed + opening_axis * target_open_m
+left_drawer_open TCP  = drawer_handle_open + left_drawer_open.offset
+left_drawer_closed TCP= fixed base_link position [0.3550, 0.3725, 0.0660]
+```
+
+With `target_open_m: 0.18`, the desired final opening is 0.18m. If an episode
+starts at 0.04m open, the pull command travels approximately 0.14m, not 0.18m.
+`left_drawer_closed` supplies fallback IK metadata for the close and release
+phases. The live close target is calculated from the measured TCP and drawer
+opening. The final live-state filter separately requires
+`abs(opening) < 0.040m` before writing the episode.
+At phase entry, `close_drawer_from_current: true` locks the measured left TCP
+Y/Z and orientation. `right_retreat_and_start_close` performs one fixed-duration
+three-second push directly toward logical/mechanical zero with no overtravel.
+Neither TCP error nor drawer opening gates the phase.
+`left_open_hand` similarly uses
+`hold_current_left_pose: true`, so releasing the handle cannot reintroduce a
+vertical move toward the static fallback pose.
+After release, `left_lift_after_release` resolves a target from
+the live TCP pose with `left_offset_from_current: [-0.04, 0, 0.07]` in `base_link`, reaches that
+clearance pose, and then returns directly to joint-space home. The previous
+post-lift `left_final_close_push` phase has been removed. The lift orientation remains
+configurable through `targets.left_lift_after_release.rpy` as an absolute
+base_link RPY.
+
+After the right hand releases the can, `right_retreat_and_start_close` resolves
+its target from the measured right TCP pose and applies
+`right_offset_from_current: [-0.10, -0.20, 0.0]` in `base_link`, while the closed
+left hand performs the only close push. There is no standalone right-home or
+second close phase. Neither TCP residual nor drawer opening gates this phase;
+it runs for 360 physics steps. Initial randomization writes only the reset state
+and never changes the asset's `[0.0, 0.4]m` mechanical limits. The top drawer
+joint uses zero stiffness, damping, static friction, dynamic friction, and
+viscous friction. The secondary cabinet is placed at `y=-0.400m`, leaving enough
+collision clearance for the primary drawer to coast to its authored `0m` lower
+limit after hand contact is lost.
+
+To regression-test the drawer independently of the robot, can, and task state
+machine, run:
+
+```bash
+bash run.sh sim --headless --drawer-coast-diagnostic
+```
+
+The diagnostic moves the can away, initializes the top drawer at `0.18m` with
+`-0.15m/s`, and prints its position/velocity until it reaches exactly `0m`.
+
+Per-phase motion speed can override global command smoothing with
+`target_alpha` and `max_joint_step`. The final joint-space return phase uses:
+
+```yaml
+left_home:  {target_alpha: 0.20, max_joint_step: 0.025}
+```
+
+Reduce either value to return more slowly. Other phases inherit the global
+`0.32/0.050`. Each `[PHASE]` log prints its effective speed.
 
 Use a separate tuning file without editing Python:
 
@@ -531,11 +632,14 @@ bash run.sh convert-lerobot \
   --overwrite
 ```
 
-Each episode has a wall-clock timeout. If one scripted attempt exceeds `120s`, that attempt is discarded, the scene is reset, and the same episode index is retried. The final HDF5 still contains the requested number of saved episodes.
+Each episode has a wall-clock timeout. If one scripted attempt exceeds the
+current default `300s`, that attempt is discarded, the scene is reset, and the
+same episode index is retried. The final HDF5 still contains the requested
+number of accepted episodes.
 
-Drawer collection prints one `[PROGRESS]` line per second. It reports the saved episode target, retry attempt, current phase, phase step budget, TCP position/orientation error versus tolerance, remaining error, active blocker, and episode timeout budget. `right_pregrasp_can` deliberately uses a `0.075m` coarse staging tolerance; the following can-grasp phase uses its own `0.050m` contact tolerance.
+Drawer collection refreshes its dashboard at the YAML-configured interval (currently `0.5s`). `right_pregrasp_can` deliberately uses a `0.075m` coarse staging control tolerance; the following can-grasp phase uses its own `0.050m` contact tolerance. Dashboard indicator thresholds are separate and currently display `0.050m/0.500rad` for both arms.
 
-All per-phase tuning poses are in `configs/tasks/drawer_insert_close.scripted.yaml` under `targets`. Change `offset: [x, y, z]` for the handle transition, can pre-grasp, can grasp/lift, or drawer placement targets; offsets are in robot `base_link` metres unless `offset_frame: anchor` is selected. `rpy` is in radians. `orientation_weight` controls how strongly IK preserves orientation (`1.0` hard, smaller values prioritize TCP position). `[PROGRESS] ... L_dxyz/R_dxyz` shows `target-current` in `base_link`, which is the most useful signal when tuning an offset.
+All per-phase tuning poses are in `configs/tasks/drawer_insert_close.scripted.yaml` under `targets`. Change `offset: [x, y, z]` for the handle transition, can pre-grasp, can grasp/lift, or drawer placement targets; offsets are in robot `base_link` metres unless `offset_frame: anchor` is selected. `rpy` is in radians. `orientation_weight` controls how strongly IK preserves orientation (`1.0` hard, smaller values prioritize TCP position).
 
 The left-hand handle approach uses three configurable points: `left_handle_transition_1`, `left_handle_transition_2`, and `left_handle_transition_3`. Their current offsets are `[-0.1435,-0.0230,0.0328]`, `[-0.0885,-0.0230,0.0578]`, and `[-0.0335,-0.0230,0.0828]`. Point 2 is the geometric midpoint of the two user-tuned poses; point 3 is the final pose held while the left hand closes.
 
@@ -544,7 +648,7 @@ The can-grasp target uses `offset=[-0.08,-0.05,-0.02]`, `rpy=[0,-0.9,0]`, `orien
 The imported articulation has 48 non-fixed joints: 38 independently driven joints and 10 hand mimic joints (`thumb_ip` plus four `dip` joints per hand). The mimic joints do not enter the 26D policy action; `control_mapping.py` deterministically derives their targets from the six controls per hand, and the actuator config applies the same PD gains as the active finger joints. This avoids both incomplete `38 != 48` coverage and loose zero-gain mimic joints. Drawer resets now move both hands to the YAML `left_open/right_open` targets during the settle period, before recording starts; `initial_open_hands` remains as a one-second stable hold for VLA timing. The handle phase budgets remain configurable in the YAML; `left_grasp_handle` is currently 500 steps because its final centimetres converge slowly.
 
 ```bash
-bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 100 --block blue --no-render
 ```
 
 Final success filtering is enabled by default before writing to HDF5. The recorder keeps only attempts where the
@@ -791,11 +895,15 @@ More details are in [docs/ARCHITECTURE.md](/home/zfy/smolVLA/s4_smolvla_isaaclab
 
 The drawer approach targets are configured in `configs/tasks/drawer_insert_close.scripted.yaml`. Their `orientation_weight` values are deliberately progressive (`0.20`, `0.35`, `0.60`) so early waypoints prioritize a smooth position approach instead of forcing the wrist to satisfy the final orientation immediately. The default `--tcp-posture-gain` is `0.05`; higher values can make the damped null-space term fight the TCP task near the cabinet.
 
-The primary cabinet is an IsaacLab articulation. Its `drawer_top_joint` is passive (`stiffness=0`, `damping=2`) and can be moved by hand contact. Script completion now checks the measured joint opening as well as TCP error:
+The primary cabinet is an IsaacLab articulation. Its `drawer_top_joint` is passive (`stiffness=0`, `damping=0`) with zero configured joint friction, so it can move freely after hand contact is lost. Opening and closing use different completion rules:
 
-- `pull_drawer` requires `drawer_open >= 0.08 m` for the current `0.10 m` target.
-- `push_drawer_closed` requires `drawer_open <= 0.03 m`.
+- `pull_drawer` requires `drawer_open >= 0.08 m` for the current `0.18 m` target.
+- `right_retreat_and_start_close` ignores TCP and drawer-distance residuals and applies one three-second close push.
+- Final episode acceptance requires `abs(drawer_open) < 0.040 m` and the can root world height `0.80 m < z < 1.15 m`.
 
-During a test, inspect the `[PROGRESS] ... drawer_open=... waiting=...` fields. `drawer_not_open` means the hand reached its TCP goal but the physical drawer did not move far enough.
+During a test, the dashboard shows only TCP errors by design. If a phase fails,
+the subsequent `[DISCARD]` event retains the detailed failure reason needed for
+diagnosis; drawer velocity, joint tracking, blocker names, and absolute
+coordinates are not shown in the live dashboard.
 
 The Pinocchio controller keeps IK solutions continuous across nearby scripted targets. At the first solve of every phase, the current 14 arm joints become that phase's null-space posture reference. The DLS inverse is used for the Cartesian task, while a separate Moore-Penrose inverse builds the null-space projector; this prevents damped-projector leakage from pulling the wrist toward `DEFAULT_POSE`. Joint increments are scaled as one vector and the resulting targets are restricted to URDF limits. This is important near drawer-handle poses, where several 7-DoF arm configurations can produce nearly the same TCP pose.

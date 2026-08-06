@@ -21,7 +21,7 @@ parser.add_argument("--record-every-n", type=int, default=6)
 parser.add_argument(
     "--episode-timeout-s",
     type=float,
-    default=120.0,
+    default=300.0,
     help="Discard and retry an episode if scripted collection exceeds this wall-clock timeout.",
 )
 parser.add_argument("--success-check", action=argparse.BooleanOptionalAction, default=True)

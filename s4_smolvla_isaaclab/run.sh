@@ -88,7 +88,7 @@ PY
         RECORD_EPISODES="1"
     fi
     if [[ -z "$EPISODE_TIMEOUT" ]]; then
-        EPISODE_TIMEOUT="120"
+        EPISODE_TIMEOUT="300"
     fi
     SCRIPT_ARGS=(
         --kit_args "$ISAAC_LOCAL_KIT_ARGS"

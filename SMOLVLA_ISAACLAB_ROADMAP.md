@@ -1,5 +1,55 @@
 # S4 双臂 SmolVLA + IsaacLab 工作流路线图
 
+- 2026-08-05：抽屉任务罐子的世界 Z 高度缩小到 90%。由于资产在生成时绕局部 X
+  轴旋转了 -90 度，因此使用局部缩放 `(1.0, 0.90, 1.0)`；视觉和碰撞体同步
+  缩放，抓取直径、质量和摩擦参数保持不变。
+- 2026-08-05：修复 `push_drawer_closed` 固定目标 X 被改成 `0.325m` 后提前
+  停止的问题。抽屉关闭方向为 base_link `+X`，理论关闭 TCP X 约为 `0.345m`；
+  现使用 `0.355m`，提供 10mm 接触过行程，让柔顺手指持续推到抽屉关节的
+  `0m` 下限。IK 仍使用该 TCP 目标持续推压；阶段完成条件见下一条。
+- 2026-08-05：进一步修复关闭接触阶段的错误完成条件。机械限位和柔顺手指会让
+  TCP 无法精确到达过行程目标，因此 `push_drawer_closed` 现设置
+  `require_tcp_reached: false`：IK 仍持续施加关闭目标，但阶段只由实际抽屉开度
+  `<=0.015m`、右臂 home 误差和最小步数完成。日志以 `tcp_gate=monitor_only`
+  标记 TCP 误差仅用于诊断。
+- 2026-08-05：根据实测失败日志修复关闭轨迹本身。旧固定目标在抽屉停于
+  `0.029m` 时仍同时命令 `+X 0.010m` 和 `-Z 0.037m`，向下分力使手指/把手
+  楔住且抽屉速度归零。现在进入 `push_drawer_closed` 时锁定左 TCP 的实时
+  Y/Z/姿态，只沿由 open/closed handle anchors 求出的关闭轴运动“实时开度 +
+  10mm”；进入 `left_open_hand` 时再次锁定当前姿态，松手过程不再跳回静态目标。
+- 2026-08-05：关闭阶段仍在 `0.029m` 静止后，将物理关闭过行程从 10mm 增至
+  30mm，抽屉仍必须由左臂真实推动至 `<=0.015m`，不写关节或瞬移作弊。流程由
+  16 阶段扩展为 17 阶段：关到底 -> 左手张开并等待 -> 基于实时 TCP 沿
+  base_link `+Z 0.10m` 上抬 -> 左臂回 YAML 关节 home。
+- 2026-08-05：实测增加过行程后仍每次稳定停在 `0.029m`、速度为零，确认是
+  闭合手指在柜体/把手末端间隙中的可重复几何夹持，而非等待时间或 IK 判定。
+  关闭改为两段：闭手推至 `<=0.035m` -> 原位张手等待 1 秒 -> 张手沿关闭轴
+  推至 `<=0.015m` -> 上抬。最终验收阈值不放宽，也不直接写抽屉关节作弊。
+- 2026-08-05：按最新任务定义取消关闭阶段的抽屉开度门控，并撤销两段关闭。
+  `push_drawer_closed` 现在基于阶段入口 TCP，沿关闭轴移动到名义剩余开度
+  `0.030m`，只以左 TCP 位置/姿态、右臂 home 和最小步数完成；随后张手、
+  `+Z 0.10m` 上抬并回 home。最终写盘前仍读取真实物理状态，但抽屉验收改为
+  `abs(opening)<0.040m`；罐子条件见下一条。
+- 2026-08-05：最终罐子成功条件由“相对当前抽屉把手的 base_link 三维范围”改为
+  仅检查罐子 root 的世界坐标高度，严格要求 `0.80m < z < 1.15m`，X/Y 不再
+  参与验收。`[VERIFY]` 和 HDF5 `final_success` 同步记录 `can_world_z_m` 及上下界。
+- 2026-08-05：在右手放开罐子与 `right_home` 之间新增笛卡尔过渡阶段
+  `right_retreat_after_release`。目标以松手后的实时右 TCP 为锚点，在 base_link
+  下偏移 `[-0.10,-0.20,0.0]m`，保持当前姿态；到位后才执行慢速关节 home，
+  避免从抽屉内直接走关节空间路径。
+- 2026-08-05：在 `left_lift_after_release` 后新增固定时长的最终补推阶段
+  `left_final_close_push`。左手保持张开，使用当前“开始拉抽屉”姿态
+  `rpy=[-1.5,-0.10,1.5]`，目标相对 closed handle 的抓取偏移沿 base_link
+  `+X` 再增加 `0.04m`；不检查 TCP 或抽屉开度。用户后续将固定执行时长调为
+  500 个仿真步后回 home。
+- 2026-08-05：开放关闭后两个笛卡尔阶段的独立姿态配置。上抬位置仍由实时左
+  TCP 加 `left_offset_from_current` 得到，但姿态读取
+  `targets.left_lift_after_release.rpy`；补推姿态读取
+  `targets.left_final_close_push.rpy`。两者均为 base_link 下绝对 RPY。
+- 2026-08-05：删除右手退避后的独立 `right_home` 等待阶段。新阶段
+  `right_retreat_and_start_close` 同时执行右 TCP `[-0.10,-0.20,0]m` 退避和
+  左臂完整关闭目标；两者完成后直接张开左手，同时右臂开始回 home。
+
 更新时间：2026-07-31
 当前目标：先把 S4 右臂蓝色圆柱放盘任务做稳，重新采集带少量泛化的数据，转换为 LeRobotDataset，并用 SmolVLA 训练/评估右臂+右手策略。左臂和左手暂时不进入训练 state/action，腿部不作为策略控制对象。
 
@@ -1715,7 +1765,7 @@ bash run.sh control reach-block --block blue --z-offset 0.20 --offset-frame worl
 conda activate env_isaaclab
 cd /home/zfy/smolVLA/s4_smolvla_isaaclab
 bash run.sh activate-task drawer_insert_close
-bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 10 --no-render
 ```
 
 转换和训练命令：
@@ -1855,8 +1905,8 @@ bash run.sh sim --print-layout --camera-eye X Y Z --camera-target X Y Z
 ```bash
 conda activate env_isaaclab
 cd /home/zfy/smolVLA/s4_smolvla_isaaclab
-bash run.sh record-hdf5 --num-episodes 1 --render --output /tmp/drawer_tune.hdf5 --episode-timeout-s 120
-bash run.sh record-hdf5 --num-episodes 100 --no-render --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 1 --render --output /tmp/drawer_tune.hdf5
+bash run.sh record-hdf5 --num-episodes 100 --no-render
 ```
 
 验证日志至少应包含 `[RANDOMIZE] can_xy=... drawer_initial_open=...` 和 `[DRAWER] episode anchors base_link: ...`。当前 Codex 执行沙箱无法访问 NVIDIA 驱动，已完成 `py_compile`、YAML 解析、锚点解析和 `git diff --check`，但无法代替用户机器完成 Isaac/PhysX 动态 smoke test。
@@ -1871,3 +1921,24 @@ bash run.sh record-hdf5 --num-episodes 100 --no-render --episode-timeout-s 120
 - 2026-08-04 排查抽屉始终拉不开时直接读取 Sektion USD：`drawer_top_joint` 是启用的 `PhysicsPrismaticJoint`，连接 `/cabinet/sektion -> /cabinet/drawer_top`，真实限位为 `[0.0,0.4]m`，并未固定；正关节方向为柜体局部 `+X`，经过场景 180° yaw 后对应机器人 base `-X`。旧 YAML 错写 `joint_position_sign=-1.0`，导致随机重置写入非法负关节值且实际开度符号反转。现改为 `+1.0`，`opening_axis_base` 保持 `[-1,0,0]`。同时删除 settle 和任务主循环中每帧重复写初始 `drawer_target` 的逻辑，交互阶段让顶部关节保持真正被动（stiffness=0、damping=2）；启动打印关节限位，进度日志新增 `drawer_vel`。如果后续 `drawer_open/velocity` 始终为零，问题就是手指与把手未形成有效接触，而不再可能是符号或位置目标保持造成的假象。
 - 同次检查发现用户当前配置已将 `target_open_m` 改为 `0.10m`，而旧验收条件仍要求 `drawer_open_min=0.12m`，形成目标值低于成功阈值的必然失败。按当前配置将拉开成功阈值改为 `0.08m`，为柔性手指与把手接触保留 `0.02m` 跟踪余量；以后修改 `target_open_m` 时必须同步检查该阈值。
 - 2026-08-04 核对仿真、采集、转换和回放时间轴时发现：物理循环固定为 `120Hz`，pipeline 与旧包装脚本默认每 6 步采样（`20Hz`），但 `run.sh record-hdf5` 直达的底层脚本默认每 1 步采样（`120Hz`），而转换仍按任务配置写成 `20fps`。这会把直接采集数据的时间轴错误放慢 6 倍。底层 `--record-every-n` 默认现统一为 `6`；`convert-lerobot` 会读取每个 HDF5 的 `env_args.record_fps`（或由 `sim_dt * record_every_n` 推导）并与任务 `fps` 校验，不一致时拒绝转换。默认链路现为：Physics/控制 `120Hz`、HDF5/LeRobot/策略更新 `20Hz`、eval rollout 视频 `60fps`（每 2 个物理步一帧，模拟时长不变）。墙钟运行速度不保证 1x；headless 可快于实时，渲染与推理可慢于实时。
+- 2026-08-05 排查 `right_place_in_drawer` 长时间停在约 `0.091m` 位置误差：日志的 `q_track(R)=0.002rad` 证明低层 PD 正常，姿态误差也只有 `0.067rad`；离线用同一 URDF、TCP offset 和关节限位做多初值优化后复现了该残差。当前 YAML 的 closed-handle anchor 约为 base `[0.4435,0.3830,0.0472]`，`offset=[-0.0035,-0.2030,0.1528]` 形成约 `[0.44,0.18,0.20]` 的目标，位置单独求解仍至少残留约 `0.068m`，完整姿态约 `0.096m`；最优解的右肘达到 `0rad` 上限（完全伸直）。因此这是当前右臂工作空间/姿态组合不可达，不是 max_steps 太少，也不需要继续等待。用户消息中贴出的 `y offset=-0.283/yaw=1.5` 与磁盘当前 `-0.203/yaw=0.9` 不同，调试时必须先确认实际加载文件。YAML `rpy=[roll,pitch,yaw]` 是 base_link 下绝对姿态，采用 `Rz(yaw) Ry(pitch) Rx(roll)`；第二项是 pitch，但在 yaw/roll 非零时直接改 pitch 不等于严格左乘一个纯 base-Y 增量旋转。
+- 2026-08-05 用户验证较快控制参数稳定后，将采集默认改为 `target_alpha=0.25`、`max_joint_step=0.040rad/step`、`tcp_max_joint_delta=0.040rad/step`、`hand_max_joint_step=0.012rad/step`，并把直接采集、包装脚本、并行采集和 pipeline 的 episode wall-time timeout 统一为 `300s`；在线 eval 的 action smoothing 同步为 `0.25/0.040/0.012`，避免示范与 rollout 执行器速度不一致。抽屉关闭验收由 `drawer_open<=0.03m` 收紧为 `<=0.015m`。YAML 新增 `home_poses.left_arm=[-0.55,0.45,-0.34,-0.52,-0.65,-0.33,0.19]`、`right_arm=[-0.55,-0.45,-0.34,-0.52,0.65,-0.33,0.19]` 和 `tolerance=0.03rad`；`right_home/push_drawer_closed/left_open_hand/left_home` 均读取该配置。此前 home phase 只等固定 `min_steps` 就成功，现在还会检查实际 7 关节最大误差，日志输出 `L_home/R_home`，两臂未真正到位时不会写入成功 episode。
+- 2026-08-05 为抽屉采集增加最终物理成功过滤。状态机完成后、调用 HDF5 `write_episode()` 前，记录器会读取实时 `drawer_top_joint` 和 TomatoSoupCan root pose；只有 `abs(drawer_open)<0.015m` 且罐子中心位于当前抽屉把手锚点的三维验收区域内才写入。当前把手位置由关闭位姿、实时关节开度和 `opening_axis_base` 计算，因此验收区域会随活动抽屉同步。验收范围在 `configs/tasks/drawer_insert_close.scripted.yaml -> success.can_inside_drawer` 配置，XYZ 使用 `base_link` 轴。失败 attempt 打印 `[VERIFY]/[DISCARD]`，清空内存 episode、重置并重新随机采样，同一目标 episode 编号不递增；因此 `--num-episodes N` 最终严格表示 N 条成功数据。成功详情同时写入每个 HDF5 demo 的 `episode_metadata.final_success`，文件级 `env_args.success_filter` 保存验收配置。
+- 2026-08-05 梳理抽屉开闭锚点语义并重构采集日志。`drawer_handle_initial=closed+axis*random_initial_open`，`drawer_handle_open=closed+axis*target_open_m`；当前 `target_open_m=0.18` 是相对完全关闭位置的绝对目标开度，实际拉动距离为 `0.18-random_initial_open`。`left_drawer_closed` 仍由 `push_drawer_closed` 和 `left_open_hand` 使用，先推到关闭锚点再保持该 TCP 位姿松手。采集日志改为带 episode/attempt/stage 上下文的事件格式：`COLLECT/EPISODE/PHASE/PROGRESS/VERIFY/ACCEPT/DISCARD/RETRY/COMPLETE`；交互终端自动按类别着色，重定向时自动禁色，并支持 `--color-logs/--no-color-logs`。
+- 2026-08-05 按用户要求将关闭抽屉目标改为固定 `base_link` TCP 位姿。`left_drawer_closed` 不再解析 `drawer_handle_closed + offset`，而是直接配置 `pos=[0.3450,0.3725,0.0660]`、`rpy=[-1.5,0.1,1.5]`；该位置由当前完全关闭把手标定值加抓取偏移得到，供 `push_drawer_closed` 和 `left_open_hand` 共用。固定手位只是控制目标，真正完成条件仍读取实时 `drawer_top_joint`，要求开度小于 `0.015m`。
+- 2026-08-05 为解决最终回 home 过快，状态机 phase 新增可选 `target_alpha/max_joint_step`，未配置时仍继承全局 `0.25/0.040`。`right_home` 和 `left_home` 默认设为 `0.12/0.015rad`，只降低关节空间返回速度，不影响抓取、放置和推抽屉阶段；`[PHASE]` 日志会打印当前阶段最终生效的速度参数，后续可直接在 YAML 微调。
+- 2026-08-05 删除左手松开并上抬后的 `left_final_close_push` 回接触阶段。关闭动作现直接在 `push_drawer_closed` 中完成：以实时 TCP 为起点沿抽屉关闭轴推到 `0m` 机械关闭位置；左手松开、上抬后直接回 Home，避免再次接近抽屉并缩短回合时间。
+- 2026-08-05 再次提高抽屉任务默认执行速度：采集和 eval 同步使用 `target_alpha=0.32`、`max_joint_step=0.050rad/step`、`hand_max_joint_step=0.015rad/step`，采集 TCP IK 限幅同步为 `0.050rad/step`。较敏感的 `push_drawer_closed` 与 `left_home` 使用局部 `0.20/0.025`，保留一定平滑性。关闭后的额外前推机制及其配置参数已完全移除。
+- 2026-08-05 将抽屉关闭由两段合并为一段：`right_retreat_and_start_close` 的 `drawer_close_target_open_m` 从 `0.030` 改为 `0.000`，右手退避时左手直接关到机械零位；独立 `push_drawer_closed` 阶段删除。完成后直接进入 `left_open_hand`，右臂从该阶段开始并行回 Home。状态机由 17 阶段缩短为 16 阶段。
+- 2026-08-05 将抽屉采集实时日志改为固定终端仪表盘：TTY 每 `0.5s` 使用 ANSI 清屏原地刷新，重定向输出自动降级为无 ANSI 单行。顶部 `TASK` 进度条显示单回合的阶段进度，底部 `DATA` 进度条显示当前 Episode/总轮数，并持续统计 `SUCCESS` 与 `FAIL`；中间仅保留 L/R 四项 TCP 位置/姿态误差和红绿指示。删除实时输出中的 drawer velocity、joint tracking、waiting、hold remaining、绝对坐标和 dxyz。显示阈值在 YAML `logging.progress_dashboard` 独立配置，默认位置 `0.050m`、姿态 `0.500rad`，不改变状态机控制容差。
+- 2026-08-05 修复右手放罐后不回 Home：合并关闭阶段同时包含右手 TCP 退避和左手关闭目标，旧状态机必须等左手关闭完成才离开该阶段，因此右手到达退避点后会一直被 TCP 控制器固定。新增 phase 配置 `right_home_after_tcp_reached`；右手退避误差进入容差后立即锁存该子任务、移除右侧 TCP 目标，并独立切换到 YAML `home_poses.right_arm`，左手仍在同一阶段继续关闭抽屉。后续左手松开/抬升阶段继续保持右臂 Home，不再相互阻塞。
+- 2026-08-05 按最新任务语义取消右臂退避判定：`DrawerPhase` 新增左右独立的 `require_left_tcp_reached/require_right_tcp_reached`，默认继承旧 `require_tcp_reached`，保持其他阶段行为不变。`right_retreat_and_start_close` 设置 `require_right_tcp_reached: false`；右臂仍并行执行 `[-0.10,-0.20,0]m` 退避，但不论误差多少都不阻塞流程。该阶段只等待左手关闭 TCP，完成后进入 `left_open_hand` 并持续命令右臂回 Home。
+- 2026-08-05 实测关闭阶段超时日志为 `left_dist=0.044m`、`left_angle=0.114rad`、`drawer_open=0.029m`：右臂已不参与门控，左姿态合格，抽屉也已进入最终 `<0.040m` 验收范围，唯一冲突是关闭接触阶段仍继承全局 `0.035m` TCP 阈值。为避免把成功物理状态误丢弃，仅给 `right_retreat_and_start_close` 增加局部 `tolerance: 0.050`；抓取和放置阶段继续使用 `0.035m`。
+- 2026-08-05 为判断 TCP 超时具体卡在哪个 base_link 轴，失败原因新增 `left_dxyz/right_dxyz=(target-current)`，单位米、顺序 X/Y/Z。实时仪表盘仍只保留四项误差标量，不恢复高频 dxyz 输出；轴向向量只在最终 `[DISCARD]` 诊断中打印。
+- 2026-08-05 采集事件日志新增本地 `YYYY-MM-DD HH:MM:SS`，实时仪表盘新增 `TIME HH:MM:SS`。TTY 下时间戳为灰色，任务/配置为青色、阶段为蓝色、重试为黄色、失败/丢弃为红色、验证/成功/完成为绿色，并让颜色覆盖整条事件内容而不只是标签；重定向日志默认保持无 ANSI 纯文本。
+- 2026-08-05 实时采集仪表盘的 ASCII `#/ -` 进度条替换为 Unicode `█/░`。面板增加当前回合 wall/sim 时长、内存帧数、总采集时长、基于成功回合平均耗时的 ETA、已结束尝试数和成功率；TASK/PHASE 使用蓝色，DATA/成功统计使用绿色，超限误差与失败数使用红色，时间与次要信息使用灰色/青色/黄色。ANSI 仅在交互终端启用，纯文本和带颜色版本去除控制码后保持同样的 78 列布局。
+- 2026-08-05 排查“随机初始开度后抽屉无法推到 0”：直接读取 Sektion USD，`drawer_top_joint` authored limit 为 `[0.0,0.4]m`，随机化只在 reset 时写一次 joint state，并未改 lower limit。根因是旧关闭目标只命令 `current_open` 等长 TCP 位移，隐含手-把手刚性连接假设；手指柔顺/滑移后 TCP 到理论点但抽屉仍约 `0.029m`。关闭 phase 现支持 `drawer_close_overtravel_m`，配置为 `0.030m`；左右 TCP 均不作为该并行 phase 的完成门控，改用实时 `drawer_open_max: 0.005m`。机械 joint lower limit 仍负责阻止负开度，过推目标只用于保持接触压力。
+- 2026-08-05 仪表盘增加 `GATES` 行：显示 `L-TCP/R-TCP` 是否真正参与当前 phase 完成判定；有抽屉开度门控时显示实时 opening/limit 和红绿状态。这样关闭阶段即使 TCP 误差为红色，也能明确看到它只是 monitor，真正阻塞量是抽屉关节开度。
+- 2026-08-05 根据实测 `drawer_open=0.029m`、左 TCP 仍需沿 `base_link +X` 前进约 `0.060m` 但抽屉速度为零，确认闭合手指会先碰到柜体前板。关闭改成接触形态匹配的两段：`right_retreat_and_start_close` 用闭手推到 `opening<=0.035m`；`left_open_hand` 原地张手并等待 1 秒；新增 `left_final_push_closed` 用开掌和 `0.030m` 过推目标继续推到实时 `opening<=0.005m`。两段 TCP 都只监控、不门控。初始开度随机范围由 `[0.00,0.05]m` 收敛为 `[0.02,0.05]m`，避免当前灵巧手抓把姿态在小于约 20mm 时缺少可靠机械净空；最终成功过滤仍使用 `abs(drawer_open)<0.040m`。
+- 2026-08-05 按用户要求撤销上述两段关闭，恢复 `[0.00,0.05]m` 初始随机范围和单段闭手关闭。进一步检查确认 `0.029m` 不是 joint limit 或随机化写入：Sektion authored lower limit 仍为 `0m`，真正让无接触滑行停止的是任务抽屉 actuator 的 `damping=2.0`。顶部抽屉现使用零 stiffness、damping、static/dynamic/viscous joint friction；`right_retreat_and_start_close` 以 `0.030m` 过推目标固定运行 360 个物理步，不再用 TCP 或抽屉距离门控。抽屉脱离手部接触后可继续靠惯性滑到 USD 的 `0m` 机械下限，最终写盘仍由 `abs(opening)<0.040m` 过滤。
+- 2026-08-05 对 `0.028929m` 固定停点完成隔离 A/B 验证并纠正上一条归因：将罐子移出、机器人保持无接触、抽屉从 `q=0.18m` 以 `-0.15m/s` 自由滑行，仍精确停在 `0.028929m`；将 joint lower limit 临时移到 `-0.03m` 也完全不改变停点，排除了关节限位、任务控制、IK、手、罐子和阻尼。Sektion 资产包围盒宽 `0.76377m`，两柜旧中心距仅 `0.766m`，净碰撞间隙只有 `2.23mm`，小于两侧 PhysX contact offset；主抽屉关闭进入副柜碰撞代理后被瞬间制停。保持任务主柜 `(0.80,+0.383,0.70)` 不变，仅将副柜移至 `(0.80,-0.400,0.70)`。同一隔离测试随后连续通过 `q=0.028757 -> 0.013757 -> 0.000000m`，在真实 `[0,0.4]m` 下限停止。关闭恢复单段、逻辑目标 `0m`、无 overtravel，并保留 `--drawer-coast-diagnostic` 作为回归检查。

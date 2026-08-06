@@ -104,6 +104,59 @@ Task-specific implementation should be isolated to:
 - success criteria
 - optional extra state/action dimensions
 
+For `drawer_insert_close`, final dataset acceptance is configured under
+`configs/tasks/drawer_insert_close.scripted.yaml -> success`. The recorder
+checks the live drawer joint and can pose before writing each episode. The can
+condition is only its root world height, strictly `0.80m < z < 1.15m`; X/Y are
+not checked. Failed attempts are reset and do not count toward `--num-episodes`.
+
+The drawer motion anchors are absolute opening states, not incremental motion
+commands. `drawer_handle_open` is the closed handle plus
+`opening_axis_base * target_open_m`; `drawer_handle_initial` uses the sampled
+initial opening. `left_drawer_open` pulls to the first anchor.
+`left_drawer_closed` supplies fallback IK metadata to the close/release phases.
+The single close target preserves measured TCP Y/Z/orientation, commands the
+logical `0m` closed position without overtravel, and runs for 360 physics steps. TCP errors and drawer
+opening are monitor-only. The hand then opens and waits one simulated second at
+its measured pose. `left_lift_after_release` moves the TCP `+0.07m` along base_link Z and the
+arm returns directly to joint-space home. There is no post-lift forward-push
+phase. The lift orientation is configured by
+`targets.left_lift_after_release.rpy` as an absolute RPY in base_link; its
+position remains current TCP plus `left_offset_from_current`.
+The independent final success filter accepts only episodes with
+`abs(drawer_open) < 0.040m` and can root world height `0.80m < z < 1.15m`.
+
+Interactive collection uses an in-place terminal dashboard. It intentionally
+uses Unicode `█/░` bars for the current scripted `TASK` and requested `DATA`
+episode progress. It reports episode/attempt, phase/step/time, four L/R TCP
+errors, episode wall and simulation time, buffered frame count, total collection
+time, estimated remaining time, completed attempts, accepted/failed counts, and
+acceptance rate. ETA is based on elapsed time per accepted episode. The
+`GATES` row distinguishes monitored TCP errors from actual completion gates
+and shows the live drawer opening threshold during physical close. Redirected
+output automatically uses a compact single line without ANSI clear-screen
+codes. Configure refresh rate, dimensions, and display thresholds under
+`logging.progress_dashboard`; these values do not alter control tolerances.
+The dashboard shows local `HH:MM:SS`; event lines use the complete local
+`YYYY-MM-DD HH:MM:SS` timestamp. Interactive event colors are cyan for task
+setup, blue for phases, yellow for retries, red for timeout/discard, and green
+for verification/acceptance/completion. ANSI color is disabled automatically
+for redirected logs unless forced with `--color-logs`.
+After can release, `right_retreat_and_start_close` keeps the measured right TCP
+orientation and moves it by `[-0.10, -0.20, 0.0]m` in base_link while the left
+hand performs the only close push. The phase has no TCP or drawer-distance
+gate. The Sektion joint retains its authored `[0.0,0.4]m` limits; randomization
+never rewrites them. Its top drawer actuator uses zero stiffness, damping, and
+joint friction so a released drawer can coast to the `0m` mechanical limit.
+The secondary cabinet is intentionally at `y=-0.400m`: the old `-0.383m`
+placement left only `2.23mm` between the two cabinets' collision bounds and
+made the primary drawer stop at `q=0.028929m` even with the robot and can absent.
+
+Any scripted phase may override global command smoothing with `target_alpha`
+and `max_joint_step`. The global defaults are now `0.32/0.050rad`; final
+`left_home` uses the moderately slower `0.20/0.025rad` to avoid a joint-space
+snap while reducing cycle time.
+
 Do not fork conversion/training unless the data contract changes. If the policy still controls `right_arm_7 + right_hand_6`, keep:
 
 ```text
@@ -243,9 +296,10 @@ Current preview placement:
 
 ```text
 primary drawer = (0.80, 0.383, 0.70)
-secondary drawer = (0.80, -0.383, 0.70)
+secondary drawer = (0.80, -0.400, 0.70)
 TomatoSoupCan root = (0.56, -0.08, 1.16)
 TomatoSoupCan orientation = rotate -90 deg about X
+TomatoSoupCan scale = (1.0, 0.90, 1.0)  # world-Z height is 90%; diameter unchanged
 ```
 
 The drawer USD is loaded without overriding its rigid-body settings. Do not set
@@ -410,9 +464,8 @@ dq = dq_task + (I - J#J) * k * (q_home - q)
 
 This keeps redundant motion closer to `DEFAULT_POSE`, which currently means
 elbows stay more outside/away from the body while the TCP task remains primary.
-The default is `--tcp-posture-gain 0.30`. Use lower values such as `0.10` or
-`0.05` while launching `run.sh sim` if the posture bias reduces TCP tracking
-near hard poses.
+The current scripted default is `--tcp-posture-gain 0.05`. Increase it only
+when additional posture bias is needed and Cartesian tracking remains stable.
 
 Current recommended drawer TCP debug launch:
 
@@ -432,9 +485,9 @@ bash run.sh sim \
   --show-tcp-frames \
   --show-drawer-handle-frame \
   --print-tcp-pose \
-  --tcp-posture-gain 0.30 \
+  --tcp-posture-gain 0.05 \
   --tcp-ik-damping 0.08 \
-  --tcp-max-joint-delta 0.025
+  --tcp-max-joint-delta 0.040
 ```
 
 The saved `assets/scenes/cabinet_task.usd` experiment was reverted because it
@@ -447,7 +500,7 @@ Scripted recording uses the same YAML controller as the visual sequence:
 conda activate env_isaaclab
 cd /home/zfy/smolVLA/s4_smolvla_isaaclab
 bash run.sh activate-task drawer_insert_close
-bash run.sh record-hdf5 --num-episodes 10 --no-render --episode-timeout-s 120
+bash run.sh record-hdf5 --num-episodes 10 --no-render
 ```
 
 The default HDF5 path is:

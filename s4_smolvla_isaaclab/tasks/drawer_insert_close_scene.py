@@ -33,13 +33,21 @@ YCB_OBJECTS = (
 DRAWER_YAW_180_QUAT = (0.0, 0.0, 0.0, 1.0)
 DRAWER_X = 0.80
 DRAWER_Z = 0.70
-DRAWER_Y_OFFSET = 0.383
+PRIMARY_DRAWER_Y = 0.383
+# The cabinet collision width is 0.76377 m. At the old symmetric placements
+# (+/-0.383), only 2.23 mm remained between the two independent collision
+# hierarchies, less than their combined PhysX contact offsets. Keep the task
+# cabinet fixed and move only the visual/secondary cabinet farther away.
+SECONDARY_DRAWER_Y = -0.400
 DRAWER_PLACEMENTS = (
-    ("DrawerCabinet", (DRAWER_X, DRAWER_Y_OFFSET, DRAWER_Z)),
-    ("DrawerCabinetSecondary", (DRAWER_X, -DRAWER_Y_OFFSET, DRAWER_Z)),
+    ("DrawerCabinet", (DRAWER_X, PRIMARY_DRAWER_Y, DRAWER_Z)),
+    ("DrawerCabinetSecondary", (DRAWER_X, SECONDARY_DRAWER_Y, DRAWER_Z)),
 )
 TOMATO_SOUP_CAN_POSITION = (0.54, -0.08, 1.16)
 OBJECT_ROTATE_X_NEG_90_QUAT = (0.7071068, -0.7071068, 0.0, 0.0)
+# The YCB can is authored Y-up and rotated -90 degrees about local X when
+# spawned. Its local Y scale therefore controls its height in world Z.
+TOMATO_SOUP_CAN_SCALE = (1.0, 0.90, 1.0)
 TOMATO_CAN_MASS_KG = 0.08
 TOMATO_CAN_STATIC_FRICTION = 2.2
 TOMATO_CAN_DYNAMIC_FRICTION = 1.8
@@ -207,6 +215,7 @@ def _object_placements() -> tuple[DrawerAssetPlacement, ...]:
             "TomatoSoupCan",
             YCB_OBJECTS[0],
             TOMATO_SOUP_CAN_POSITION,
+            scale=TOMATO_SOUP_CAN_SCALE,
             orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
         ),
     )
@@ -249,7 +258,8 @@ def _spawn_dynamic_usd_object(item: DrawerAssetPlacement) -> RigidObject:
     )
     print(
         f"[BOOT] configured graspable {item.name}: mass={TOMATO_CAN_MASS_KG:.3f}kg "
-        f"friction=({TOMATO_CAN_STATIC_FRICTION:.1f},{TOMATO_CAN_DYNAMIC_FRICTION:.1f})",
+        f"scale={item.scale} friction=({TOMATO_CAN_STATIC_FRICTION:.1f},"
+        f"{TOMATO_CAN_DYNAMIC_FRICTION:.1f})",
         flush=True,
     )
     return obj
@@ -271,7 +281,10 @@ def _spawn_primary_drawer() -> Articulation:
             "task_drawer": ImplicitActuatorCfg(
                 joint_names_expr=["drawer_top_joint"],
                 stiffness=0.0,
-                damping=2.0,
+                damping=0.0,
+                friction=0.0,
+                dynamic_friction=0.0,
+                viscous_friction=0.0,
                 effort_limit_sim=500.0,
             ),
             "unused_cabinet_joints": ImplicitActuatorCfg(
