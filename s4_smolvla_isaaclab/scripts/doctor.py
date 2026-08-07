@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Check local paths, environments and the active task contract."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from s4_pipeline.config import load_project_config, load_training_config
+from s4_pipeline.paths import PATH_DEFAULTS, REFERENCE_LEROBOT_DIR, active_task_id
+
+
+def _check(label: str, ok: bool, detail: str) -> bool:
+    print(f"[{'OK' if ok else 'FAIL'}] {label}: {detail}")
+    return ok
+
+
+def _run_python(prefix: Path, code: str) -> tuple[bool, str]:
+    python = prefix / "bin/python"
+    if not python.is_file():
+        return False, f"missing {python}"
+    proc = subprocess.run([str(python), "-c", code], text=True, capture_output=True)
+    output = (proc.stdout or proc.stderr).strip().splitlines()
+    return proc.returncode == 0, output[-1] if output else f"exit={proc.returncode}"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Validate S4 project dependencies and active-task contract.")
+    parser.add_argument("--strict", action="store_true", help="Also require dataset and checkpoint outputs.")
+    args = parser.parse_args()
+    cfg = load_project_config()
+    train = load_training_config()
+    print(f"S4 doctor | task={active_task_id()} | config={cfg.source}")
+    print("Resolved paths:")
+    for key in PATH_DEFAULTS:
+        print(f"  {key}={os.environ[key]}")
+
+    checks: list[bool] = []
+    checks.append(_check("IsaacLab", (Path(os.environ["ISAACLAB_ROOT"]) / "isaaclab.sh").is_file(), os.environ["ISAACLAB_ROOT"]))
+    checks.append(_check("Isaac assets", Path(os.environ["ISAAC_ASSET_ROOT"]).is_dir(), os.environ["ISAAC_ASSET_ROOT"]))
+    checks.append(_check("scene USD", cfg.scene.scene_usd.is_file(), str(cfg.scene.scene_usd)))
+    checks.append(_check("LeRobot checkout", (REFERENCE_LEROBOT_DIR / ".git").is_dir(), str(REFERENCE_LEROBOT_DIR)))
+    checks.append(_check("base model", Path(train["vlm_model_name"]).is_dir(), str(train["vlm_model_name"])))
+    checks.append(_check("26D contract", cfg.features.state_dim == cfg.features.action_dim == 26, f"state={cfg.features.state_dim} action={cfg.features.action_dim}"))
+    checks.append(_check("schema", cfg.dataset.schema_version == "s4_bimanual_v1", cfg.dataset.schema_version))
+    checks.append(_check("action semantics", cfg.dataset.action_semantics == "absolute_joint_target", cfg.dataset.action_semantics))
+    checks.append(_check("camera contract", len(cfg.features.camera_keys) == 3, ", ".join(cfg.features.camera_keys)))
+    checks.append(_check("frequency", cfg.dataset.fps == 20 and cfg.dataset.control_fps == 120, f"dataset={cfg.dataset.fps}Hz control={cfg.dataset.control_fps}Hz"))
+
+    conda = Path(os.environ.get("CONDA_EXE", str(Path.home() / "miniconda3/bin/conda")))
+    conda_root = conda.parents[1]
+    isaac_prefix = Path(os.environ.get("S4_ISAACLAB_PREFIX", conda_root / "envs" / os.environ["S4_ISAACLAB_ENV"]))
+    smol_prefix = Path(os.environ.get("S4_SMOLVLA_PREFIX", conda_root / "envs" / os.environ["S4_SMOLVLA_ENV"]))
+    ok, detail = _run_python(isaac_prefix, "import sys,torch,isaaclab; print(sys.version.split()[0], torch.__version__, isaaclab.__version__)")
+    checks.append(_check("env_isaaclab imports", ok, detail))
+    ok, detail = _run_python(smol_prefix, "import sys,torch,lerobot,av,pyarrow; print(sys.version.split()[0], torch.__version__, lerobot.__version__, av.__version__)")
+    checks.append(_check("smolvla imports", ok, detail))
+
+    dataset = cfg.dataset.lerobot_root / cfg.dataset.repo_id.split("/")[-1]
+    checkpoint = cfg.training.output_dir / "checkpoints/360000/pretrained_model"
+    if args.strict or dataset.exists():
+        checks.append(_check("LeRobotDataset", (dataset / "meta/info.json").is_file(), str(dataset)))
+    if args.strict or checkpoint.exists():
+        checks.append(_check("checkpoint", (checkpoint / "config.json").is_file(), str(checkpoint)))
+    if checkpoint.joinpath("config.json").is_file():
+        ckpt = json.loads(checkpoint.joinpath("config.json").read_text(encoding="utf-8"))
+        checks.append(_check("checkpoint action", ckpt["output_features"]["action"]["shape"] == [26], str(ckpt["output_features"]["action"]["shape"])))
+    if not all(checks):
+        raise SystemExit(1)
+    print("[OK] doctor completed")
+
+
+if __name__ == "__main__":
+    main()

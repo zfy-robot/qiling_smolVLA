@@ -22,9 +22,11 @@ TASK_SPEC = TaskModuleSpec(
         control_mode="right_only",
         state_dim=13,
         action_dim=13,
+        schema_version="s4_right_v1",
     ),
     scene_builder="s4_robot.simulation:build_scene",
     scripted_controller="tasks.right_blue_cylinder_plate_controller:RightBlueCylinderPlateController",
+    rollout_kind=None,
     notes=(
         "Current validated task. It records full debug HDF5 but converts only right_arm_7 + right_hand_6.",
         "Blue cylinder x/y is randomized during collection; red pill bottle is a fixed scene distractor.",

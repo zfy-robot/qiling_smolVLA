@@ -1,0 +1,21 @@
+name: smolvla
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - pytest
+  - pip:
+      - torch==2.7.0
+      - torchvision==0.22.0
+      - av==15.1.0
+      - numpy==2.2.6
+      - pyarrow==25.0.0
+      - pandas==3.0.5
+      - transformers==5.5.4
+      - safetensors==0.8.0
+      - datasets==5.0.0
+      - pyyaml==6.0.2
+# Install the external LeRobot checkout in editable mode after creating this
+# environment. See docs/INSTALLATION.md.

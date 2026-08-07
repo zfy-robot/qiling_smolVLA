@@ -7,6 +7,7 @@ dataset recorder will be added separately.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from s4_robot.simulation import (
 )
 
 
-ISAAC_ROOT = Path("/home/zfy/isaacsim_assets/Assets/Isaac/5.1")
+ISAAC_ROOT = Path(os.environ.get("ISAAC_ASSET_ROOT", Path.home() / "isaacsim_assets/Assets/Isaac/5.1"))
 DRAWER_USD = ISAAC_ROOT / "Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd"
 YCB_OBJECTS = (
     ISAAC_ROOT / "Isaac/Props/YCB/Axis_Aligned/005_tomato_soup_can.usd",

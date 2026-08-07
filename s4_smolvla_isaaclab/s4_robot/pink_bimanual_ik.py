@@ -24,8 +24,8 @@ DEFAULT_TCP_OFFSET_WRIST = np.array([0.0, 0.0, -0.10], dtype=np.float32)
 
 def _prefer_cmeel_pinocchio_path() -> None:
     """Put cmeel's Python path before ROS Humble's Python 3.10 Pinocchio path."""
-    cmeel = Path("/home/zfy/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/cmeel.prefix")
-    site = cmeel / "lib/python3.11/site-packages"
+    cmeel = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages" / "cmeel.prefix"
+    site = cmeel / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     if site.is_dir():
         site_s = str(site)
         if site_s in sys.path:

@@ -1,11 +1,14 @@
 {
   "task_id": "drawer_insert_close",
+  "schema_version": "s4_bimanual_v1",
   "dataset": {
     "repo_id": "local/s4_drawer_insert_close_v0",
-    "staging_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/staging/s4_drawer_insert_close_v0",
-    "root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/s4_drawer_insert_close_v0",
-    "lerobot_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data",
+    "staging_root": "${S4_DATA_ROOT}/staging/s4_drawer_insert_close_v0",
+    "root": "${S4_DATA_ROOT}/s4_drawer_insert_close_v0",
+    "lerobot_root": "${S4_DATA_ROOT}/lerobot_data",
     "fps": 20,
+    "control_fps": 120,
+    "action_semantics": "absolute_joint_target",
     "task": "Open the drawer, place the object inside, and close the drawer.",
     "control_mode": "bimanual",
     "camera_paths": [
@@ -15,7 +18,7 @@
     ]
   },
   "scene": {
-    "scene_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd",
+    "scene_usd": "${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse.usd",
     "table_usd": null,
     "table_top_z": 1.0
   },
@@ -37,16 +40,19 @@
     },
     "observation.images.chest_front_rgb": {
       "dtype": "video",
+      "color_format": "RGB",
       "shape": [480, 680, 3],
       "names": ["height", "width", "channels"]
     },
     "observation.images.left_wrist_rgb": {
       "dtype": "video",
+      "color_format": "RGB",
       "shape": [480, 680, 3],
       "names": ["height", "width", "channels"]
     },
     "observation.images.right_wrist_rgb": {
       "dtype": "video",
+      "color_format": "RGB",
       "shape": [480, 680, 3],
       "names": ["height", "width", "channels"]
     }
@@ -55,7 +61,7 @@
     "env_name": "s4_drawer_insert_close",
     "policy_type": "smolvla",
     "pretrained_policy": "lerobot/smolvla_base",
-    "output_dir": "/home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v0",
+    "output_dir": "${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v0",
     "target_episodes_first_pass": 20,
     "target_episodes_training_pass": 100
   }

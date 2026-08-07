@@ -3,9 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-CONFIG="${1:-configs/smolvla_s4_bimanual.yaml}"
+CONFIG="${1:-}"
 if [[ "${1:-}" == "--"* || -z "${1:-}" ]]; then
-    CONFIG="configs/smolvla_s4_bimanual.yaml"
+    CONFIG="$(python3 -c 'from s4_pipeline.paths import SMOLVLA_CONFIG_PATH; print(SMOLVLA_CONFIG_PATH)')"
 else
     shift
 fi
@@ -17,6 +17,10 @@ BATCH_SIZE_OVERRIDE=""
 SAVE_FREQ_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -h|--help)
+            echo "Usage: bash run.sh train [CONFIG] [--resume|--no-resume] [--overwrite-output] [--steps N] [--batch-size N] [--save-freq N]"
+            exit 0
+            ;;
         --resume)
             RESUME_OVERRIDE="true"
             shift
@@ -46,8 +50,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Unknown train-smolvla option: $1" >&2
-            echo "Usage: bash run.sh train-smolvla [config] [--resume|--no-resume] [--overwrite-output] [--steps N] [--batch-size N] [--save-freq N]" >&2
+            echo "Unknown train option: $1" >&2
+            echo "Usage: bash run.sh train [config] [--resume|--no-resume] [--overwrite-output] [--steps N] [--batch-size N] [--save-freq N]" >&2
             exit 2
             ;;
     esac
@@ -58,17 +62,24 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
-DATASET=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['dataset'])")
-DATASET_ROOT=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['dataset_root'])")
-OUTPUT_DIR=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")
-STEPS=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['steps'])")
-BATCH_SIZE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['batch_size'])")
-NUM_WORKERS=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG')).get('num_workers', 0))")
-DEVICE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG')).get('device', 'cuda'))")
-CHUNK_SIZE=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['chunk_size'])")
-MAX_STATE_DIM=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['max_state_dim'])")
-MAX_ACTION_DIM=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['max_action_dim'])")
-SAVE_FREQ=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['save_freq'])")
+cfg() { python3 scripts/config_value.py training "$1" --config "$CONFIG"; }
+DATASET=$(cfg dataset)
+DATASET_ROOT=$(cfg dataset_root)
+OUTPUT_DIR=$(cfg output_dir)
+STEPS=$(cfg steps)
+BATCH_SIZE=$(cfg batch_size)
+NUM_WORKERS=$(cfg num_workers)
+DEVICE=$(cfg device)
+CHUNK_SIZE=$(cfg chunk_size)
+MAX_STATE_DIM=$(cfg max_state_dim)
+MAX_ACTION_DIM=$(cfg max_action_dim)
+SAVE_FREQ=$(cfg save_freq)
+N_OBS_STEPS=$(cfg n_obs_steps)
+RESIZE_IMAGES=$(cfg resize_imgs_with_padding)
+FREEZE_VISION=$(cfg freeze_vision_encoder)
+TRAIN_EXPERT=$(cfg train_expert_only)
+TRAIN_STATE_PROJ=$(cfg train_state_proj)
+LOAD_VLM=$(cfg load_vlm_weights)
 if [ -n "$STEPS_OVERRIDE" ]; then
     STEPS="$STEPS_OVERRIDE"
 fi
@@ -78,13 +89,14 @@ fi
 if [ -n "$SAVE_FREQ_OVERRIDE" ]; then
     SAVE_FREQ="$SAVE_FREQ_OVERRIDE"
 fi
-RESUME=$(python3 -c "import yaml; print(str(yaml.safe_load(open('$CONFIG')).get('resume', False)).lower())")
+RESUME=$(cfg resume)
 if [ -n "$RESUME_OVERRIDE" ]; then
     RESUME="$RESUME_OVERRIDE"
 fi
-VLM_PATH=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['vlm_model_name'])")
-OPT_LR=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['optimizer_lr'])")
-OPT_WD=$(python3 -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['optimizer_weight_decay'])")
+VLM_PATH=$(cfg vlm_model_name)
+OPT_LR=$(cfg optimizer_lr)
+OPT_WD=$(cfg optimizer_weight_decay)
+OPT_CLIP=$(cfg optimizer_grad_clip_norm)
 
 echo "========================================"
 echo "  Local S4 SmolVLA training"
@@ -99,7 +111,7 @@ echo "========================================"
 
 if [ ! -d "$DATASET_ROOT/$DATASET" ]; then
     echo "Dataset does not exist yet: $DATASET_ROOT/$DATASET" >&2
-    echo "Run: bash run.sh convert-lerobot --root-path <hdf5 file or dir>" >&2
+    echo "Run: bash run.sh convert --root-path <hdf5 file or dir>" >&2
     exit 2
 fi
 
@@ -116,7 +128,7 @@ fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export HUGGINGFACE_HUB_OFFLINE="${HUGGINGFACE_HUB_OFFLINE:-1}"
-PROJECT_CACHE="${PROJECT_CACHE:-/home/zfy/smolVLA/s4_smolvla_isaaclab/.cache}"
+PROJECT_CACHE="${S4_CACHE_ROOT:-$PWD/.cache}"
 export HF_HOME="${HF_HOME:-$PROJECT_CACHE/huggingface}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
@@ -170,16 +182,16 @@ lerobot-train \
     --policy.device="$DEVICE" \
     --policy.chunk_size="$CHUNK_SIZE" \
     --policy.n_action_steps="$CHUNK_SIZE" \
-    --policy.n_obs_steps=1 \
+    --policy.n_obs_steps="$N_OBS_STEPS" \
     --policy.max_state_dim="$MAX_STATE_DIM" \
     --policy.max_action_dim="$MAX_ACTION_DIM" \
-    --policy.resize_imgs_with_padding="[512,512]" \
-    --policy.freeze_vision_encoder=true \
-    --policy.train_expert_only=true \
-    --policy.train_state_proj=true \
-    --policy.load_vlm_weights=true \
+    --policy.resize_imgs_with_padding="$RESIZE_IMAGES" \
+    --policy.freeze_vision_encoder="$FREEZE_VISION" \
+    --policy.train_expert_only="$TRAIN_EXPERT" \
+    --policy.train_state_proj="$TRAIN_STATE_PROJ" \
+    --policy.load_vlm_weights="$LOAD_VLM" \
     --policy.vlm_model_name="$VLM_PATH" \
     --policy.optimizer_lr="$OPT_LR" \
     --policy.optimizer_weight_decay="$OPT_WD" \
-    --policy.optimizer_grad_clip_norm=10.0 \
+    --policy.optimizer_grad_clip_norm="$OPT_CLIP" \
     --policy.push_to_hub=false

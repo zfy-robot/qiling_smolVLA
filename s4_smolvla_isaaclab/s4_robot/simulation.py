@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,7 +27,7 @@ from .s4_robot_cfg import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ISAAC_ASSET_ROOT = Path("/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac")
+ISAAC_ASSET_ROOT = Path(os.environ.get("ISAAC_ASSET_ROOT", Path.home() / "isaacsim_assets/Assets/Isaac/5.1")) / "Isaac"
 DEFAULT_SCENE_USD = ISAAC_ASSET_ROOT / "Environments" / "Simple_Warehouse" / "warehouse.usd"
 DEFAULT_TABLE_USD = ISAAC_ASSET_ROOT / "Props" / "PackingTable" / "packing_table.usd"
 PILL_BOTTLE_USDZ = PROJECT_ROOT / "assets" / "scenes" / "Pill_Bottle.usdz"

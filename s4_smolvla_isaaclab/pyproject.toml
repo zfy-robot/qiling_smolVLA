@@ -1,0 +1,14 @@
+[project]
+name = "s4-smolvla-isaaclab"
+version = "0.1.0"
+description = "Reproducible IsaacLab, LeRobot and SmolVLA manipulation tutorial"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

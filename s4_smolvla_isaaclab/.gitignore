@@ -4,6 +4,8 @@ __pycache__/
 
 .cache/
 .pytest_cache/
+.env
+.local/
 
 *.log
 *.tmp
@@ -15,3 +17,7 @@ outputs/
 *.hdf5
 *.mp4
 *.avi
+*.parquet
+
+# ai agent read files
+docs/knowledge_base/

@@ -1,0 +1,17 @@
+isaac_assets:
+  root: ${ISAAC_ASSET_ROOT}
+  version: "5.1"
+  required:
+    - Isaac/Environments/Simple_Warehouse/warehouse.usd
+    - Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd
+    - Isaac/Props/YCB/Axis_Aligned/005_tomato_soup_can.usd
+robot:
+  root: ${S4_PROJECT_ROOT}/assets/my_robot
+  required:
+    - urdf/s4_40DOF_fullbody.urdf
+base_model:
+  root: ${SMOLVLA_MODEL_ROOT}/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+  source: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+external_repositories:
+  isaaclab: ${ISAACLAB_ROOT}
+  lerobot: ${LEROBOT_ROOT}

@@ -22,9 +22,12 @@ TASK_SPEC = TaskModuleSpec(
         control_mode="bimanual",
         state_dim=26,
         action_dim=26,
+        schema_version="s4_bimanual_v1",
     ),
     scene_builder="tasks.drawer_insert_close_scene:build_scene",
     scripted_controller="tasks.drawer_insert_close_controller:DrawerInsertCloseController",
+    scripted_config=PROJECT_ROOT / "configs" / "tasks" / "drawer_insert_close.scripted.yaml",
+    rollout_kind="drawer_insert_close",
     notes=(
         "Scripted data path: YAML phases -> bimanual TCP IK -> 26D action/state HDF5 -> LeRobot.",
         "Observation.state is left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6.",

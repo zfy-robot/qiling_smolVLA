@@ -18,6 +18,7 @@ class TaskDataContract:
     control_mode: str
     state_dim: int
     action_dim: int
+    schema_version: str
     camera_key: str = "observation.images.chest_front_rgb"
 
 
@@ -33,5 +34,6 @@ class TaskModuleSpec:
     data: TaskDataContract
     scene_builder: str
     scripted_controller: str
+    scripted_config: Path | None = None
+    rollout_kind: str | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
-

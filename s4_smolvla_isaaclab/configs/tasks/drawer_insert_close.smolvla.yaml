@@ -5,15 +5,15 @@ task: drawer_insert_close
 robot: S4-UpperBody
 
 dataset: s4_drawer_insert_close_v0
-dataset_root: /home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data
-output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v0
+dataset_root: ${S4_DATA_ROOT}/lerobot_data
+output_dir: ${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v0
 
-steps: 20000
-batch_size: 4
-num_workers: 0
+steps: 500000
+batch_size: 16
+num_workers: 30
 device: cuda
 seed: 42
-save_freq: 2000
+save_freq: 20000
 resume: false
 
 chunk_size: 50
@@ -26,9 +26,8 @@ freeze_vision_encoder: true
 train_expert_only: true
 train_state_proj: true
 load_vlm_weights: true
-vlm_model_name: /home/zfy/smolVLA/s4_smolvla_isaaclab/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+vlm_model_name: ${SMOLVLA_MODEL_ROOT}/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
 
 optimizer_lr: 1.0e-5
 optimizer_weight_decay: 0.0001
 optimizer_grad_clip_norm: 10.0
-

@@ -1,17 +1,20 @@
 {
   "task_id": "right_blue_cylinder_plate",
+  "schema_version": "s4_right_v1",
   "dataset": {
     "repo_id": "local/s4_right_blue_cylinder_plate_v1",
-    "staging_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/staging/s4_right_blue_cylinder_plate_v1",
-    "root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/s4_right_blue_cylinder_plate_v1",
-    "lerobot_root": "/home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data",
+    "staging_root": "${S4_DATA_ROOT}/staging/s4_right_blue_cylinder_plate_v1",
+    "root": "${S4_DATA_ROOT}/s4_right_blue_cylinder_plate_v1",
+    "lerobot_root": "${S4_DATA_ROOT}/lerobot_data",
     "fps": 20,
+    "control_fps": 120,
+    "action_semantics": "absolute_joint_target",
     "task": "Use the right hand to put the blue cylinder into the plate.",
     "control_mode": "right_only"
   },
   "scene": {
-    "scene_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd",
-    "table_usd": "/home/zfy/isaacsim_assets/Assets/Isaac/5.1/Isaac/Props/PackingTable/packing_table.usd",
+    "scene_usd": "${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse.usd",
+    "table_usd": "${ISAAC_ASSET_ROOT}/Isaac/Props/PackingTable/packing_table.usd",
     "table_top_z": 1.0
   },
   "features": {
@@ -32,6 +35,7 @@
     },
     "observation.images.chest_front_rgb": {
       "dtype": "video",
+      "color_format": "RGB",
       "shape": [480, 680, 3],
       "names": ["height", "width", "channels"]
     }
@@ -40,9 +44,8 @@
     "env_name": "s4_right_blue_cylinder_plate",
     "policy_type": "smolvla",
     "pretrained_policy": "lerobot/smolvla_base",
-    "output_dir": "/home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_s4_right_v1",
+    "output_dir": "${S4_OUTPUT_ROOT}/train/smolvla_s4_right_v1",
     "target_episodes_first_pass": 20,
     "target_episodes_training_pass": 100
   }
 }
-

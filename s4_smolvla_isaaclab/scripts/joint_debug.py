@@ -1,7 +1,20 @@
-#!/usr/bin/env python3
-"""Semantic wrapper for IsaacLab joint diagnostics."""
+#!/usr/bin/env python
+"""Continuous S4 joint-angle debug entry.
 
-from _legacy_entry import run_legacy_script
+This is a thin wrapper around ``record_dataset.py --continuous`` so
+the run.sh command has a clear name.
+"""
 
-run_legacy_script("03_joint_debug.py")
+from __future__ import annotations
 
+import runpy
+import sys
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).with_name("record_dataset.py")
+
+if "--keyboard-jog" not in sys.argv and "--headless" not in sys.argv:
+    sys.argv.append("--keyboard-jog")
+
+runpy.run_path(str(SCRIPT), run_name="__main__")
