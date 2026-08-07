@@ -17,17 +17,23 @@ robot.get_observation()
 ## Local IsaacLab Flow
 
 ```text
-IsaacLab robot joint state + chest RGB
+IsaacLab 26D robot state + chest/left-wrist/right-wrist RGB
 -> prepare_observation_for_inference
 -> policy_preprocessor
--> SmolVLAPolicy.select_action
+-> SmolVLAPolicy.predict_action_chunk
 -> policy_postprocessor
--> task action
+-> adjacent-chunk cross-fade and phase transition blend
+-> 20 Hz action target
+-> linear interpolation at 120 Hz
 -> s4_robot/control_mapping.py
 -> IsaacLab joint position target
 ```
 
-The final mapping step is local because the S4 IsaacLab robot is not a LeRobot built-in hardware class. The current v1 task trains a right-only 13D policy action (`right_arm_7 + right_hand_6`). Online eval expands that 13D output into the internal 26D active action buffer and only overwrites the right side.
+The final mapping step is local because the S4 IsaacLab robot is not a LeRobot
+built-in hardware class. The drawer task uses the full 26D bimanual contract.
+The policy server stays in
+the `smolvla` environment and calls upstream LeRobot APIs; smoothing, phase
+gating, interpolation, action mapping, and IsaacLab actuation remain local.
 
 ## Data Contract
 
@@ -47,14 +53,14 @@ obs/left_wrist_rgb
 obs/right_wrist_rgb
 ```
 
-Current LeRobot features:
+Current drawer-task LeRobot features:
 
 ```text
-observation.state: 13D right_arm_7 + right_hand_6
+observation.state: 26D left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
 observation.images.chest_front_rgb: 480x680 RGB video
 observation.images.left_wrist_rgb: 480x680 RGB video
 observation.images.right_wrist_rgb: 480x680 RGB video
-action: 13D right_arm_7 + right_hand_6
+action: 26D in the same order as observation.state
 ```
 
 The wrist camera streams are optional for older HDF5 files, but new scene
@@ -62,19 +68,12 @@ builders attach them under `left_wrist_yaw_link` and `right_wrist_yaw_link`.
 Their default mount offset is defined in `s4_robot/simulation.py` and should be
 tuned per robot/hand geometry before collecting final data.
 
-Raw HDF5 still stores full joint positions and full 26D active actions for debugging. Conversion defaults to `control_mode=right_only` and slices `processed_actions[13:26]` plus `obs/s4_active_joint_pos[13:26]`.
+Raw HDF5 stores full joint positions and full 26D active actions for debugging.
+The active drawer-task conversion keeps all 26 state/action dimensions.
 
 ## Action Layout
 
-```text
-LeRobot v1 right-only action:
-
-```text
-00:07 right_arm
-07:13 right_hand
-```
-
-Internal/debug 26D active action:
+LeRobot and internal/debug 26D active action:
 
 ```text
 00:07 left_arm
@@ -84,6 +83,9 @@ Internal/debug 26D active action:
 ```
 
 Each hand exposes six policy controls. `control_mapping.py` expands those controls into active and mimic URDF hand joints.
+
+See `docs/ROLLOUT_DIAGNOSTICS.md` for the online action path, generated
+diagnostics, A/B commands, and interpretation rules.
 
 ## Environment Split
 

@@ -123,6 +123,36 @@ export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE"
 
+if [ "$RESUME" = true ]; then
+    RESUME_CHECKPOINT="$OUTPUT_DIR/checkpoints/last"
+    RESUME_CONFIG="$RESUME_CHECKPOINT/pretrained_model/train_config.json"
+    RESUME_STATE="$RESUME_CHECKPOINT/training_state/training_step.json"
+    if [ ! -f "$RESUME_CONFIG" ] || [ ! -f "$RESUME_STATE" ]; then
+        echo "Cannot resume: no complete checkpoint found under $RESUME_CHECKPOINT" >&2
+        echo "A resumable checkpoint must contain pretrained_model/train_config.json and training_state/." >&2
+        echo "Available checkpoints:" >&2
+        find "$OUTPUT_DIR/checkpoints" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' 2>/dev/null | sort >&2 || true
+        exit 2
+    fi
+    RESUME_STEP=$(python3 -c "import json; print(json.load(open('$RESUME_STATE'))['step'])")
+    echo "[RESUME] checkpoint: $RESUME_CHECKPOINT"
+    echo "[RESUME] saved step: $RESUME_STEP; target total steps: $STEPS"
+    if [ "$STEPS" -le "$RESUME_STEP" ]; then
+        echo "Resume target --steps ($STEPS) must be greater than saved step ($RESUME_STEP)." >&2
+        exit 2
+    fi
+    exec lerobot-train \
+        --config_path="$RESUME_CONFIG" \
+        --resume=true \
+        --output_dir="$OUTPUT_DIR" \
+        --steps="$STEPS" \
+        --batch_size="$BATCH_SIZE" \
+        --save_freq="$SAVE_FREQ" \
+        --num_workers="$NUM_WORKERS" \
+        --persistent_workers=false \
+        --dataset.video_backend=pyav
+fi
+
 lerobot-train \
     --policy.type=smolvla \
     --dataset.repo_id="$DATASET" \

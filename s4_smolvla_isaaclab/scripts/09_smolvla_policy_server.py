@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -41,19 +42,101 @@ def _resolve_checkpoint(path: str) -> Path:
     return ckpt
 
 
-def _image_array_from_request(request: dict[str, Any]) -> np.ndarray:
-    shape = tuple(int(x) for x in request["image_shape"])
-    raw = base64.b64decode(request["image_b64"])
+def _image_array_from_payload(payload: dict[str, Any]) -> np.ndarray:
+    shape = tuple(int(x) for x in payload["shape"])
+    raw = base64.b64decode(payload["b64"])
     image = np.frombuffer(raw, dtype=np.uint8).reshape(shape)
     if image.shape[-1] > 3:
         image = image[..., :3]
     return image.copy()
 
 
+def _load_phase_schedule(dataset_root: Path) -> list[dict[str, Any]]:
+    """Recover the common phase order and median duration from the dataset."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tasks_path = dataset_root / "meta" / "tasks.parquet"
+    data_paths = sorted((dataset_root / "data").rglob("*.parquet"))
+    if not tasks_path.is_file() or not data_paths:
+        raise FileNotFoundError(f"Incomplete LeRobot dataset at {dataset_root}")
+
+    tasks_table = pq.read_table(tasks_path, columns=["task_index", "task"])
+    task_by_index = {
+        int(index): str(task)
+        for index, task in zip(
+            tasks_table.column("task_index").to_pylist(),
+            tasks_table.column("task").to_pylist(),
+            strict=True,
+        )
+    }
+    frame_table = pa.concat_tables(
+        [pq.read_table(path, columns=["episode_index", "frame_index", "task_index"]) for path in data_paths]
+    )
+    rows = sorted(
+        zip(
+            frame_table.column("episode_index").to_pylist(),
+            frame_table.column("frame_index").to_pylist(),
+            frame_table.column("task_index").to_pylist(),
+            strict=True,
+        ),
+        key=lambda row: (int(row[0]), int(row[1])),
+    )
+
+    runs_by_episode: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    current_episode: int | None = None
+    current_task: int | None = None
+    current_length = 0
+    for episode_raw, _, task_raw in rows:
+        episode = int(episode_raw)
+        task = int(task_raw)
+        if episode != current_episode or task != current_task:
+            if current_episode is not None and current_task is not None:
+                runs_by_episode[current_episode].append((current_task, current_length))
+            current_episode = episode
+            current_task = task
+            current_length = 1
+        else:
+            current_length += 1
+    if current_episode is not None and current_task is not None:
+        runs_by_episode[current_episode].append((current_task, current_length))
+    if not runs_by_episode:
+        raise RuntimeError(f"No phase rows found in {dataset_root}")
+
+    orders = Counter(tuple(task for task, _ in runs) for runs in runs_by_episode.values())
+    common_order, matching_episodes = orders.most_common(1)[0]
+    durations: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for runs in runs_by_episode.values():
+        if tuple(task for task, _ in runs) != common_order:
+            continue
+        for phase_index, (task, length) in enumerate(runs):
+            durations[(phase_index, task)].append(length)
+
+    schedule = []
+    for phase_index, task_index in enumerate(common_order):
+        frames = max(int(np.median(durations[(phase_index, task_index)])), 1)
+        schedule.append(
+            {
+                "phase_index": phase_index,
+                "task_index": task_index,
+                "task": task_by_index[task_index],
+                "frames": frames,
+            }
+        )
+    print(
+        f"[SERVER] phase schedule episodes={matching_episodes}/{len(runs_by_episode)} "
+        f"phases={len(schedule)} frames={sum(item['frames'] for item in schedule)}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return schedule
+
+
 def main() -> None:
     _set_local_hf_cache()
     parser = argparse.ArgumentParser(description="Serve SmolVLA actions over JSON lines.")
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -86,7 +169,11 @@ def main() -> None:
     image_keys = [k for k, v in policy.config.input_features.items() if v.type.name == "VISUAL"]
     if not image_keys:
         raise RuntimeError("Policy checkpoint has no visual input feature.")
-    image_key = image_keys[0]
+    expected_image_shapes = {
+        key: list(policy.config.input_features[key].shape)
+        for key in image_keys
+    }
+    phase_schedule = _load_phase_schedule(Path(args.dataset_root).expanduser().resolve())
     preprocessor, postprocessor = make_pre_post_processors(
         policy.config,
         pretrained_path=str(ckpt),
@@ -94,8 +181,21 @@ def main() -> None:
         postprocessor_overrides={"device_processor": {"device": "cpu"}},
     )
 
-    print(f"[SERVER] ready image_key={image_key}", file=sys.stderr, flush=True)
-    print(json.dumps({"status": "ready", "image_key": image_key, "device": str(device)}), flush=True)
+    print(f"[SERVER] ready image_keys={image_keys}", file=sys.stderr, flush=True)
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "image_keys": image_keys,
+                "image_shapes": expected_image_shapes,
+                "state_dim": int(policy.config.input_features["observation.state"].shape[0]),
+                "action_dim": int(policy.config.output_features["action"].shape[0]),
+                "device": str(device),
+                "phase_schedule": phase_schedule,
+            }
+        ),
+        flush=True,
+    )
 
     for line in sys.stdin:
         try:
@@ -105,12 +205,19 @@ def main() -> None:
                 print(json.dumps({"status": "reset"}), flush=True)
                 continue
             state = np.asarray(request["state"], dtype=np.float32)
-            task = str(request.get("task", "Put the blue cylinder into the plate."))
-            image = _image_array_from_request(request)
-            observation = {
-                "observation.state": state,
-                image_key: image,
-            }
+            task = str(request["task"])
+            image_payloads = request.get("images", {})
+            missing = [key for key in image_keys if key not in image_payloads]
+            extra = [key for key in image_payloads if key not in image_keys]
+            if missing or extra:
+                raise ValueError(f"Visual feature mismatch: missing={missing} extra={extra}")
+            observation = {"observation.state": state}
+            for key in image_keys:
+                image = _image_array_from_payload(image_payloads[key])
+                expected_hwc = tuple(expected_image_shapes[key][1:]) + (expected_image_shapes[key][0],)
+                if image.shape != expected_hwc:
+                    raise ValueError(f"{key} shape={image.shape}, expected={expected_hwc}")
+                observation[key] = image
             with torch.inference_mode():
                 with contextlib.redirect_stdout(sys.stderr):
                     batch = prepare_observation_for_inference(
@@ -120,10 +227,17 @@ def main() -> None:
                         robot_type="S4-Bimanual",
                     )
                     batch = preprocessor(batch)
-                    action = policy.select_action(batch)
-                    action = postprocessor(action)
-                    action = action.squeeze(0).detach().cpu().numpy().astype(float).tolist()
-            print(json.dumps({"action": action}), flush=True)
+                    if request.get("mode") == "chunk":
+                        action_chunk = policy.predict_action_chunk(batch)
+                        action_chunk = postprocessor(action_chunk)
+                        action_chunk = action_chunk.squeeze(0).detach().cpu().numpy().astype(float).tolist()
+                        response = {"action_chunk": action_chunk}
+                    else:
+                        action = policy.select_action(batch)
+                        action = postprocessor(action)
+                        action = action.squeeze(0).detach().cpu().numpy().astype(float).tolist()
+                        response = {"action": action}
+            print(json.dumps(response), flush=True)
         except Exception as exc:  # Keep server alive long enough for IsaacLab to report the error.
             print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), flush=True)
 

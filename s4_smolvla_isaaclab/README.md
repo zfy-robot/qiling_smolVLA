@@ -747,6 +747,24 @@ bash run.sh train-smolvla --overwrite-output --steps 50000 --batch-size 8 --save
 bash run.sh train-smolvla --resume
 ```
 
+`--resume` restores the latest complete checkpoint through
+`checkpoints/last`. It restores model weights, optimizer and scheduler state,
+the saved training step, RNG state, and the dataset sampling offset. Resume is
+only possible after at least one checkpoint has been written. If training is
+interrupted between checkpoints, work after the latest saved checkpoint is
+repeated.
+
+The configured `steps` value is the final target step, not the number of extra
+steps. For example, to continue a checkpoint saved at step 20000 until step
+100000:
+
+```bash
+bash run.sh train-smolvla --resume --steps 100000
+```
+
+Do not combine `--resume` with `--overwrite-output`; the latter deletes the
+checkpoint that resume needs.
+
 Default output:
 
 ```text
@@ -785,27 +803,78 @@ This visualizes policy action vs expert action on recorded frames. It is not an 
 
 ### 9. Online IsaacLab Rollout
 
-Default online video is `.avi` with MJPG because OpenCV-generated `.mp4` was not reliably playable on this machine.
+The rollout uses the same interface as the current drawer dataset and checkpoint:
+
+- `observation.state`: 26D, ordered as left arm 7 + left hand 6 + right arm 7 + right hand 6.
+- Visual observations: chest, left wrist, and right wrist RGB at `680x480`.
+- `action`: 26D absolute joint targets in the same order as the state.
+- Language: the 16 per-phase task descriptions stored in the LeRobot dataset.
+
+The phase order and median phase durations are read from the converted dataset.
+The SmolVLA action queue is reset at each phase boundary so the new language
+instruction takes effect immediately. Rollout requests the upstream
+`predict_action_chunk()` output without modifying LeRobot. By default it
+replans every 25 policy frames and cross-fades only the previous/new chunks,
+blends the first 8 frames at a language/phase transition, and linearly
+interpolates each 20 Hz target over the six 120 Hz physics steps. With
+`--steps 0`, one complete rollout uses the dataset-derived schedule (about 23
+seconds of simulated task time, plus bounded state-gate extensions). The phase
+durations stay equal to the training data so smoothing does not change the
+language/action timing distribution.
+
+Run the current 360K checkpoint with the Isaac Sim window visible:
 
 ```bash
 conda activate env_isaaclab
 cd /home/zfy/smolVLA/s4_smolvla_isaaclab
 bash run.sh eval-smolvla \
-  --steps 840 \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --steps 0 \
   --policy-device cuda \
-  --policy-every-n-steps 0 \
-  --output-video /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/eval/smolvla_rollout.avi
+  --output-video outputs/eval/smolvla_drawer_rollout_360k.avi
 ```
 
-The rollout log prints:
+To run without a GUI while still rendering all policy cameras and the rollout video:
+
+```bash
+bash run.sh eval-smolvla \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --steps 0 \
+  --policy-device cuda \
+  --headless \
+  --no-randomize-task \
+  --output-video outputs/eval/smolvla_drawer_rollout_360k_optimized.avi
+```
+
+The default video is an MJPG `.avi` containing chest, left-wrist, and
+right-wrist views side by side. Use `--video-layout chest` for a smaller
+chest-only video. `--no-randomize-task` fixes the can and drawer at their
+nominal reset poses for a deterministic first test. The final log reports the
+same drawer-opening and can-height success checks used by data collection.
+
+Useful rollout controls are:
 
 ```text
-raw_policy RH=[...]
-desired RH=[...]
-RH_tracking cmd=[...] actual=[...] max_err=...
+--chunk-replan-frames 25           # request a fresh 50-step chunk every 1.25 s
+--chunk-overlap-blend-frames 5     # cross-fade only adjacent chunks for 0.25 s
+--phase-transition-blend-frames 8  # blend old/new phase commands for 0.4 s
+--phase-state-gating               # arm/open-hand/drawer conditions at boundaries
+--phase-max-extension-frames 20    # bounded extra wait, at most 1 s per phase
+--phase-hand-close-min-progress 0.10 # contact-safe minimum closure evidence
 ```
 
-Use this to distinguish policy-output problems from hand actuator/mapping problems.
+Each rollout also writes `<video_stem>_actions.csv` and
+`<video_stem>_actions.png`. The CSV records the raw chunk prediction, overlap-
+fused target, bounded command, and measured 26D joint state at 20 Hz. The
+plot shows raw frame-to-frame jumps, total smoothing correction, and command
+endpoint tracking error for LA/LH/RA/RH. Each command is compared with the
+actual state measured after its six 120 Hz interpolation steps. Grasp-close phases intentionally do not require
+the hand to reach its free-space close target because contact with the handle
+or can should stop the fingers early. Actuator stiffness and damping are left
+unchanged while evaluating these policy-interface changes.
+
+完整诊断流程、CSV 字段解释、问题定位表和逐项 A/B 命令见
+[`docs/ROLLOUT_DIAGNOSTICS.md`](docs/ROLLOUT_DIAGNOSTICS.md)。
 
 ## Cleaning Generated Files
 
@@ -832,11 +901,10 @@ collection records every 6 physics steps, so HDF5 observations/actions and the
 converted LeRobotDataset run at `20 Hz` (`0.05 s` per sample). The task dataset
 configs also declare `fps: 20`.
 
-Online rollout keeps physics at `120 Hz` and, by default, queries/advances the
-policy every 6 steps (`20 Hz`). Its diagnostic video captures every 2 physics
-steps and is encoded at `60 fps`; this is a denser video of the same simulated
-time, not a 3x speed-up. Offline policy visualization and converted dataset
-videos are encoded at `20 fps`.
+Online rollout keeps physics at `120 Hz` and advances the policy time axis every
+6 steps (`20 Hz`). It linearly interpolates between adjacent policy targets at
+120 Hz. Its diagnostic video also defaults to every 6 physics steps and is
+encoded at `20 fps`, matching simulated time and the converted dataset videos.
 
 These rates describe simulated time. Collection is not wall-clock paced:
 headless Isaac Sim may run faster than real time and rendered collection may

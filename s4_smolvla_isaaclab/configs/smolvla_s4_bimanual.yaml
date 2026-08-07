@@ -8,12 +8,12 @@ dataset: s4_drawer_insert_close_v0
 dataset_root: /home/zfy/smolVLA/s4_smolvla_isaaclab/datasets/lerobot_data
 output_dir: /home/zfy/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v0
 
-steps: 20000
-batch_size: 4
-num_workers: 0
+steps: 500000
+batch_size: 16
+num_workers: 30
 device: cuda
 seed: 42
-save_freq: 2000
+save_freq: 20000
 resume: false
 
 chunk_size: 50
