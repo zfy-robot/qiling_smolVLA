@@ -1563,12 +1563,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         """Validate the final physical task state before persisting an episode."""
         success_cfg = scripted_cfg.get("success", {})
         drawer_open = current_drawer_open_m()
-        drawer_open_abs_max = float(success_cfg.get("drawer_open_abs_max", 0.040))
+        drawer_open_abs_max = float(success_cfg.get("drawer_open_abs_max", 0.04))
         drawer_closed = drawer_open is not None and np.isfinite(drawer_open) and abs(drawer_open) < drawer_open_abs_max
 
         can_cfg = success_cfg.get("can_world_z", {})
-        min_z = float(can_cfg.get("min_m", 0.80))
-        max_z = float(can_cfg.get("max_m", 1.15))
+        min_z = float(can_cfg.get("min_m", 1.00))
+        max_z = float(can_cfg.get("max_m", 1.04))
         if not np.isfinite(min_z) or not np.isfinite(max_z) or min_z >= max_z:
             raise ValueError("success.can_world_z requires finite min_m < max_m")
 

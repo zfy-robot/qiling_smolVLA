@@ -92,9 +92,21 @@ PY
 
 rollout_command() {
     local -a args=()
+    local deterministic=0
+    local want_randomize=0
     while [[ $# -gt 0 ]]; do
         if [[ "$1" == "--deterministic" ]]; then
+            deterministic=1
             args+=(--no-randomize-task --seed 42)
+        elif [[ "$1" == "--success-rate" ]]; then
+            # Convenience: bash run.sh rollout --success-rate 20 ...
+            shift
+            if [[ $# -eq 0 || "$1" == -* ]]; then
+                echo "--success-rate requires an episode count, e.g. --success-rate 20" >&2
+                exit 2
+            fi
+            want_randomize=1
+            args+=(--episodes "$1" --randomize-task --seed 42)
         elif [[ "$1" == "--headless" ]]; then
             args+=(--headless)
         else
@@ -102,6 +114,10 @@ rollout_command() {
         fi
         shift
     done
+    if [[ "$deterministic" -eq 1 && "$want_randomize" -eq 1 ]]; then
+        echo "Use either --deterministic or --success-rate, not both." >&2
+        exit 2
+    fi
     use_isaaclab_env
     "$ISAACLAB" -p scripts/eval_policy.py --enable_cameras --kit_args "$ISAAC_LOCAL_KIT_ARGS" "${args[@]}"
 }
@@ -120,9 +136,20 @@ Core commands:
   dataset-check [PATH]               Validate dataset and optional checkpoint
   train [--resume]                   Train SmolVLA in the smolvla environment
   preview                            Offline checkpoint preview
-  rollout [--deterministic]          Online IsaacLab rollout
+  rollout [--deterministic|--success-rate N]
+                                         Online IsaacLab rollout / success-rate eval
   diagnose ACTIONS.csv               Summarize rollout control diagnostics
   clean [--dry-run|--yes]            Inspect/remove generated artifacts
+
+Rollout notes:
+  --deterministic     seed=42, disable task randomization (regression)
+  --success-rate N    seed=42, N randomized episodes (can XY + drawer open only)
+  Pass-through flags: --episodes, --seed (default 42), --randomize-task/--no-randomize-task,
+  --can-x-range, --can-y-range, --drawer-open-range, --output-dir, --output-video,
+  --summary-json, --save-videos/--no-save-videos,
+  --save-diagnostics/--no-save-diagnostics
+  Outputs default to one folder per run under outputs/eval/:
+  rollout_<timestamp>_<det|randN>_ckpt<step>/{rollout|epXXX}.avi + *_actions.* + summary.json
 
 Compatibility aliases: inspect-config, record-hdf5, convert-lerobot,
 train-smolvla, preview-smolvla, visualize-smolvla, eval-smolvla,

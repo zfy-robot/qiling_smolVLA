@@ -14,6 +14,8 @@ cache 可放到其他磁盘。提交的配置只使用 `${VAR}`，不写用户�
 | dataset/schema/scene | `configs/tasks/<task>.dataset.json` |
 | scripted trajectory/randomization/success | `<task>.scripted.yaml` |
 | SmolVLA hyperparameters/output | `<task>.smolvla.yaml` |
+| Task randomization defaults | `<task>.scripted.yaml` → `randomization` |
+| Rollout success-rate overrides | CLI: `--episodes`/`--success-rate`, `--can-*-range`, `--seed` |
 | joint order/hand mimic mapping | `s4_robot/s4_robot_cfg.py`, `control_mapping.py` |
 | CLI override | 当前命令行，仅覆盖本次执行 |
 

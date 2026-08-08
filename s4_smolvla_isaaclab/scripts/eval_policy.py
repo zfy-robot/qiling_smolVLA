@@ -36,7 +36,20 @@ parser.add_argument("--steps", type=int, default=0, help="Physics steps. 0 runs 
 parser.add_argument("--phase-duration-scale", type=float, default=1.0)
 parser.add_argument("--policy-every-n-steps", type=int, default=0, help="0 derives the interval from simulation and dataset FPS.")
 parser.add_argument("--video-every-n-steps", type=int, default=6)
-parser.add_argument("--output-video", type=Path, default=Path(os.environ.get("S4_OUTPUT_ROOT", PROJECT_DIR_FOR_DEFAULTS / "outputs")) / "eval/smolvla_drawer_rollout.avi")
+parser.add_argument(
+    "--output-video",
+    type=Path,
+    default=None,
+    help="Optional. If set to an .avi path, all artifacts go into a folder named after its stem "
+    "(.../foo.avi → .../foo/). Prefer --output-dir. Default: auto folder under outputs/eval/.",
+)
+parser.add_argument(
+    "--output-dir",
+    type=Path,
+    default=None,
+    help="Directory for this rollout run (video/csv/png/summary). "
+    "Default: outputs/eval/rollout_<timestamp>_<det|randN>_ckpt<step>/",
+)
 parser.add_argument("--video-layout", choices=["chest", "all"], default="all")
 parser.add_argument("--policy-python", default=_default_policy_python())
 parser.add_argument("--policy-device", choices=["cuda", "cpu"], default="cuda")
@@ -53,8 +66,67 @@ parser.add_argument("--phase-hand-tolerance", type=float, default=0.15)
 parser.add_argument("--phase-hand-close-min-progress", type=float, default=0.10)
 parser.add_argument("--diagnostics-csv", type=Path, default=None)
 parser.add_argument("--diagnostics-plot", type=Path, default=None)
-parser.add_argument("--seed", type=int, default=42)
-parser.add_argument("--randomize-task", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument(
+    "--seed",
+    type=int,
+    default=42,
+    help="Fixed experiment seed (default 42). Same seed with/without task randomization; "
+    "only can XY and drawer opening are sampled from this RNG stream.",
+)
+parser.add_argument(
+    "--randomize-task",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Sample can XY / drawer open from task YAML (or CLI ranges). Use --no-randomize-task for fixed scene.",
+)
+parser.add_argument(
+    "--episodes",
+    type=int,
+    default=1,
+    help="Number of rollout episodes used to estimate success rate.",
+)
+parser.add_argument(
+    "--can-x-range",
+    type=float,
+    nargs=2,
+    metavar=("MIN", "MAX"),
+    default=None,
+    help="Override scripted.yaml can_xy.x_range in metres.",
+)
+parser.add_argument(
+    "--can-y-range",
+    type=float,
+    nargs=2,
+    metavar=("MIN", "MAX"),
+    default=None,
+    help="Override scripted.yaml can_xy.y_range in metres.",
+)
+parser.add_argument(
+    "--drawer-open-range",
+    type=float,
+    nargs=2,
+    metavar=("MIN", "MAX"),
+    default=None,
+    help="Override scripted.yaml drawer_initial_open.range in metres.",
+)
+parser.add_argument(
+    "--summary-json",
+    type=Path,
+    default=None,
+    help="Write aggregate success-rate JSON. Defaults to <output-dir>/summary.json.",
+)
+parser.add_argument(
+    "--save-videos",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Write per-episode rollout videos.",
+)
+parser.add_argument(
+    "--save-diagnostics",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Write per-episode action CSV/PNG diagnostics.",
+)
 parser.add_argument("--camera-width", type=int, default=680)
 parser.add_argument("--camera-height", type=int, default=480)
 parser.add_argument("--robot-base-z", type=float, default=0.98)
@@ -84,6 +156,17 @@ import torch
 
 from s4_pipeline.config import load_project_config
 from s4_pipeline.paths import DATASET_CONFIG_PATH
+from s4_pipeline.rollout_metrics import (
+    aggregate_rollout_summary,
+    default_summary_json_path,
+    episode_artifact_paths,
+    evaluate_drawer_success,
+    make_randomization_rng,
+    resolve_randomization_cfg,
+    resolve_rollout_run_dir,
+    sample_randomization,
+    write_summary_json,
+)
 from s4_robot.control_mapping import (
     ACTION_SLICES,
     BIMANUAL_ARM_HAND_JOINTS,
@@ -350,20 +433,22 @@ def compose_video_frame(scene: dict[str, object], phase: dict, step: int, total_
     return frame
 
 
-def reset_drawer_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim, scripted_cfg: dict) -> tuple[np.ndarray, int, float, np.ndarray]:
+def reset_drawer_scene(
+    scene: dict[str, object],
+    cfg: SceneBuildCfg,
+    sim,
+    scripted_cfg: dict,
+    *,
+    random_cfg: dict,
+    init_sample: dict[str, float],
+) -> tuple[np.ndarray, int, float, np.ndarray, dict[str, float]]:
     robot = scene["robot"]
     drawer = scene["drawer"]
-    random_cfg = scripted_cfg.get("randomization", {})
-    rng = np.random.default_rng(int(args_cli.seed))
-    can_offset = np.zeros(2, dtype=np.float32)
-    drawer_open = 0.0
-    if args_cli.randomize_task:
-        can_cfg = random_cfg.get("can_xy", {})
-        x_range = can_cfg.get("x_range", [0.0, 0.0])
-        y_range = can_cfg.get("y_range", [0.0, 0.0])
-        can_offset[:] = [rng.uniform(*x_range), rng.uniform(*y_range)]
-        open_range = random_cfg.get("drawer_initial_open", {}).get("range", [0.0, 0.0])
-        drawer_open = float(rng.uniform(*open_range))
+    can_offset = np.asarray(
+        [init_sample["can_x_offset_m"], init_sample["can_y_offset_m"]],
+        dtype=np.float32,
+    )
+    drawer_open = float(init_sample["drawer_open_m"])
 
     sim.reset()
     defaults = get_default_joint_positions()
@@ -411,8 +496,12 @@ def reset_drawer_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim, script
     actual = robot.data.joint_pos[0].detach().cpu().numpy()
     full_target = actual.copy()
     initial_action = extract_bimanual_state(actual, robot.joint_names)
-    print(f"[EVAL] reset can_xy_offset=({can_offset[0]:+.3f},{can_offset[1]:+.3f}) drawer_open={drawer_open:.3f}m")
-    return full_target, drawer_joint_id, sign, initial_action
+    print(
+        f"[EVAL] reset seed={int(init_sample['seed'])} "
+        f"can_xy_offset=({can_offset[0]:+.3f},{can_offset[1]:+.3f}) "
+        f"drawer_open={drawer_open:.3f}m"
+    )
+    return full_target, drawer_joint_id, sign, initial_action, init_sample
 
 
 def apply_gravity_compensation(robot, joint_ids: list[int]) -> None:
@@ -518,20 +607,34 @@ def phase_transition_gate(
     return not reasons, reasons
 
 
-def diagnostics_paths() -> tuple[Path, Path]:
-    csv_path = args_cli.diagnostics_csv or args_cli.output_video.with_name(
-        f"{args_cli.output_video.stem}_actions.csv"
-    )
-    plot_path = args_cli.diagnostics_plot or args_cli.output_video.with_name(
-        f"{args_cli.output_video.stem}_actions.png"
-    )
-    return csv_path, plot_path
+def diagnostics_paths(
+    *,
+    output_video: Path | None = None,
+    diagnostics_csv: Path | None = None,
+    diagnostics_plot: Path | None = None,
+) -> tuple[Path, Path]:
+    if output_video is None:
+        raise ValueError("diagnostics_paths requires output_video inside the run directory")
+    video = Path(output_video)
+    csv_path = diagnostics_csv or video.with_name(f"{video.stem}_actions.csv")
+    plot_path = diagnostics_plot or video.with_name(f"{video.stem}_actions.png")
+    return Path(csv_path), Path(plot_path)
 
 
-def write_action_diagnostics(rows: list[dict[str, object]]) -> tuple[Path, Path] | None:
+def write_action_diagnostics(
+    rows: list[dict[str, object]],
+    *,
+    output_video: Path | None = None,
+    diagnostics_csv: Path | None = None,
+    diagnostics_plot: Path | None = None,
+) -> tuple[Path, Path] | None:
     if not rows:
         return None
-    csv_path, plot_path = diagnostics_paths()
+    csv_path, plot_path = diagnostics_paths(
+        output_video=output_video,
+        diagnostics_csv=diagnostics_csv,
+        diagnostics_plot=diagnostics_plot,
+    )
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     scalar_fields = [
         "policy_frame",
@@ -610,6 +713,8 @@ def write_action_diagnostics(rows: list[dict[str, object]]) -> tuple[Path, Path]
 
 
 def main() -> None:
+    if int(args_cli.episodes) < 1:
+        raise ValueError("--episodes must be >= 1")
     project_cfg = load_project_config(CONFIG_PATH)
     task_spec = get_task_spec(project_cfg.dataset.task_id)
     if task_spec.data.state_dim != 26 or task_spec.data.action_dim != 26:
@@ -622,6 +727,29 @@ def main() -> None:
     checkpoint = resolve_checkpoint(project_cfg)
     action_low, action_high = load_action_bounds(dataset_root)
     scripted_cfg = load_yaml(task_spec.scripted_config)
+    random_cfg = resolve_randomization_cfg(
+        scripted_cfg,
+        randomize_task=bool(args_cli.randomize_task),
+        can_x_range=args_cli.can_x_range,
+        can_y_range=args_cli.can_y_range,
+        drawer_open_range=args_cli.drawer_open_range,
+    )
+    episodes = int(args_cli.episodes)
+    eval_root = Path(os.environ.get("S4_OUTPUT_ROOT", PROJECT_DIR / "outputs")) / "eval"
+    run_dir = resolve_rollout_run_dir(
+        eval_root=eval_root,
+        checkpoint=checkpoint,
+        episodes=episodes,
+        randomize_task=bool(args_cli.randomize_task),
+        output_dir=args_cli.output_dir,
+        output_video=args_cli.output_video,
+    )
+    summary_path = (
+        Path(args_cli.summary_json).expanduser()
+        if args_cli.summary_json is not None
+        else default_summary_json_path(run_dir)
+    )
+    print(f"[EVAL] output_dir={run_dir}")
 
     sim = create_simulation_context(args_cli.device)
     cfg = make_scene_cfg(project_cfg)
@@ -630,7 +758,6 @@ def main() -> None:
     scene = scene_builder(cfg)
     sim.reset()
     robot = scene["robot"]
-    camera = scene["camera"]
     sim_dt = sim.get_physics_dt()
 
     server = PolicyServer(checkpoint, dataset_root)
@@ -659,6 +786,16 @@ def main() -> None:
     )
     print(f"[EVAL] checkpoint={checkpoint}")
     print(f"[EVAL] dataset={dataset_root}")
+    print(
+        f"[EVAL] episodes={episodes} randomize_task={bool(args_cli.randomize_task)} "
+        f"seed={int(args_cli.seed)} "
+        f"(only can XY + drawer opening; seed fixed for randomized and fixed scenes)"
+    )
+    print(
+        f"[EVAL] randomization can_x={random_cfg['can_xy'].get('x_range')} "
+        f"can_y={random_cfg['can_xy'].get('y_range')} "
+        f"drawer_open={random_cfg['drawer_initial_open'].get('range')}"
+    )
     print_schedule(schedule, policy_interval, project_cfg.dataset.fps)
     print(
         f"[EVAL] rollout scheduled_steps={scheduled_steps} hard_limit_steps={total_steps} "
@@ -670,188 +807,285 @@ def main() -> None:
         f"phase_blend={max(int(args_cli.phase_transition_blend_frames), 0)} frames"
     )
 
-    full_target, drawer_joint_id, drawer_sign, commanded_action = reset_drawer_scene(scene, cfg, sim, scripted_cfg)
     gravity_joint_ids = [robot.joint_names.index(name) for name in ALL_DRIVE_JOINTS if name in robot.joint_names]
-    writer: VideoWriter | None = None
-    phase_index = 0
-    phase_frame = 0
-    phase_extension = 0
-    policy_frame = 0
-    chunks: list[dict[str, object]] = []
-    interpolation_start = commanded_action.copy()
-    interpolation_goal = commanded_action.copy()
-    transition_from_action = commanded_action.copy()
-    diagnostics: list[dict[str, object]] = []
-    actual_steps = 0
-    rollout_complete = False
-    server.reset()
-    start = time.monotonic()
-
+    episode_results: list[dict[str, object]] = []
+    experiment_seed = int(args_cli.seed)
+    randomization_rng = make_randomization_rng(experiment_seed)
     try:
-        for step in range(max(total_steps, 1)):
-            if step % policy_interval == 0:
-                actual_action = extract_bimanual_state(
-                    robot.data.joint_pos[0].detach().cpu().numpy(), robot.joint_names
-                )
-                # Align the previous 20 Hz command endpoint with the measured
-                # state after its six 120 Hz interpolation steps have executed.
-                if diagnostics:
-                    diagnostics[-1]["actual"] = actual_action.copy()
-                drawer_open = drawer_sign * float(
-                    scene["drawer"].data.joint_pos[0, drawer_joint_id].item()
-                )
-                if phase_frame >= schedule[phase_index]["frames"]:
-                    gate_ready, gate_reasons = phase_transition_gate(
-                        schedule[phase_index],
-                        scripted_cfg,
-                        actual_action,
-                        commanded_action,
-                        drawer_open,
-                    )
-                    extension_limit = max(int(args_cli.phase_max_extension_frames), 0)
-                    force_transition = phase_extension >= extension_limit
-                    if gate_ready or force_transition:
-                        if not gate_ready:
-                            print(
-                                f"[EVAL][GATE] phase {phase_index + 1:02d} forced after "
-                                f"{phase_extension} extension frames: {', '.join(gate_reasons)}"
-                            )
-                        if phase_index == len(schedule) - 1:
-                            rollout_complete = True
-                            break
-                        transition_from_action = commanded_action.copy()
-                        phase_index += 1
-                        phase_frame = 0
-                        phase_extension = 0
-                        chunks.clear()
-                        server.reset()
-                        print(
-                            f"[EVAL] phase -> {phase_index + 1:02d}/{len(schedule)} "
-                            f"{schedule[phase_index]['task']}"
+        for episode_index in range(episodes):
+            artifacts = episode_artifact_paths(
+                run_dir,
+                episode_index=episode_index,
+                episodes=episodes,
+            )
+            # Preserve explicit single-episode diagnostic overrides.
+            if episodes == 1:
+                if args_cli.diagnostics_csv is not None:
+                    artifacts["diagnostics_csv"] = Path(args_cli.diagnostics_csv)
+                if args_cli.diagnostics_plot is not None:
+                    artifacts["diagnostics_plot"] = Path(args_cli.diagnostics_plot)
+
+            init_sample = sample_randomization(
+                random_cfg,
+                seed=experiment_seed,
+                rng=randomization_rng,
+            )
+            print(
+                f"[EVAL] ===== episode {episode_index + 1}/{episodes} "
+                f"seed={experiment_seed} ====="
+            )
+            full_target, drawer_joint_id, drawer_sign, commanded_action, init_sample = reset_drawer_scene(
+                scene,
+                cfg,
+                sim,
+                scripted_cfg,
+                random_cfg=random_cfg,
+                init_sample=init_sample,
+            )
+            writer: VideoWriter | None = None
+            phase_index = 0
+            phase_frame = 0
+            phase_extension = 0
+            policy_frame = 0
+            chunks: list[dict[str, object]] = []
+            interpolation_start = commanded_action.copy()
+            interpolation_goal = commanded_action.copy()
+            transition_from_action = commanded_action.copy()
+            diagnostics: list[dict[str, object]] = []
+            actual_steps = 0
+            rollout_complete = False
+            server.reset()
+            start = time.monotonic()
+            diagnostic_outputs = None
+
+            try:
+                for step in range(max(total_steps, 1)):
+                    if step % policy_interval == 0:
+                        actual_action = extract_bimanual_state(
+                            robot.data.joint_pos[0].detach().cpu().numpy(), robot.joint_names
                         )
-                    else:
-                        phase_extension += 1
-                        if phase_extension == 1 or phase_extension % 5 == 0:
-                            print(
-                                f"[EVAL][GATE] holding phase {phase_index + 1:02d} "
-                                f"extension={phase_extension}/{extension_limit}: {', '.join(gate_reasons)}"
+                        # Align the previous 20 Hz command endpoint with the measured
+                        # state after its six 120 Hz interpolation steps have executed.
+                        if diagnostics:
+                            diagnostics[-1]["actual"] = actual_action.copy()
+                        drawer_open = drawer_sign * float(
+                            scene["drawer"].data.joint_pos[0, drawer_joint_id].item()
+                        )
+                        if phase_frame >= schedule[phase_index]["frames"]:
+                            gate_ready, gate_reasons = phase_transition_gate(
+                                schedule[phase_index],
+                                scripted_cfg,
+                                actual_action,
+                                commanded_action,
+                                drawer_open,
                             )
-                phase = schedule[phase_index]
-                replan_frames = max(int(args_cli.chunk_replan_frames), 1)
-                if not chunks or phase_frame % replan_frames == 0:
-                    images = current_images(scene, server.image_keys)
-                    chunk = server.action_chunk(actual_action, images, phase["task"])
-                    chunks.append({"start": policy_frame, "actions": chunk})
-                chunks = [
-                    item
-                    for item in chunks
-                    if policy_frame - int(item["start"]) < len(np.asarray(item["actions"]))
-                ][-2:]
-                raw_action, ensemble_target, chunk_count = ensemble_action(
-                    chunks,
-                    policy_frame,
-                    max(int(args_cli.chunk_overlap_blend_frames), 0),
-                )
-                if action_low is not None and action_high is not None:
-                    raw_action = np.clip(raw_action, action_low, action_high)
-                    ensemble_target = np.clip(ensemble_target, action_low, action_high)
+                            extension_limit = max(int(args_cli.phase_max_extension_frames), 0)
+                            force_transition = phase_extension >= extension_limit
+                            if gate_ready or force_transition:
+                                if not gate_ready:
+                                    print(
+                                        f"[EVAL][GATE] phase {phase_index + 1:02d} forced after "
+                                        f"{phase_extension} extension frames: {', '.join(gate_reasons)}"
+                                    )
+                                if phase_index == len(schedule) - 1:
+                                    rollout_complete = True
+                                    break
+                                transition_from_action = commanded_action.copy()
+                                phase_index += 1
+                                phase_frame = 0
+                                phase_extension = 0
+                                chunks.clear()
+                                server.reset()
+                                print(
+                                    f"[EVAL] phase -> {phase_index + 1:02d}/{len(schedule)} "
+                                    f"{schedule[phase_index]['task']}"
+                                )
+                            else:
+                                phase_extension += 1
+                                if phase_extension == 1 or phase_extension % 5 == 0:
+                                    print(
+                                        f"[EVAL][GATE] holding phase {phase_index + 1:02d} "
+                                        f"extension={phase_extension}/{extension_limit}: {', '.join(gate_reasons)}"
+                                    )
+                        phase = schedule[phase_index]
+                        replan_frames = max(int(args_cli.chunk_replan_frames), 1)
+                        if not chunks or phase_frame % replan_frames == 0:
+                            images = current_images(scene, server.image_keys)
+                            chunk = server.action_chunk(actual_action, images, phase["task"])
+                            chunks.append({"start": policy_frame, "actions": chunk})
+                        chunks = [
+                            item
+                            for item in chunks
+                            if policy_frame - int(item["start"]) < len(np.asarray(item["actions"]))
+                        ][-2:]
+                        raw_action, ensemble_target, chunk_count = ensemble_action(
+                            chunks,
+                            policy_frame,
+                            max(int(args_cli.chunk_overlap_blend_frames), 0),
+                        )
+                        if action_low is not None and action_high is not None:
+                            raw_action = np.clip(raw_action, action_low, action_high)
+                            ensemble_target = np.clip(ensemble_target, action_low, action_high)
 
-                blend_frames = max(int(args_cli.phase_transition_blend_frames), 0)
-                if blend_frames > 0 and phase_frame < blend_frames:
-                    blend = float(phase_frame + 1) / float(blend_frames)
-                    ensemble_target = (1.0 - blend) * transition_from_action + blend * ensemble_target
+                        blend_frames = max(int(args_cli.phase_transition_blend_frames), 0)
+                        if blend_frames > 0 and phase_frame < blend_frames:
+                            blend = float(phase_frame + 1) / float(blend_frames)
+                            ensemble_target = (1.0 - blend) * transition_from_action + blend * ensemble_target
 
-                interpolation_start = commanded_action.copy()
-                goal_delta = ensemble_target - interpolation_start
-                arm_limit = float(args_cli.max_joint_step) * policy_interval
-                hand_limit = float(args_cli.hand_max_joint_step) * policy_interval
-                for arm_slice in (ACTION_SLICES.left_arm, ACTION_SLICES.right_arm):
-                    goal_delta[arm_slice] = np.clip(goal_delta[arm_slice], -arm_limit, arm_limit)
-                for hand_slice in (ACTION_SLICES.left_hand, ACTION_SLICES.right_hand):
-                    goal_delta[hand_slice] = np.clip(goal_delta[hand_slice], -hand_limit, hand_limit)
-                interpolation_goal = (interpolation_start + goal_delta).astype(np.float32)
+                        interpolation_start = commanded_action.copy()
+                        goal_delta = ensemble_target - interpolation_start
+                        arm_limit = float(args_cli.max_joint_step) * policy_interval
+                        hand_limit = float(args_cli.hand_max_joint_step) * policy_interval
+                        for arm_slice in (ACTION_SLICES.left_arm, ACTION_SLICES.right_arm):
+                            goal_delta[arm_slice] = np.clip(goal_delta[arm_slice], -arm_limit, arm_limit)
+                        for hand_slice in (ACTION_SLICES.left_hand, ACTION_SLICES.right_hand):
+                            goal_delta[hand_slice] = np.clip(goal_delta[hand_slice], -hand_limit, hand_limit)
+                        interpolation_goal = (interpolation_start + goal_delta).astype(np.float32)
 
-                diagnostics.append(
-                    {
-                        "policy_frame": policy_frame,
-                        "sim_step": step,
-                        "phase_index": phase_index,
-                        "phase_frame": phase_frame,
-                        "chunk_count": chunk_count,
-                        "drawer_open_m": drawer_open,
-                        "raw": raw_action.copy(),
-                        "ensemble": ensemble_target.copy(),
-                        "command": interpolation_goal.copy(),
-                        "actual": actual_action.copy(),
-                    }
-                )
-                phase_frame += 1
-                policy_frame += 1
+                        diagnostics.append(
+                            {
+                                "policy_frame": policy_frame,
+                                "sim_step": step,
+                                "phase_index": phase_index,
+                                "phase_frame": phase_frame,
+                                "chunk_count": chunk_count,
+                                "drawer_open_m": drawer_open,
+                                "raw": raw_action.copy(),
+                                "ensemble": ensemble_target.copy(),
+                                "command": interpolation_goal.copy(),
+                                "actual": actual_action.copy(),
+                            }
+                        )
+                        phase_frame += 1
+                        policy_frame += 1
 
-            interpolation_fraction = float(step % policy_interval + 1) / float(policy_interval)
-            commanded_action = (
-                interpolation_start
-                + interpolation_fraction * (interpolation_goal - interpolation_start)
-            ).astype(np.float32)
-            full_target = make_full_joint_target(
-                commanded_action,
-                robot.joint_names,
-                default_by_robot_order=full_target,
-                include_mimic=True,
+                    interpolation_fraction = float(step % policy_interval + 1) / float(policy_interval)
+                    commanded_action = (
+                        interpolation_start
+                        + interpolation_fraction * (interpolation_goal - interpolation_start)
+                    ).astype(np.float32)
+                    full_target = make_full_joint_target(
+                        commanded_action,
+                        robot.joint_names,
+                        default_by_robot_order=full_target,
+                        include_mimic=True,
+                    )
+                    robot.set_joint_position_target(
+                        torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1)
+                    )
+                    apply_gravity_compensation(robot, gravity_joint_ids)
+                    robot.write_data_to_sim()
+                    sim.step(render=True)
+                    update_scene(scene, sim_dt)
+                    actual_steps = step + 1
+
+                    if args_cli.save_videos and step % max(int(args_cli.video_every_n_steps), 1) == 0:
+                        frame = compose_video_frame(scene, schedule[phase_index], step, total_steps)
+                        if writer is None:
+                            fps = 1.0 / (sim_dt * max(int(args_cli.video_every_n_steps), 1))
+                            writer = VideoWriter(artifacts["video"], fps, frame.shape)
+                        writer.write(frame)
+                    if step % 120 == 0:
+                        drawer_open = drawer_sign * float(
+                            scene["drawer"].data.joint_pos[0, drawer_joint_id].item()
+                        )
+                        can_pos = scene["named_objects"]["can"].data.root_pos_w[0].detach().cpu().numpy()
+                        actual_action = extract_bimanual_state(
+                            robot.data.joint_pos[0].detach().cpu().numpy(), robot.joint_names
+                        )
+                        tracking = np.max(np.abs(commanded_action - actual_action))
+                        print(
+                            f"[EVAL] ep={episode_index + 1}/{episodes} step={step:04d}/{total_steps} "
+                            f"phase={phase_index + 1:02d}/{len(schedule)} "
+                            f"phase_frame={phase_frame:03d}/{schedule[phase_index]['frames']} "
+                            f"drawer_open={drawer_open:.3f}m "
+                            f"can=({can_pos[0]:.3f},{can_pos[1]:.3f},{can_pos[2]:.3f}) "
+                            f"q_track_max={tracking:.3f}rad"
+                        )
+            finally:
+                if writer is not None:
+                    writer.close()
+                if diagnostics:
+                    diagnostics[-1]["actual"] = extract_bimanual_state(
+                        robot.data.joint_pos[0].detach().cpu().numpy(), robot.joint_names
+                    )
+                if args_cli.save_diagnostics:
+                    diagnostic_outputs = write_action_diagnostics(
+                        diagnostics,
+                        output_video=artifacts["video"],
+                        diagnostics_csv=artifacts["diagnostics_csv"],
+                        diagnostics_plot=artifacts["diagnostics_plot"],
+                    )
+
+            elapsed = time.monotonic() - start
+            drawer_open = drawer_sign * float(scene["drawer"].data.joint_pos[0, drawer_joint_id].item())
+            can_z = float(scene["named_objects"]["can"].data.root_pos_w[0, 2].item())
+            success_info = evaluate_drawer_success(
+                drawer_open_m=drawer_open,
+                can_world_z_m=can_z,
+                success_cfg=scripted_cfg.get("success", {}),
             )
-            robot.set_joint_position_target(torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1))
-            apply_gravity_compensation(robot, gravity_joint_ids)
-            robot.write_data_to_sim()
-            sim.step(render=True)
-            update_scene(scene, sim_dt)
-            actual_steps = step + 1
-
-            if step % max(int(args_cli.video_every_n_steps), 1) == 0:
-                frame = compose_video_frame(scene, schedule[phase_index], step, total_steps)
-                if writer is None:
-                    fps = 1.0 / (sim_dt * max(int(args_cli.video_every_n_steps), 1))
-                    writer = VideoWriter(args_cli.output_video, fps, frame.shape)
-                writer.write(frame)
-            if step % 120 == 0:
-                drawer_open = drawer_sign * float(scene["drawer"].data.joint_pos[0, drawer_joint_id].item())
-                can_pos = scene["named_objects"]["can"].data.root_pos_w[0].detach().cpu().numpy()
-                actual_action = extract_bimanual_state(robot.data.joint_pos[0].detach().cpu().numpy(), robot.joint_names)
-                tracking = np.max(np.abs(commanded_action - actual_action))
-                print(
-                    f"[EVAL] step={step:04d}/{total_steps} phase={phase_index + 1:02d}/{len(schedule)} "
-                    f"phase_frame={phase_frame:03d}/{schedule[phase_index]['frames']} "
-                    f"drawer_open={drawer_open:.3f}m can=({can_pos[0]:.3f},{can_pos[1]:.3f},{can_pos[2]:.3f}) "
-                    f"q_track_max={tracking:.3f}rad"
-                )
+            result = {
+                "episode": episode_index + 1,
+                "seed": experiment_seed,
+                "complete": bool(rollout_complete),
+                "success": bool(success_info["success"]),
+                "drawer_ok": bool(success_info["drawer_ok"]),
+                "can_ok": bool(success_info["can_ok"]),
+                "drawer_open_m": float(success_info["drawer_open_m"]),
+                "can_world_z_m": float(success_info["can_world_z_m"]),
+                "can_x_offset_m": float(init_sample["can_x_offset_m"]),
+                "can_y_offset_m": float(init_sample["can_y_offset_m"]),
+                "initial_drawer_open_m": float(init_sample["drawer_open_m"]),
+                "wall_s": float(elapsed),
+                "sim_s": float(actual_steps * sim_dt),
+                "video": str(artifacts["video"].resolve()) if args_cli.save_videos else None,
+                "diagnostics_csv": (
+                    str(diagnostic_outputs[0].resolve()) if diagnostic_outputs is not None else None
+                ),
+                "diagnostics_plot": (
+                    str(diagnostic_outputs[1].resolve()) if diagnostic_outputs is not None else None
+                ),
+            }
+            episode_results.append(result)
+            print(
+                f"[EVAL] episode {episode_index + 1}/{episodes} done "
+                f"complete={result['complete']} success={result['success']} "
+                f"wall={elapsed:.1f}s sim={result['sim_s']:.1f}s "
+                f"drawer={result['drawer_open_m']:.3f}m "
+                f"(<{success_info['drawer_limit_m']:.3f}) "
+                f"can_z={result['can_world_z_m']:.3f}m "
+                f"({success_info['can_z_min_m']:.2f},{success_info['can_z_max_m']:.2f})"
+            )
+            if args_cli.save_videos:
+                print(f"[EVAL] video={artifacts['video'].resolve()}")
+            if diagnostic_outputs is not None:
+                print(f"[EVAL] diagnostics_csv={diagnostic_outputs[0].resolve()}")
+                print(f"[EVAL] diagnostics_plot={diagnostic_outputs[1].resolve()}")
     finally:
-        if writer is not None:
-            writer.close()
         server.close()
-        if diagnostics:
-            diagnostics[-1]["actual"] = extract_bimanual_state(
-                robot.data.joint_pos[0].detach().cpu().numpy(), robot.joint_names
-            )
-        diagnostic_outputs = write_action_diagnostics(diagnostics)
 
-    elapsed = time.monotonic() - start
-    success_cfg = scripted_cfg.get("success", {})
-    drawer_open = drawer_sign * float(scene["drawer"].data.joint_pos[0, drawer_joint_id].item())
-    can_z = float(scene["named_objects"]["can"].data.root_pos_w[0, 2].item())
-    drawer_limit = float(success_cfg.get("drawer_open_abs_max", 0.04))
-    can_limits = success_cfg.get("can_world_z", {})
-    can_min = float(can_limits.get("min_m", 0.8))
-    can_max = float(can_limits.get("max_m", 1.15))
-    drawer_ok = abs(drawer_open) < drawer_limit
-    can_ok = can_min < can_z < can_max
-    print(
-        f"[EVAL] done complete={rollout_complete} success={drawer_ok and can_ok} "
-        f"wall={elapsed:.1f}s sim={actual_steps * sim_dt:.1f}s "
-        f"drawer={drawer_open:.3f}m (<{drawer_limit:.3f}) can_z={can_z:.3f}m ({can_min:.2f},{can_max:.2f})"
+    summary = aggregate_rollout_summary(
+        episode_results,
+        checkpoint=checkpoint,
+        randomize_task=bool(args_cli.randomize_task),
+        base_seed=int(args_cli.seed),
+        randomization=random_cfg,
+        output_dir=run_dir,
     )
-    print(f"[EVAL] video={args_cli.output_video.resolve()}")
-    if diagnostic_outputs is not None:
-        print(f"[EVAL] diagnostics_csv={diagnostic_outputs[0].resolve()}")
-        print(f"[EVAL] diagnostics_plot={diagnostic_outputs[1].resolve()}")
+    write_summary_json(summary, summary_path)
+    print(
+        f"[EVAL][SUMMARY] episodes={summary['episodes']} "
+        f"success={summary['success_count']}/{summary['episodes']} "
+        f"({summary['success_rate']:.1%}) "
+        f"complete={summary['complete_count']}/{summary['episodes']} "
+        f"({summary['complete_rate']:.1%}) "
+        f"complete_and_success={summary['complete_and_success_count']}/{summary['episodes']} "
+        f"({summary['complete_and_success_rate']:.1%})"
+    )
+    print(f"[EVAL][SUMMARY] output_dir={run_dir}")
+    print(f"[EVAL][SUMMARY] wrote {summary_path.resolve()}")
+
 
 
 if __name__ == "__main__":

@@ -40,11 +40,13 @@ home_poses:
 
 # Final dataset acceptance is evaluated from live simulation state before an
 # episode is written. The can check uses its root height in world coordinates.
+# Expert demos cluster around can_z≈1.01–1.023 m (in-drawer). Values near the
+# spawn height (~1.16 m) usually mean the can is still on the cabinet top.
 success:
-  drawer_open_abs_max: 0.040
+  drawer_open_abs_max: 0.04
   can_world_z:
-    min_m: 0.80
-    max_m: 1.15
+    min_m: 1.00
+    max_m: 1.04
 
 logging:
   progress_dashboard:

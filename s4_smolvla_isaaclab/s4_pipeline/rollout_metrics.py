@@ -1,0 +1,284 @@
+"""Pure helpers for online rollout randomization and success-rate reporting."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+
+def resolve_randomization_cfg(
+    scripted_cfg: dict[str, Any],
+    *,
+    randomize_task: bool,
+    can_x_range: tuple[float, float] | list[float] | None = None,
+    can_y_range: tuple[float, float] | list[float] | None = None,
+    drawer_open_range: tuple[float, float] | list[float] | None = None,
+) -> dict[str, Any]:
+    """Merge YAML randomization with optional CLI range overrides.
+
+    Task randomization only covers can XY offset and drawer initial opening.
+    When ``randomize_task`` is False, ranges collapse to zero so the scene stays
+    at the nominal can pose and closed drawer.
+    """
+    base = dict(scripted_cfg.get("randomization", {}) or {})
+    can_cfg = dict(base.get("can_xy", {}) or {})
+    drawer_cfg = dict(base.get("drawer_initial_open", {}) or {})
+
+    if can_x_range is not None:
+        if len(can_x_range) != 2:
+            raise ValueError(f"--can-x-range expects 2 values, got {can_x_range!r}")
+        can_cfg["x_range"] = [float(can_x_range[0]), float(can_x_range[1])]
+    if can_y_range is not None:
+        if len(can_y_range) != 2:
+            raise ValueError(f"--can-y-range expects 2 values, got {can_y_range!r}")
+        can_cfg["y_range"] = [float(can_y_range[0]), float(can_y_range[1])]
+    if drawer_open_range is not None:
+        if len(drawer_open_range) != 2:
+            raise ValueError(f"--drawer-open-range expects 2 values, got {drawer_open_range!r}")
+        drawer_cfg["range"] = [float(drawer_open_range[0]), float(drawer_open_range[1])]
+
+    if not randomize_task:
+        can_cfg["x_range"] = [0.0, 0.0]
+        can_cfg["y_range"] = [0.0, 0.0]
+        drawer_cfg["range"] = [0.0, 0.0]
+        can_cfg["enabled"] = False
+        drawer_cfg["enabled"] = False
+    else:
+        can_cfg.setdefault("enabled", True)
+        drawer_cfg.setdefault("enabled", True)
+        can_cfg.setdefault("x_range", [0.0, 0.0])
+        can_cfg.setdefault("y_range", [0.0, 0.0])
+        drawer_cfg.setdefault("range", [0.0, 0.0])
+
+    resolved = dict(base)
+    resolved["can_xy"] = can_cfg
+    resolved["drawer_initial_open"] = drawer_cfg
+    resolved["enabled"] = bool(randomize_task)
+    return resolved
+
+
+def make_randomization_rng(seed: int = 42):
+    """Create the shared RNG for a rollout experiment.
+
+    The experiment seed stays fixed (default 42) whether randomization is on or
+    off. Multi-episode diversity comes from advancing this shared stream.
+    """
+    import numpy as np
+
+    return np.random.default_rng(int(seed))
+
+
+def sample_randomization(
+    random_cfg: dict[str, Any],
+    *,
+    seed: int = 42,
+    rng: Any | None = None,
+) -> dict[str, float | int]:
+    """Sample can XY offset and drawer opening for one episode.
+
+    Only can position and drawer opening are randomized. ``seed`` is always the
+    fixed experiment seed (default 42) and is recorded as-is.
+    """
+    import numpy as np
+
+    generator = rng if rng is not None else np.random.default_rng(int(seed))
+    can_cfg = random_cfg.get("can_xy", {}) or {}
+    drawer_cfg = random_cfg.get("drawer_initial_open", {}) or {}
+
+    can_x = 0.0
+    can_y = 0.0
+    drawer_open = 0.0
+    if bool(random_cfg.get("enabled", False)):
+        if bool(can_cfg.get("enabled", True)):
+            x_range = can_cfg.get("x_range", [0.0, 0.0])
+            y_range = can_cfg.get("y_range", [0.0, 0.0])
+            can_x = float(generator.uniform(*x_range))
+            can_y = float(generator.uniform(*y_range))
+        if bool(drawer_cfg.get("enabled", True)):
+            open_range = drawer_cfg.get("range", [0.0, 0.0])
+            drawer_open = float(generator.uniform(*open_range))
+
+    return {
+        "seed": int(seed),
+        "can_x_offset_m": can_x,
+        "can_y_offset_m": can_y,
+        "drawer_open_m": drawer_open,
+    }
+
+
+def evaluate_drawer_success(
+    *,
+    drawer_open_m: float,
+    can_world_z_m: float,
+    success_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply the active task final success criteria."""
+    drawer_limit = float(success_cfg.get("drawer_open_abs_max", 0.04))
+    can_limits = success_cfg.get("can_world_z", {}) or {}
+    can_min = float(can_limits.get("min_m", 1.00))
+    can_max = float(can_limits.get("max_m", 1.04))
+    drawer_ok = abs(float(drawer_open_m)) < drawer_limit
+    can_ok = can_min < float(can_world_z_m) < can_max
+    return {
+        "drawer_ok": drawer_ok,
+        "can_ok": can_ok,
+        "success": bool(drawer_ok and can_ok),
+        "drawer_open_m": float(drawer_open_m),
+        "drawer_limit_m": drawer_limit,
+        "can_world_z_m": float(can_world_z_m),
+        "can_z_min_m": can_min,
+        "can_z_max_m": can_max,
+    }
+
+
+def checkpoint_step_tag(checkpoint: str | Path) -> str:
+    """Extract a short checkpoint label such as ``ckpt360000`` from a path."""
+    path = Path(checkpoint)
+    for part in [path.name, *[p.name for p in path.parents]]:
+        if part.isdigit():
+            return f"ckpt{part}"
+    return "ckptunknown"
+
+
+def build_rollout_run_name(
+    *,
+    randomize_task: bool,
+    episodes: int,
+    checkpoint: str | Path,
+    timestamp: str | None = None,
+) -> str:
+    """Build a unique, readable run folder name under ``outputs/eval``."""
+    from datetime import datetime
+
+    stamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    mode = f"rand{int(episodes)}" if bool(randomize_task) and int(episodes) > 1 else (
+        "rand" if bool(randomize_task) else "det"
+    )
+    return f"rollout_{stamp}_{mode}_{checkpoint_step_tag(checkpoint)}"
+
+
+def resolve_rollout_run_dir(
+    *,
+    eval_root: Path,
+    checkpoint: str | Path,
+    episodes: int,
+    randomize_task: bool,
+    output_dir: Path | None = None,
+    output_video: Path | None = None,
+    timestamp: str | None = None,
+) -> Path:
+    """Resolve the single directory that stores one rollout run's artifacts.
+
+    Layout example::
+
+        outputs/eval/rollout_20260808_113645_rand20_ckpt360000/
+          ep001.avi
+          ep001_actions.csv
+          ep001_actions.png
+          ...
+          summary.json
+
+    Priority:
+    1. ``--output-dir``
+    2. ``--output-video`` stem used as a folder under its parent
+       (``.../foo.avi`` → ``.../foo/``)
+    3. auto name under ``eval_root``
+    """
+    if output_dir is not None:
+        run_dir = Path(output_dir).expanduser()
+    elif output_video is not None:
+        video = Path(output_video).expanduser()
+        # Treat a path ending with "/" or without a media suffix as a directory.
+        if str(output_video).endswith(("/", "\\")) or video.suffix.lower() not in {
+            ".avi",
+            ".mp4",
+            ".mov",
+            ".mkv",
+        }:
+            run_dir = video
+        else:
+            run_dir = video.parent / video.stem
+    else:
+        run_dir = Path(eval_root).expanduser() / build_rollout_run_name(
+            randomize_task=randomize_task,
+            episodes=episodes,
+            checkpoint=checkpoint,
+            timestamp=timestamp,
+        )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir.resolve()
+
+
+def episode_artifact_paths(
+    run_dir: Path,
+    *,
+    episode_index: int,
+    episodes: int,
+    video_suffix: str = ".avi",
+) -> dict[str, Path]:
+    """Resolve per-episode video/csv/png paths inside one shared run directory.
+
+    Single-episode: ``rollout.avi`` / ``rollout_actions.csv`` / ``rollout_actions.png``.
+    Multi-episode: ``ep001.avi`` ... all under the same ``run_dir``.
+    """
+    run_dir = Path(run_dir)
+    if int(episodes) <= 1:
+        stem = "rollout"
+    else:
+        stem = f"ep{episode_index + 1:03d}"
+    video = run_dir / f"{stem}{video_suffix}"
+    return {
+        "video": video,
+        "diagnostics_csv": run_dir / f"{stem}_actions.csv",
+        "diagnostics_plot": run_dir / f"{stem}_actions.png",
+    }
+
+
+def default_summary_json_path(run_dir: Path) -> Path:
+    return Path(run_dir) / "summary.json"
+
+
+def aggregate_rollout_summary(
+    episode_results: list[dict[str, Any]],
+    *,
+    checkpoint: str | Path,
+    randomize_task: bool,
+    base_seed: int,
+    randomization: dict[str, Any],
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Build the machine-readable multi-episode success-rate report."""
+    total = len(episode_results)
+    successes = sum(1 for row in episode_results if row.get("success"))
+    completes = sum(1 for row in episode_results if row.get("complete"))
+    both = sum(1 for row in episode_results if row.get("success") and row.get("complete"))
+    return {
+        "checkpoint": str(checkpoint),
+        "output_dir": str(output_dir) if output_dir is not None else None,
+        "episodes": total,
+        "randomize_task": bool(randomize_task),
+        "seed": int(base_seed),
+        "randomization": {
+            "variables": ["can_xy_offset_m", "drawer_open_m"],
+            "can_xy": randomization.get("can_xy", {}),
+            "drawer_initial_open": {
+                "range": (randomization.get("drawer_initial_open", {}) or {}).get("range"),
+                "enabled": (randomization.get("drawer_initial_open", {}) or {}).get("enabled"),
+            },
+        },
+        "success_count": successes,
+        "complete_count": completes,
+        "complete_and_success_count": both,
+        "success_rate": (successes / total) if total else 0.0,
+        "complete_rate": (completes / total) if total else 0.0,
+        "complete_and_success_rate": (both / total) if total else 0.0,
+        "episodes_detail": episode_results,
+    }
+
+
+def write_summary_json(summary: dict[str, Any], path: Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path

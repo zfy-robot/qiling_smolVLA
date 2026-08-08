@@ -36,6 +36,14 @@ bash run.sh train
 
 ```bash
 bash run.sh preview --num-frames 20 --device cuda
-bash run.sh rollout --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model --deterministic --policy-device cuda
-bash run.sh diagnose outputs/eval/smolvla_drawer_rollout_actions.csv
+bash run.sh rollout \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --deterministic --policy-device cuda
+# 随机化成功率（例如 20 轮，全部写入同一子目录）
+bash run.sh rollout \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --success-rate 20 --policy-device cuda --headless
+bash run.sh diagnose outputs/eval/<run_dir>/rollout_actions.csv
 ```
+
+产物在 `outputs/eval/rollout_<timestamp>_<det|randN>_ckpt<step>/`。
