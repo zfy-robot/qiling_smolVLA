@@ -10,6 +10,7 @@ dependencies:
   - pytest
   - pip:
       - opencv-python==4.11.0.86
+      - aiohttp==3.11.11
       - pin==2.7.0
       - pin-pink==3.1.0
 # Isaac Sim 5.1 and IsaacLab 0.54.2 are external installations. Follow

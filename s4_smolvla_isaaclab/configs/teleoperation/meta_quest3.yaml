@@ -1,0 +1,80 @@
+# Meta Quest 3 controller-only teleoperation. No video is sent to the headset.
+network:
+  host: 0.0.0.0
+  port: 8443
+  # Quest Browser can occasionally pause WebXR delivery for several hundred
+  # milliseconds while the local Isaac renderer is busy. Freeze after 1 s;
+  # invalid controller tracking still freezes immediately.
+  stale_timeout_s: 1.0
+
+mapping:
+  # WebXR local-floor: +X right, +Y up, -Z forward.
+  # S4 base_link: +X forward, +Y left, +Z up.
+  controller_to_base_rotation:
+    - [0.0, 0.0, -1.0]
+    - [-1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+  # 10 cm of controller translation requests 22 cm of TCP translation.
+  position_scale: 2.2
+  orientation_enabled: true
+  clutch:
+    # On the validated meta-quest-touch-plus stream, buttons[1] matches
+    # squeeze_event and is the real side Grip. buttons[7] is a persistent
+    # touch/presence signal and must not be used as the clutch.
+    button_indices: [1]
+    engage_threshold: 0.30
+    release_threshold: 0.12
+
+safety:
+  workspace_min_base_m: [0.00, -0.65, -0.05]
+  workspace_max_base_m: [0.90, 0.65, 0.75]
+  max_translation_speed_m_s: 1.60
+  max_rotation_speed_rad_s: 5.50
+
+smoothing:
+  trigger_time_constant_s: 0.05
+  trigger_deadband: 0.03
+  arm_command_alpha: 0.95
+  arm_max_joint_step_rad: 0.065
+  hand_command_alpha: 0.40
+  hand_max_joint_step_rad: 0.012
+
+# This switch affects only `bash run.sh teleop`. The collection, rollout and
+# scripted-task controllers keep their existing implementations.
+controller:
+  backend: rmpflow
+  rmpflow:
+    name: rmp_flow
+    urdf_file: assets/my_robot/urdf/s4_40dof_merged.urdf
+    evaluations_per_frame: 2
+    # Each arm solves at 60 Hz, staggered across the 120 Hz physics loop.
+    update_every_n_steps: 2
+    # Read the measured articulation state every frame. This is more robust
+    # for interactive targets than rolling out a private open-loop state.
+    ignore_robot_state_updates: false
+    left:
+      descriptor_file: configs/teleoperation/rmpflow/s4_left_arm_descriptor.yaml
+      policy_config_file: configs/teleoperation/rmpflow/s4_left_arm_rmpflow.yaml
+      frame_name: left_wrist_yaw_link
+    right:
+      descriptor_file: configs/teleoperation/rmpflow/s4_right_arm_descriptor.yaml
+      policy_config_file: configs/teleoperation/rmpflow/s4_right_arm_rmpflow.yaml
+      frame_name: right_wrist_yaw_link
+
+# Retained as the explicit `--controller-backend pinocchio` fallback.
+ik:
+  posture_gain: 0.30
+  damping: 0.08
+  max_joint_delta_rad: 0.040
+  orientation_weight: 0.65
+
+simulation:
+  reset_settle_s: 2.0
+  real_time: true
+  # Keep 120 Hz physics/control while rendering the desktop near 60 Hz.
+  render_every_n_steps: 2
+  gravity_compensation: true
+  gravity_comp_scale: 1.0
+  joint_stiffness: 600.0
+  joint_damping: 80.0
+  joint_effort_limit: 300.0

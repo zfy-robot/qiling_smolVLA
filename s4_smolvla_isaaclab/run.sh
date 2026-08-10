@@ -131,6 +131,8 @@ Core commands:
   list-tasks                         List registered tasks
   activate-task TASK                Select a task in .local/active_task
   sim [IsaacLab options]             Start the active task scene
+  teleop [options]                   Control both arms with Meta Quest 3
+  teleop-cert [--ip ADDRESS]         Generate the local HTTPS certificate
   record [--episodes N] [--headless] Record successful HDF5 demonstrations
   convert [--overwrite]              Convert HDF5 to LeRobotDataset
   dataset-check [PATH]               Validate dataset and optional checkpoint
@@ -169,6 +171,14 @@ case "${1:-help}" in
             --print-layout --continuous --show-tcp-frames --show-drawer-handle-frame \
             --show-wrist-camera-frustums --wrist-camera-frustum-depth 0.8 \
             --wrist-camera-frustum-line-width 8 --print-tcp-pose --tcp-print-period 0.5 "$@"
+        ;;
+    teleop)
+        shift; print_context; use_isaaclab_env
+        "$ISAACLAB" -p teleoperation/isaaclab_teleop.py --enable_cameras \
+            --kit_args "$ISAAC_LOCAL_KIT_ARGS" "$@"
+        ;;
+    teleop-cert)
+        shift; "$S4_ISAACLAB_PREFIX/bin/python" -m teleoperation.certificate "$@"
         ;;
     record|record-hdf5) shift; print_context; record_command "$@" ;;
     record-parallel) shift; python3 scripts/record_parallel.py "$@" ;;

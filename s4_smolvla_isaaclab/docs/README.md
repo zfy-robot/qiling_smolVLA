@@ -21,6 +21,8 @@
 - [离线评估](OFFLINE_EVALUATION.md)
 - [在线 rollout](ONLINE_ROLLOUT.md)
 - [rollout 诊断](ROLLOUT_DIAGNOSTICS.md)
+- [Meta Quest 3 双臂摇操](TELEOPERATION.md)
+- [RMPflow 遥操作后端](TELEOPERATION_RMPFLOW.md)
 
 ## 开发与维护
 

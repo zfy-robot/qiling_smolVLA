@@ -39,6 +39,7 @@ IsaacLab 闭环 rollout 和动作诊断的完整链路。
 - 使用外部 LeRobot checkout 训练 SmolVLA，不修改 LeRobot 源码。
 - 通过 JSON-lines 子进程协议隔离 IsaacLab 与 SmolVLA 两个 Python 环境。
 - action chunk 重叠融合、20 Hz 插值、phase blend 和 rollout 诊断。
+- 独立 Meta Quest 3 WebXR 双手柄摇操，支持双臂 clutch 和连续灵巧手开合。
 - 视频、raw/fused/commanded/actual action CSV 及诊断图输出。
 - 新任务模板、自动检查和完整工程知识库。
 
@@ -104,6 +105,20 @@ bash run.sh sim
 
 启动后应检查机器人、两个抽屉、罐子、三路相机和初始关节状态。建议正式采集前先
 执行一轮有界面采集，再执行 headless 采集。
+
+### 4. 使用 Meta Quest 3 摇操双臂
+
+```bash
+# 首次使用，IP 替换为 PC 的局域网地址
+bash run.sh teleop-cert --ip 192.168.1.116
+
+# 启动 IsaacLab 和 controller-only WebXR 服务
+bash run.sh teleop
+```
+
+在 Quest Browser 打开终端显示的 HTTPS URL。左右 Grip 独立控制双臂 clutch，左右
+Trigger 连续控制对应灵巧手。该入口不传输视频，也不改变已有采集、训练和 rollout
+命令。详见[Meta Quest 3 双臂摇操](docs/TELEOPERATION.md)。
 
 ## 标准工作流
 
@@ -231,6 +246,7 @@ s4_smolvla_isaaclab/
 ├── s4_pipeline/            # 路径、active task 和配置解析
 ├── data/                   # HDF5 schema/writer 和 LeRobot 转换
 ├── scripts/                # 采集、训练、评估、rollout 和诊断入口
+├── teleoperation/          # Quest WebXR、协议、clutch 映射和独立 runtime
 ├── environment/            # 双 Conda 环境和版本采集
 ├── tests/                  # 配置、契约、schema、协议和视频测试
 ├── docs/                   # 使用文档与工程知识库

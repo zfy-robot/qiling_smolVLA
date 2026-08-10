@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>S4 Quest Teleoperation</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #111315; color: #f4f4f2; }
+    main { width: min(680px, calc(100% - 32px)); margin: 40px auto; }
+    h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: 0; }
+    p { color: #b7bdc3; line-height: 1.5; }
+    .status { border-left: 4px solid #d4a72c; background: #1c2024; padding: 14px 16px; margin: 20px 0; white-space: pre-wrap; }
+    .status.ready { border-color: #3fb950; }
+    .status.error { border-color: #f85149; }
+    button { border: 0; border-radius: 6px; padding: 14px 18px; font-size: 17px; font-weight: 650; background: #2f81f7; color: white; }
+    button:disabled { opacity: .5; }
+    code { color: #d2e6ff; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>S4 Quest Teleoperation</h1>
+  <p>Controller data only. No camera image is transmitted to the headset.</p>
+  <div id="status" class="status">Connecting to IsaacLab...</div>
+  <button id="start" disabled>Enter Passthrough Teleoperation</button>
+  <p><code>Grip/Squeeze</code>: clutch each arm independently.<br><code>Trigger</code>: continuously close the corresponding dexterous hand.</p>
+</main>
+<script>
+(() => {
+  const statusNode = document.getElementById('status');
+  const startButton = document.getElementById('start');
+  let socket = null;
+  let xrSession = null;
+  let referenceSpace = null;
+  let gl = null;
+  let sequence = 0;
+  let sessionMode = null;
+  let wakeLock = null;
+  let referenceResetFreezeFrames = 0;
+  const squeezePressed = { left: false, right: false };
+  const sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  function setStatus(text, kind = '') {
+    statusNode.textContent = text;
+    statusNode.className = `status ${kind}`;
+  }
+
+  function sendLog(level, message) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'client_log', level, message: String(message).slice(0, 300) }));
+  }
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => sendLog('warning', 'Screen wake lock released'));
+      sendLog('info', 'Screen wake lock acquired');
+    } catch (error) {
+      sendLog('warning', `Screen wake lock unavailable: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  async function setupXrLayer(session) {
+    const canvas = document.createElement('canvas');
+    gl = canvas.getContext('webgl', { alpha: true, antialias: false, xrCompatible: true });
+    if (!gl) throw new Error('WebGL is unavailable');
+    await gl.makeXRCompatible();
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+  }
+
+  function renderXrFrame(frame) {
+    const layer = xrSession.renderState.baseLayer;
+    if (!gl || !layer) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    const pose = frame.getViewerPose(referenceSpace);
+    if (!pose) return;
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    for (const view of pose.views) {
+      const viewport = layer.getViewport(view);
+      gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+    }
+  }
+
+  function connect() {
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    socket = new WebSocket(`${scheme}://${location.host}/ws`);
+    socket.onopen = async () => {
+      if (!navigator.xr) {
+        setStatus('WebXR is unavailable. Use Quest Browser over HTTPS.', 'error');
+        return;
+      }
+      const arSupported = await navigator.xr.isSessionSupported('immersive-ar');
+      const vrSupported = await navigator.xr.isSessionSupported('immersive-vr');
+      sessionMode = arSupported ? 'immersive-ar' : (vrSupported ? 'immersive-vr' : null);
+      if (!sessionMode) {
+        setStatus('Neither immersive-ar nor immersive-vr is supported by this browser.', 'error');
+        return;
+      }
+      startButton.disabled = false;
+      setStatus(`Connected. Ready for ${sessionMode}.`, 'ready');
+    };
+    socket.onclose = () => {
+      startButton.disabled = true;
+      setStatus('Connection closed. Retrying...', 'error');
+      setTimeout(connect, 1000);
+    };
+    socket.onerror = () => setStatus('WebSocket error. Check HTTPS certificate and Wi-Fi.', 'error');
+  }
+
+  function emptySide() {
+    return { valid: false, position: [0, 0, 0], orientation_xyzw: [0, 0, 0, 1], trigger: 0, squeeze: 0, buttons: [], axes: [], profiles: [] };
+  }
+
+  async function requestStableReferenceSpace(session) {
+    for (const type of ['bounded-floor', 'local-floor', 'local']) {
+      try {
+        const space = await session.requestReferenceSpace(type);
+        if (space.addEventListener) {
+          space.addEventListener('reset', () => {
+            // Publish invalid controller frames long enough for the server to
+            // enter requires_release. This prevents a Guardian relocalization
+            // from being interpreted as a large robot command.
+            referenceResetFreezeFrames = 30;
+            squeezePressed.left = false;
+            squeezePressed.right = false;
+            sendLog('warning', `XR reference-space reset (${type}); release both Grips and re-clutch`);
+            setStatus('Tracking origin changed. Release both Grips, then re-clutch.', 'error');
+          });
+        }
+        return space;
+      } catch (_) {
+        // Try the next less persistent reference-space type.
+      }
+    }
+    throw new Error('No supported XR reference space');
+  }
+
+  function sampleSource(frame, source) {
+    const space = source.gripSpace || source.targetRaySpace;
+    const pose = space ? frame.getPose(space, referenceSpace) : null;
+    if (!pose) return emptySide();
+    const p = pose.transform.position;
+    const q = pose.transform.orientation;
+    const gamepad = source.gamepad;
+    const buttons = gamepad ? Array.from(gamepad.buttons, b => Number(b.value || 0)) : [];
+    const axes = gamepad ? Array.from(gamepad.axes, Number) : [];
+    return {
+      valid: true,
+      position: [p.x, p.y, p.z],
+      orientation_xyzw: [q.x, q.y, q.z, q.w],
+      trigger: buttons.length > 0 ? buttons[0] : 0,
+      // Meta Touch normally exposes Grip as gamepad button 1. WebXR squeeze
+      // events are retained as a fallback because firmware/browser versions
+      // do not always report the analog button value consistently.
+      squeeze: Math.max(buttons.length > 1 ? buttons[1] : 0, squeezePressed[source.handedness] ? 1 : 0),
+      buttons,
+      axes,
+      profiles: Array.from(source.profiles || []),
+    };
+  }
+
+  function onXrFrame(_time, frame) {
+    try {
+      xrSession.requestAnimationFrame(onXrFrame);
+      renderXrFrame(frame);
+      if (!socket || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > 65536) return;
+      const sides = { left: emptySide(), right: emptySide() };
+      const trackingAllowed = xrSession.visibilityState === 'visible' && referenceResetFreezeFrames <= 0;
+      if (trackingAllowed) {
+        for (const source of xrSession.inputSources) {
+          if (source.handedness === 'left' || source.handedness === 'right') {
+            sides[source.handedness] = sampleSource(frame, source);
+          }
+        }
+      }
+      if (referenceResetFreezeFrames > 0) referenceResetFreezeFrames--;
+      socket.send(JSON.stringify({
+        type: 'controller_frame', version: 1, session_id: sessionId,
+        sequence: sequence++, client_time_ms: performance.now(),
+        reference_space: referenceSpace.type || 'local-floor',
+        left: sides.left, right: sides.right,
+      }));
+    } catch (error) {
+      sendLog('error', `XR frame failed: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  startButton.addEventListener('click', async () => {
+    try {
+      xrSession = await navigator.xr.requestSession(sessionMode, { optionalFeatures: ['local-floor', 'bounded-floor'] });
+      await requestWakeLock();
+      await setupXrLayer(xrSession);
+      referenceSpace = await requestStableReferenceSpace(xrSession);
+      xrSession.addEventListener('squeezestart', event => {
+        const hand = event.inputSource && event.inputSource.handedness;
+        if (hand === 'left' || hand === 'right') squeezePressed[hand] = true;
+      });
+      xrSession.addEventListener('squeezeend', event => {
+        const hand = event.inputSource && event.inputSource.handedness;
+        if (hand === 'left' || hand === 'right') squeezePressed[hand] = false;
+      });
+      xrSession.addEventListener('visibilitychange', () => {
+        sendLog('warning', `XR visibility=${xrSession.visibilityState}`);
+        if (xrSession.visibilityState !== 'visible') {
+          referenceResetFreezeFrames = Math.max(referenceResetFreezeFrames, 30);
+          squeezePressed.left = false;
+          squeezePressed.right = false;
+        } else {
+          setStatus('Tracking resumed. Release both Grips, then re-clutch.', 'ready');
+        }
+      });
+      xrSession.addEventListener('end', () => {
+        squeezePressed.left = false;
+        squeezePressed.right = false;
+        xrSession = null;
+        setStatus('XR session ended. Arms are frozen.', 'error');
+      });
+      xrSession.requestAnimationFrame(onXrFrame);
+      sendLog('info', `XR session started mode=${sessionMode} reference=${referenceSpace.type}`);
+      setStatus('Streaming controller poses. Hold Grip to move each arm.', 'ready');
+    } catch (error) {
+      sendLog('error', `Failed to enter VR: ${error && error.message ? error.message : error}`);
+      setStatus(`Failed to enter VR: ${error}`, 'error');
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    sendLog('warning', `document visibility=${document.visibilityState}`);
+    if (document.visibilityState === 'visible' && (!wakeLock || wakeLock.released)) requestWakeLock();
+  });
+  connect();
+})();
+</script>
+</body>
+</html>

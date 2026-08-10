@@ -11,6 +11,7 @@
 - `scripts/policy_server.py`：唯一 LeRobot/SmolVLA 推理边界。
 - `scripts/eval_policy.py`：在线 chunk 融合、插值、执行、视频和诊断。
 - `run.sh`：唯一用户 CLI。
+- `teleoperation/`：独立 Quest WebXR transport、clutch 映射和 IsaacLab 摇操 runtime。
 
 `TaskModuleSpec` 还声明 `scripted_config` 与 `rollout_kind`。公共 recorder 通过
 import path 加载 controller，不再直接 import drawer controller；在线 eval 对
@@ -22,6 +23,10 @@ import path 加载 controller，不再直接 import drawer controller；在线 e
 Python 3.12 policy server 通信。图片使用 uint8 base64，state/action 为 26D
 float。server 调用 LeRobot 官方 preprocessor、`predict_action_chunk()` 和
 postprocessor；项目不修改 LeRobot。
+
+Quest 摇操不经过 policy server。Quest Browser 通过 HTTPS/WSS 向独立
+`teleoperation/` runtime 发送最新原子 controller frame；runtime 调用公共
+Pinocchio DLS IK 和 26D joint mapping。它不导入或修改数据转换、训练和 rollout。
 
 ## 配置优先级
 
