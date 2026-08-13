@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import subprocess
 import sys
 from pathlib import Path
@@ -41,13 +42,15 @@ def main() -> None:
     args, passthrough = parser.parse_known_args()
 
     cfg = load_project_config()
-    output_dir = args.output_dir or cfg.dataset.staging_root
+    output_dir = args.output_dir or (
+        cfg.dataset.staging_root / f"parallel_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     counts = split_counts(args.num_episodes, args.workers)
     processes: list[tuple[int, subprocess.Popen]] = []
     for worker_id, count in enumerate(counts):
-        output = output_dir / f"s4_right_blue_cylinder_plate_scripted_worker{worker_id:02d}.hdf5"
+        output = output_dir / f"{cfg.dataset.task_id}_scripted_worker{worker_id:02d}.hdf5"
         cmd = [
             "bash",
             "run.sh",

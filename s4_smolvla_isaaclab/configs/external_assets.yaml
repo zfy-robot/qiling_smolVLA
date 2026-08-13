@@ -1,10 +1,16 @@
 isaac_assets:
-  root: ${ISAAC_ASSET_ROOT}
+  root: ${S4_SCENE_ASSET_ROOT}
+  source_root: ${ISAAC_ASSET_ROOT}
   version: "5.1"
   required:
     - Isaac/Environments/Simple_Warehouse/warehouse.usd
     - Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd
     - Isaac/Props/YCB/Axis_Aligned/005_tomato_soup_can.usd
+    - Isaac/Props/PackingTable/packing_table.usd
+    - Isaac/Props/UIElements/frame_prim.usd
+    - Isaac/Props/UIElements/arrow_x.usd
+    - Isaac/Environments/Simple_Warehouse/Materials/OmniUe4Base.mdl
+    - Isaac/Environments/Simple_Warehouse/Materials/OmniUe4Function.mdl
 robot:
   root: ${S4_PROJECT_ROOT}/assets/my_robot
   required:

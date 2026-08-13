@@ -7,6 +7,7 @@ from s4_pipeline.rollout_metrics import (
     default_summary_json_path,
     episode_artifact_paths,
     evaluate_drawer_success,
+    make_can_grid_sampler,
     make_randomization_rng,
     resolve_randomization_cfg,
     resolve_rollout_run_dir,
@@ -18,6 +19,11 @@ SCRIPTED = {
     "randomization": {
         "can_xy": {"enabled": True, "x_range": [-0.05, 0.05], "y_range": [-0.05, 0.05]},
         "drawer_initial_open": {"enabled": True, "range": [0.0, 0.05]},
+        "distractor_cans": {
+            "enabled": True,
+            "ranges": [[[0.72, 1.02], [0.12, 0.65]], [[0.72, 1.02], [-0.70, -0.30]]],
+            "min_center_distance_m": 0.14,
+        },
     },
     "success": {
         "drawer_open_abs_max": 0.04,
@@ -46,6 +52,7 @@ def test_resolve_randomization_respects_cli_and_disable():
 
 def test_sample_randomization_keeps_fixed_seed_42():
     cfg = resolve_randomization_cfg(SCRIPTED, randomize_task=True)
+    cfg["distractor_cans_enabled"] = True
     rng_a = make_randomization_rng(42)
     rng_b = make_randomization_rng(42)
     samples_a = [sample_randomization(cfg, seed=42, rng=rng_a) for _ in range(3)]
@@ -55,11 +62,36 @@ def test_sample_randomization_keeps_fixed_seed_42():
     assert samples_a[0] != samples_a[1]
     assert -0.05 <= samples_a[0]["can_x_offset_m"] <= 0.05
     assert 0.0 <= samples_a[0]["drawer_open_m"] <= 0.05
+    assert set(samples_a[0]["distractor_can_xy"]) == {
+        "distractor_can_primary",
+        "distractor_can_secondary",
+    }
 
     fixed = sample_randomization(resolve_randomization_cfg(SCRIPTED, randomize_task=False), seed=42)
     assert fixed["seed"] == 42
     assert fixed["can_x_offset_m"] == 0.0
     assert fixed["drawer_open_m"] == 0.0
+
+
+def test_rollout_stratified_grid_visits_every_cell_once():
+    scripted = {
+        "randomization": {
+            "can_xy": {
+                "enabled": True,
+                "sampling": "stratified_grid",
+                "grid_cells": [5, 5],
+                "x_range": [-0.05, 0.05],
+                "y_range": [-0.05, 0.05],
+            },
+            "drawer_initial_open": {"enabled": False, "range": [0.0, 0.0]},
+        }
+    }
+    cfg = resolve_randomization_cfg(scripted, randomize_task=True)
+    rng = make_randomization_rng(42)
+    grid = make_can_grid_sampler(cfg, rng)
+    samples = [sample_randomization(cfg, rng=rng, can_grid_sampler=grid) for _ in range(25)]
+    assert len({tuple(sample["can_grid_cell"]) for sample in samples}) == 25
+    assert {sample["can_grid_cycle"] for sample in samples} == {0}
 
 
 def test_rollout_run_dir_and_episode_artifacts(tmp_path: Path):
@@ -127,7 +159,11 @@ def test_aggregate_rollout_summary_rates():
     )
     assert summary["seed"] == 42
     assert summary["output_dir"] == "/tmp/run"
-    assert summary["randomization"]["variables"] == ["can_xy_offset_m", "drawer_open_m"]
+    assert summary["randomization"]["variables"] == [
+        "can_xy_offset_m",
+        "drawer_open_m",
+        "distractor_can_xy",
+    ]
     assert summary["episodes"] == 4
     assert summary["success_count"] == 2
     assert summary["complete_count"] == 2

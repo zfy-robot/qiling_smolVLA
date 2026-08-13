@@ -70,6 +70,7 @@ STEPS=$(cfg steps)
 BATCH_SIZE=$(cfg batch_size)
 NUM_WORKERS=$(cfg num_workers)
 DEVICE=$(cfg device)
+SEED=$(cfg seed)
 CHUNK_SIZE=$(cfg chunk_size)
 MAX_STATE_DIM=$(cfg max_state_dim)
 MAX_ACTION_DIM=$(cfg max_action_dim)
@@ -107,6 +108,7 @@ echo "  Resume:  $RESUME"
 echo "  Steps:   $STEPS"
 echo "  Batch:   $BATCH_SIZE"
 echo "  Save:    every $SAVE_FREQ steps"
+echo "  Seed:    $SEED"
 echo "========================================"
 
 if [ ! -d "$DATASET_ROOT/$DATASET" ]; then
@@ -178,6 +180,7 @@ lerobot-train \
     --save_freq="$SAVE_FREQ" \
     --num_workers="$NUM_WORKERS" \
     --persistent_workers=false \
+    --seed="$SEED" \
     --resume="$RESUME" \
     --policy.device="$DEVICE" \
     --policy.chunk_size="$CHUNK_SIZE" \

@@ -7,7 +7,7 @@ IsaacLab 闭环 rollout 和动作诊断的完整链路。
 当前主任务 `drawer_insert_close`：左手拉开抽屉，右手抓取罐子并放入抽屉，
 随后右手退避、左手关闭抽屉，双臂回到结束姿态。
 
-> 本仓库是可复现的项目代码，不包含 Isaac Sim、IsaacLab、Isaac 资产库、
+> 本仓库是可复现的项目代码，不包含 Isaac Sim、IsaacLab、单独分发的场景资产包、
 > LeRobot 源码、SmolVLM2 基础权重或训练数据。使用前需按
 > [安装文档](docs/INSTALLATION.md)准备这些外部资源。
 
@@ -73,8 +73,13 @@ git clone <project-url>
 cd s4_smolvla_isaaclab
 
 cp .env.example .env
-# 编辑 .env，填写 IsaacLab、Isaac assets、LeRobot 和模型路径
+# 编辑 .env，填写 IsaacLab、LeRobot 和模型路径
 ```
+
+将单独分发的场景资产包解压到 `local_assets/isaac/5.1/`。如果本机已有完整
+Isaac 5.1 资产库，也可以执行 `bash run.sh prepare-assets --verify`，自动归纳本项目
+实际引用的 USD 依赖。`local_assets/` 已被 Git 忽略，详见
+[外部资产](docs/EXTERNAL_ASSETS.md)。
 
 至少需要配置：
 
@@ -82,6 +87,7 @@ cp .env.example .env
 S4_PROJECT_ROOT=/path/to/s4_smolvla_isaaclab
 ISAACLAB_ROOT=/path/to/IsaacLab
 ISAAC_ASSET_ROOT=/path/to/Assets/Isaac/5.1
+S4_SCENE_ASSET_ROOT=/path/to/s4_smolvla_isaaclab/local_assets/isaac/5.1
 LEROBOT_ROOT=/path/to/lerobot
 SMOLVLA_MODEL_ROOT=/path/to/models
 ```
@@ -251,6 +257,7 @@ s4_smolvla_isaaclab/
 ├── tests/                  # 配置、契约、schema、协议和视频测试
 ├── docs/                   # 使用文档与工程知识库
 ├── assets/                 # 项目拥有的机器人和场景资产
+├── local_assets/           # 单独分发的场景资产包，不进入 Git
 ├── datasets/               # 本地生成，不进入 Git
 ├── models/                 # 外部基础模型，不进入 Git
 └── outputs/                # checkpoint、视频和诊断，不进入 Git

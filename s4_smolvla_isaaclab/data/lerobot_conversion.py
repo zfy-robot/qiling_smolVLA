@@ -73,6 +73,17 @@ def validate_recording_fps(hdf5_files: list[Path], expected_fps: int) -> None:
         )
 
 
+def read_recording_contract(hdf5_path: Path) -> dict:
+    """Read portable simulator-side metadata embedded in an HDF5 recording."""
+    with h5py.File(hdf5_path, "r") as stream:
+        raw = stream["data"].attrs.get("env_args")
+    if raw is None:
+        return {}
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
 def inspect_first_demo(hdf5_path: Path, camera_path: str, control_mode: str) -> tuple[int, int, tuple[int, ...]]:
     with h5py.File(hdf5_path, "r") as f:
         demo_names = sorted(f["data"].keys(), key=lambda x: int(x.split("_")[-1]))
@@ -140,7 +151,10 @@ def convert_hdf5_to_lerobot(
 
     state_dim, action_dim, camera_shape = inspect_first_demo(hdf5_files[0], camera_paths[0], control_mode)
     features = build_lerobot_features(camera_paths, state_dim, action_dim, camera_shape, fps=fps)
-    dataset_root = Path(output_root) / repo_id
+    # ``repo_id`` may carry a Hub-style namespace (for example ``local/foo``),
+    # while local training and rollout consistently address the leaf dataset
+    # directory. Never create an accidental extra namespace directory locally.
+    dataset_root = Path(output_root) / repo_id.split("/")[-1]
     if dataset_root.exists():
         if not overwrite:
             raise FileExistsError(
@@ -173,7 +187,14 @@ def convert_hdf5_to_lerobot(
                     state_path = schema.ACTIVE_JOINT_POS if schema.ACTIVE_JOINT_POS in demo else schema.FULL_JOINT_POS
                     states = np.asarray(demo[state_path])
                 cameras = {path: np.asarray(demo[path]) for path in camera_paths}
-                frame_count = min([len(actions), len(states), *(len(v) for v in cameras.values())])
+                lengths = {
+                    "actions": len(actions),
+                    "states": len(states),
+                    **{path: len(values) for path, values in cameras.items()},
+                }
+                if len(set(lengths.values())) != 1:
+                    raise ValueError(f"{hdf5_path}:{demo_name} frame lengths mismatch: {lengths}")
+                frame_count = len(actions)
                 task_values = None
                 if schema.TASK_DESCRIPTION in demo:
                     task_values = np.asarray(demo[schema.TASK_DESCRIPTION])
@@ -192,4 +213,16 @@ def convert_hdf5_to_lerobot(
                         frame[f"observation.images.{camera_name}"] = values[i]
                     dataset.add_frame(frame)
                 dataset.save_episode()
+    recording_contract = read_recording_contract(hdf5_files[0])
+    portable_contract = {
+        "schema_version": "s4_bimanual_v1",
+        "action_semantics": "absolute_joint_target",
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+        "fps": int(fps),
+        "camera_paths": list(camera_paths),
+        "distractor_cans_enabled": bool(recording_contract.get("distractor_cans_enabled", False)),
+    }
+    contract_path = dataset_root / "meta" / "s4_contract.json"
+    contract_path.write_text(json.dumps(portable_contract, indent=2) + "\n", encoding="utf-8")
     return dataset_root

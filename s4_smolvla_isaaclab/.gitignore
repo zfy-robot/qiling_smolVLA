@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .env
 .local/
+local_assets/
 
 *.log
 *.tmp

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
 
@@ -22,3 +23,15 @@ def test_hdf5_writer_contract(tmp_path: Path):
     with h5py.File(path, "r") as stream:
         assert stream["data/demo_0/processed_actions"].shape == (1, 26)
         assert stream["data/demo_0/obs/chest_front_rgb"].shape == (1, 8, 8, 3)
+
+
+def test_hdf5_writer_rejects_partial_camera_sequence(tmp_path: Path):
+    episode = EpisodeBuffer(
+        actions=[np.zeros(26, dtype=np.float32), np.zeros(26, dtype=np.float32)],
+        full_joint_pos=[np.zeros(48, dtype=np.float32), np.zeros(48, dtype=np.float32)],
+        chest_front_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)] * 2,
+        left_wrist_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
+    )
+    with Hdf5DemoWriter(tmp_path / "bad.hdf5", {"record_fps": 20}) as writer:
+        with pytest.raises(ValueError, match="mismatched lengths"):
+            writer.write_episode(episode)

@@ -13,7 +13,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
 from isaaclab.sensors.camera import Camera, CameraCfg
-from isaaclab.sim import PhysxCfg, SimulationCfg, SimulationContext, schemas
+from isaaclab.sim import PhysxCfg, RenderCfg, SimulationCfg, SimulationContext, schemas
 from isaaclab.sim.spawners.shapes import CuboidCfg, CylinderCfg
 from isaaclab.utils.math import matrix_from_euler, quat_from_euler_xyz, quat_from_matrix
 
@@ -24,12 +24,18 @@ from .s4_robot_cfg import (
     URDF_PATH,
     get_default_joint_positions,
 )
+from .visuals import FINGER_BLUE_GRAY, is_finger_visual_mesh_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ISAAC_ASSET_ROOT = Path(os.environ.get("ISAAC_ASSET_ROOT", Path.home() / "isaacsim_assets/Assets/Isaac/5.1")) / "Isaac"
-DEFAULT_SCENE_USD = ISAAC_ASSET_ROOT / "Environments" / "Simple_Warehouse" / "warehouse.usd"
-DEFAULT_TABLE_USD = ISAAC_ASSET_ROOT / "Props" / "PackingTable" / "packing_table.usd"
+SCENE_ASSET_ISAAC_DIR = Path(
+    os.environ.get(
+        "S4_SCENE_ASSET_ROOT",
+        PROJECT_ROOT / "local_assets" / "isaac" / "5.1",
+    )
+) / "Isaac"
+DEFAULT_SCENE_USD = SCENE_ASSET_ISAAC_DIR / "Environments" / "Simple_Warehouse" / "warehouse.usd"
+DEFAULT_TABLE_USD = SCENE_ASSET_ISAAC_DIR / "Props" / "PackingTable" / "packing_table.usd"
 PILL_BOTTLE_USDZ = PROJECT_ROOT / "assets" / "scenes" / "Pill_Bottle.usdz"
 
 BLOCK_CYLINDER_RADIUS = 0.035
@@ -159,6 +165,20 @@ def create_simulation_context(device: str, *, use_fabric: bool = True) -> Simula
                 gpu_max_rigid_contact_count=2**23,
                 gpu_max_rigid_patch_count=2**18,
             ),
+            # Fixed, quality-oriented RTX settings shared by preview, recording,
+            # and policy rollout. These affect rendering only, not physics or
+            # the observations/actions contract.
+            render=RenderCfg(
+                antialiasing_mode="DLAA",
+                enable_reflections=True,
+                enable_global_illumination=True,
+                enable_direct_lighting=True,
+                enable_dl_denoiser=True,
+                samples_per_pixel=4,
+                enable_shadows=True,
+                enable_ambient_occlusion=True,
+                dome_light_upper_lower_strategy=4,
+            ),
         )
     )
     sim.set_camera_view([0.18, -0.62, 1.42], [0.52, -0.12, 0.98])
@@ -213,7 +233,55 @@ def build_robot(
             ),
         },
     )
-    return Articulation(cfg=robot_cfg)
+    robot = Articulation(cfg=robot_cfg)
+    apply_finger_visual_material(prim_path)
+    return robot
+
+
+def apply_finger_visual_material(robot_prim_path: str) -> None:
+    """Color only the two hands' finger visual meshes blue-gray.
+
+    Collision meshes, palms, wrists, rigid-body properties, and articulation
+    behavior are deliberately left untouched.
+    """
+    try:
+        import omni.usd
+        from pxr import Usd
+        from isaaclab.sim.utils import bind_visual_material
+    except Exception as exc:
+        print(f"[WARN] could not configure finger visual material: {exc}", flush=True)
+        return
+
+    stage = omni.usd.get_context().get_stage()
+    robot_root = stage.GetPrimAtPath(robot_prim_path)
+    if not robot_root.IsValid():
+        print(f"[WARN] robot root not found for finger material: {robot_prim_path}", flush=True)
+        return
+
+    material_path = "/World/Looks/S4FingerBlueGray"
+    material = sim_utils.PreviewSurfaceCfg(
+        diffuse_color=FINGER_BLUE_GRAY,
+        roughness=0.68,
+        metallic=0.04,
+    )
+    if not stage.GetPrimAtPath(material_path).IsValid():
+        material.func(material_path, material)
+
+    finger_meshes = [
+        str(prim.GetPath())
+        for prim in Usd.PrimRange(robot_root)
+        if prim.GetTypeName() == "Mesh" and is_finger_visual_mesh_path(str(prim.GetPath()))
+    ]
+    for mesh_path in finger_meshes:
+        bind_visual_material(mesh_path, material_path, stage=stage, stronger_than_descendants=True)
+    if not finger_meshes:
+        print("[WARN] no imported finger visual meshes matched the material selector", flush=True)
+        return
+    print(
+        f"[BOOT] finger visuals colored blue-gray: meshes={len(finger_meshes)} "
+        f"rgb={FINGER_BLUE_GRAY}",
+        flush=True,
+    )
 
 
 def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
@@ -224,6 +292,7 @@ def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
     scene_cfg = sim_utils.UsdFileCfg(usd_path=str(cfg.scene_usd))
     scene_cfg.func("/World/BackgroundScene", scene_cfg)
     print("[BOOT] background scene loaded.", flush=True)
+    configure_fixed_lighting()
 
     if cfg.table_usd is None:
         return
@@ -245,6 +314,94 @@ def spawn_background_and_table(cfg: SceneBuildCfg) -> None:
     print("[BOOT] table loaded.", flush=True)
     if cfg.clean_table_clutter:
         remove_table_clutter("/World/TaskTableVisual")
+
+
+def configure_fixed_lighting() -> None:
+    """Keep fixed warehouse fixtures and add a deterministic task-area rig.
+
+    The large warm overhead source provides soft, directional shadows; a
+    neutral dome and weaker front fill prevent the robot, can, and open drawer
+    from becoming unnaturally black. No value in this rig is randomized.
+    """
+    try:
+        import omni.usd
+        from pxr import Sdf, Usd, UsdGeom, UsdLux
+    except Exception as exc:
+        print(f"[WARN] could not configure fixed lighting: {exc}", flush=True)
+        return
+
+    stage = omni.usd.get_context().get_stage()
+    lighting_root = stage.GetPrimAtPath("/World/S4Lighting")
+    if lighting_root.IsValid():
+        stage.RemovePrim(Sdf.Path("/World/S4Lighting"))
+
+    authored_light_count = 0
+    near_light_count = 0
+    far_light_count = 0
+    near_light_scale = 0.18
+    far_light_scale = 0.55
+    task_center_xy = np.asarray([0.80, 0.0], dtype=np.float64)
+    near_light_radius_m = 3.5
+    background = stage.GetPrimAtPath("/World/BackgroundScene")
+    if background.IsValid():
+        authored_lights = [prim for prim in Usd.PrimRange(background) if prim.HasAPI(UsdLux.LightAPI)]
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        # Keep fixtures close to the task dim to preserve white robot/table
+        # texture. Raise only distant fixtures so the warehouse background is
+        # bright without increasing direct illumination on the task area.
+        for prim in authored_lights:
+            light = UsdLux.LightAPI(prim)
+            intensity_attr = light.GetIntensityAttr()
+            intensity = intensity_attr.Get()
+            if intensity is not None:
+                if prim.GetTypeName() == "DistantLight":
+                    scale = near_light_scale
+                    near_light_count += 1
+                else:
+                    world_pos = xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation()
+                    distance_xy = float(
+                        np.linalg.norm(np.asarray([world_pos[0], world_pos[1]]) - task_center_xy)
+                    )
+                    if distance_xy <= near_light_radius_m:
+                        scale = near_light_scale
+                        near_light_count += 1
+                    else:
+                        scale = far_light_scale
+                        far_light_count += 1
+                intensity_attr.Set(float(intensity) * scale)
+        authored_light_count = len(authored_lights)
+
+    dome_cfg = sim_utils.DomeLightCfg(
+        color=(0.94, 0.97, 1.0),
+        enable_color_temperature=True,
+        color_temperature=5800.0,
+        # The enclosed warehouse already has 18 strong ceiling fixtures. Keep
+        # the dome low so it lifts deep shadows without flattening robot albedo
+        # and roughness details.
+        intensity=100.0,
+        visible_in_primary_ray=False,
+    )
+    dome_cfg.func("/World/S4Lighting/AmbientDome", dome_cfg)
+
+    fill_cfg = sim_utils.SphereLightCfg(
+        color=(0.96, 0.98, 1.0),
+        enable_color_temperature=True,
+        color_temperature=6200.0,
+        normalize=True,
+        intensity=50.0,
+        radius=0.45,
+    )
+    fill_cfg.func(
+        "/World/S4Lighting/FrontFill",
+        fill_cfg,
+        translation=(0.0, -0.85, 1.9),
+    )
+    print(
+        f"[BOOT] fixed lighting ready (warehouse lights: {authored_light_count}; "
+        f"task-zone={near_light_count} at {near_light_scale:.0%}, "
+        f"background={far_light_count} at {far_light_scale:.0%}; low ambient/fill).",
+        flush=True,
+    )
 
 
 def remove_table_clutter(table_root_path: str) -> None:

@@ -2,8 +2,17 @@
 
 ## `doctor` 路径失败
 
-复制 `.env.example` 到 `.env`，确认 assets 根目录包含 `Isaac/` 和 `NVIDIA/`。
-不要把 `ISAAC_ASSET_ROOT` 配到其下层 `Isaac/`。
+复制 `.env.example` 到 `.env`，确认 `S4_SCENE_ASSET_ROOT` 下存在
+`Isaac/Environments/Simple_Warehouse/warehouse.usd`。默认目录是项目内的
+`local_assets/isaac/5.1`。制作资产包时，`ISAAC_ASSET_ROOT` 应指向其上层 `5.1`
+目录，不要指到下层 `Isaac/`。
+
+## 场景整体变红或 MDL 报错
+
+如果日志出现 `OmniUe4Function`、`OmniUe4Base` 找不到，说明使用了旧版不完整的
+`local_assets`。维护者重新执行 `bash run.sh prepare-assets --verify`；使用者需要
+重新获取资产包。确认 `bash run.sh doctor` 中 `implicit render assets: complete`，然后
+完全退出并重启 Isaac Sim，清除当前进程内已经编译失败的红色错误材质。
 
 ## Pinocchio/Pink 导入 ROS Python 3.10
 

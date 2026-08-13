@@ -1,8 +1,7 @@
 """Scene builder for the drawer insert-close task preview.
 
-This preview scene loads the warehouse base, then adds two aligned Sektion
-cabinets and a single tomato soup can. The scripted drawer controller and
-dataset recorder will be added separately.
+This scene loads the warehouse base, two aligned Sektion cabinets and the task
+can. Dataset recording can opt into two additional visual distractor cans.
 """
 
 from __future__ import annotations
@@ -26,7 +25,13 @@ from s4_robot.simulation import (
 )
 
 
-ISAAC_ROOT = Path(os.environ.get("ISAAC_ASSET_ROOT", Path.home() / "isaacsim_assets/Assets/Isaac/5.1"))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ISAAC_ROOT = Path(
+    os.environ.get(
+        "S4_SCENE_ASSET_ROOT",
+        PROJECT_ROOT / "local_assets" / "isaac" / "5.1",
+    )
+)
 DRAWER_USD = ISAAC_ROOT / "Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd"
 YCB_OBJECTS = (
     ISAAC_ROOT / "Isaac/Props/YCB/Axis_Aligned/005_tomato_soup_can.usd",
@@ -52,6 +57,7 @@ TOMATO_SOUP_CAN_SCALE = (1.0, 0.90, 1.0)
 TOMATO_CAN_MASS_KG = 0.08
 TOMATO_CAN_STATIC_FRICTION = 2.2
 TOMATO_CAN_DYNAMIC_FRICTION = 1.8
+DISTRACTOR_CANS_ENV = "S4_ENABLE_DRAWER_DISTRACTOR_CANS"
 
 
 @dataclass(frozen=True)
@@ -211,15 +217,35 @@ def _spawn_usd(
 
 
 def _object_placements() -> tuple[DrawerAssetPlacement, ...]:
-    return (
+    placements = [
         DrawerAssetPlacement(
             "TomatoSoupCan",
             YCB_OBJECTS[0],
             TOMATO_SOUP_CAN_POSITION,
             scale=TOMATO_SOUP_CAN_SCALE,
             orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
-        ),
-    )
+        )
+    ]
+    if os.environ.get(DISTRACTOR_CANS_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}:
+        placements.extend(
+            (
+                DrawerAssetPlacement(
+                    "DistractorCanPrimary",
+                    YCB_OBJECTS[0],
+                    (0.86, 0.38, TOMATO_SOUP_CAN_POSITION[2]),
+                    scale=TOMATO_SOUP_CAN_SCALE,
+                    orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
+                ),
+                DrawerAssetPlacement(
+                    "DistractorCanSecondary",
+                    YCB_OBJECTS[0],
+                    (0.86, -0.50, TOMATO_SOUP_CAN_POSITION[2]),
+                    scale=TOMATO_SOUP_CAN_SCALE,
+                    orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
+                ),
+            )
+        )
+    return tuple(placements)
 
 
 def _spawn_dynamic_usd_object(item: DrawerAssetPlacement) -> RigidObject:
@@ -354,7 +380,12 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         print(f"[BOOT] loading drawer task object: {item.name} <- {item.usd_path.name}", flush=True)
         obj = _spawn_dynamic_usd_object(item)
         dynamic_objects.append(obj)
-        named_objects["can"] = obj
+        if item.name == "TomatoSoupCan":
+            named_objects["can"] = obj
+        elif item.name == "DistractorCanPrimary":
+            named_objects["distractor_can_primary"] = obj
+        elif item.name == "DistractorCanSecondary":
+            named_objects["distractor_can_secondary"] = obj
         object_initial_poses.append((obj, item.position, item.orientation))
 
     camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
@@ -376,6 +407,7 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         "wrist_cameras": wrist_cameras,
         "dynamic_objects": dynamic_objects,
         "named_objects": named_objects,
+        "can_initial_position": TOMATO_SOUP_CAN_POSITION,
         "object_initial_poses": object_initial_poses,
         "layout_text": format_drawer_layout(cfg, drawer_top_z),
     }

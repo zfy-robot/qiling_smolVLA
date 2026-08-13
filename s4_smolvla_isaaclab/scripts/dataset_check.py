@@ -21,7 +21,13 @@ def _fail(message: str) -> None:
 def _check_hdf5(path: Path, cfg) -> None:
     import h5py
     import numpy as np
-    from data.hdf5_schema import CHEST_FRONT_RGB, LEFT_WRIST_RGB, PROCESSED_ACTIONS, RIGHT_WRIST_RGB
+    from data.hdf5_schema import (
+        ACTIVE_JOINT_POS,
+        CHEST_FRONT_RGB,
+        LEFT_WRIST_RGB,
+        PROCESSED_ACTIONS,
+        RIGHT_WRIST_RGB,
+    )
 
     files = [path] if path.is_file() else sorted(path.rglob("*.hdf5"))
     if not files:
@@ -34,6 +40,11 @@ def _check_hdf5(path: Path, cfg) -> None:
                 if action.ndim != 2 or action.shape[1] != cfg.features.action_dim:
                     _fail(f"{file}:{name} action shape={action.shape}")
                 count = action.shape[0]
+                if ACTIVE_JOINT_POS not in group:
+                    _fail(f"{file}:{name} missing {ACTIVE_JOINT_POS}")
+                active_state = group[ACTIVE_JOINT_POS]
+                if active_state.shape != (count, cfg.features.active_state_dim):
+                    _fail(f"{file}:{name} active state shape={active_state.shape}")
                 for key, feature in zip(
                     (CHEST_FRONT_RGB, LEFT_WRIST_RGB, RIGHT_WRIST_RGB), cfg.features.camera_keys, strict=True
                 ):
@@ -43,6 +54,8 @@ def _check_hdf5(path: Path, cfg) -> None:
                         _fail(f"{file}:{name}:{key} shape={image.shape}, expected={expected}")
                 if not np.isfinite(action[:]).all():
                     _fail(f"{file}:{name} contains NaN/Inf actions")
+                if not np.isfinite(active_state[:]).all():
+                    _fail(f"{file}:{name} contains NaN/Inf active states")
                 episodes += 1
                 frames += count
     print(f"[OK] HDF5 files={len(files)} episodes={episodes} frames={frames} action=26D cameras=3 schema={cfg.dataset.schema_version}")
@@ -104,6 +117,34 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> None:
         expected_inputs = {"observation.state", *cfg.features.camera_keys}
         if set(inputs) != expected_inputs or ckpt["output_features"]["action"]["shape"] != [26]:
             _fail(f"checkpoint feature contract mismatch: {model}")
+        if inputs["observation.state"]["shape"] != [cfg.features.state_dim]:
+            _fail(f"checkpoint state shape mismatch: {inputs['observation.state']['shape']}")
+        for key in cfg.features.camera_keys:
+            expected_chw = [
+                cfg.features.camera_shapes[key][2],
+                cfg.features.camera_shapes[key][0],
+                cfg.features.camera_shapes[key][1],
+            ]
+            if inputs[key]["shape"] != expected_chw:
+                _fail(f"checkpoint {key} shape={inputs[key]['shape']}, expected={expected_chw}")
+        required_checkpoint_files = (
+            "policy_preprocessor.json",
+            "policy_postprocessor.json",
+            "policy_preprocessor_step_5_normalizer_processor.safetensors",
+            "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+        )
+        missing = [name for name in required_checkpoint_files if not (model / name).is_file()]
+        if missing:
+            _fail(f"checkpoint missing inference processors: {missing}")
+    contract_path = path / "meta/s4_contract.json"
+    if contract_path.is_file():
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        if contract.get("action_semantics") != cfg.dataset.action_semantics:
+            _fail(f"dataset action semantics mismatch: {contract.get('action_semantics')}")
+        if int(contract.get("state_dim", -1)) != cfg.features.state_dim:
+            _fail(f"dataset contract state_dim={contract.get('state_dim')}")
+        if int(contract.get("action_dim", -1)) != cfg.features.action_dim:
+            _fail(f"dataset contract action_dim={contract.get('action_dim')}")
     print(f"[OK] LeRobotDataset episodes={len(previous)} frames={table.num_rows} fps={info['fps']} action/state=26D schema={cfg.dataset.schema_version}")
     print(f"[OK] cameras=3 shape=480x680x3 decoded_files={len(video_files)} tasks={task_rows.num_rows}")
     if checkpoint:

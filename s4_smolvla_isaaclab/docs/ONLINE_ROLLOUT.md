@@ -47,10 +47,16 @@ bash run.sh rollout \
 
 ## 随机化成功率评估
 
-任务随机化**只**采样两项：
+任务随机化采样三项：
 
-1. 罐子 XY 偏移（`can_xy`）
+1. 罐子 XY 偏移（`can_xy`，按随机顺序遍历 5x5 网格并在格内均匀采样）
 2. 抽屉初始开度（`drawer_initial_open`）
+3. 两个柜面干扰罐的位置（与新采集数据的视觉分布一致）
+
+rollout 默认读取数据集的 `meta/s4_contract.json`：新采集数据自动启用两个干扰罐，
+旧数据集没有该标记时保持旧的无干扰罐场景。可用 `--distractor-cans` 或
+`--no-distractor-cans` 显式覆盖；`--deterministic` 会把所有启用的物体放在固定安全
+位置，确保重复运行画面一致。
 
 默认范围来自
 [`drawer_insert_close.scripted.yaml`](../configs/tasks/drawer_insert_close.scripted.yaml)。

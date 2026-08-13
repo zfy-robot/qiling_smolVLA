@@ -207,6 +207,7 @@ class DrawerInsertCloseController:
         *,
         initial_action: np.ndarray | None = None,
         anchors: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+        target_offsets: dict[str, np.ndarray] | None = None,
     ):
         self.tcp_controller = tcp_controller
         self.config_path = Path(config_path)
@@ -216,9 +217,24 @@ class DrawerInsertCloseController:
         self.default_orientation_tolerance = float(controller_cfg.get("default_orientation_tolerance", 0.20))
         self.global_task = str(controller_cfg.get("task", "Open the drawer, place the object inside, and close the drawer."))
         self.anchors = anchors or {}
-        self.target_specs = self.config.get("targets", {})
+        configured_targets = self.config.get("targets", {})
+        self.target_specs = {
+            str(name): dict(spec) for name, spec in configured_targets.items()
+        } if isinstance(configured_targets, dict) else configured_targets
         if not isinstance(self.target_specs, dict):
             raise ValueError("Drawer scripted config targets must be a mapping")
+        for target_name, offset_delta in (target_offsets or {}).items():
+            if target_name not in self.target_specs:
+                raise ValueError(f"Cannot offset unknown configured TCP target: {target_name!r}")
+            delta = np.asarray(offset_delta, dtype=np.float32)
+            if delta.shape != (3,) or not np.all(np.isfinite(delta)):
+                raise ValueError(f"Target offset for {target_name!r} must contain three finite values")
+            target_spec = dict(self.target_specs[target_name])
+            base_offset = np.asarray(target_spec.get("offset", [0.0, 0.0, 0.0]), dtype=np.float32)
+            if base_offset.shape != (3,):
+                raise ValueError(f"Configured target {target_name!r} offset must contain three values")
+            target_spec["offset"] = (base_offset + delta).tolist()
+            self.target_specs[target_name] = target_spec
         hand_cfg = self.config.get("hands", {})
         self.hand_action_hold_seconds = max(float(hand_cfg.get("action_hold_seconds", 1.0)), 0.0)
         self.hand_targets = {

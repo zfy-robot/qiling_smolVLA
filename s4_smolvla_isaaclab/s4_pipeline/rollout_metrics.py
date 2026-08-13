@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy
+
 
 def resolve_randomization_cfg(
     scripted_cfg: dict[str, Any],
@@ -69,12 +71,34 @@ def make_randomization_rng(seed: int = 42):
     return np.random.default_rng(int(seed))
 
 
+def make_can_grid_sampler(random_cfg: dict[str, Any], rng: Any) -> StratifiedGrid2D | None:
+    """Build the stateful stratified sampler requested by the task config."""
+    can_cfg = random_cfg.get("can_xy", {}) or {}
+    if (
+        not bool(random_cfg.get("enabled", False))
+        or not bool(can_cfg.get("enabled", True))
+        or str(can_cfg.get("sampling", "uniform")) != "stratified_grid"
+    ):
+        return None
+    cells = can_cfg.get("grid_cells", [5, 5])
+    if not isinstance(cells, (list, tuple)) or len(cells) != 2:
+        raise ValueError("randomization.can_xy.grid_cells must contain [x_cells, y_cells]")
+    return StratifiedGrid2D(
+        rng,
+        x_range=tuple(float(value) for value in can_cfg.get("x_range", [-0.05, 0.05])),
+        y_range=tuple(float(value) for value in can_cfg.get("y_range", [-0.05, 0.05])),
+        cells_x=int(cells[0]),
+        cells_y=int(cells[1]),
+    )
+
+
 def sample_randomization(
     random_cfg: dict[str, Any],
     *,
     seed: int = 42,
     rng: Any | None = None,
-) -> dict[str, float | int]:
+    can_grid_sampler: StratifiedGrid2D | None = None,
+) -> dict[str, Any]:
     """Sample can XY offset and drawer opening for one episode.
 
     Only can position and drawer opening are randomized. ``seed`` is always the
@@ -85,26 +109,59 @@ def sample_randomization(
     generator = rng if rng is not None else np.random.default_rng(int(seed))
     can_cfg = random_cfg.get("can_xy", {}) or {}
     drawer_cfg = random_cfg.get("drawer_initial_open", {}) or {}
+    distractor_cfg = random_cfg.get("distractor_cans", {}) or {}
 
     can_x = 0.0
     can_y = 0.0
     drawer_open = 0.0
+    grid_sample = None
     if bool(random_cfg.get("enabled", False)):
         if bool(can_cfg.get("enabled", True)):
-            x_range = can_cfg.get("x_range", [0.0, 0.0])
-            y_range = can_cfg.get("y_range", [0.0, 0.0])
-            can_x = float(generator.uniform(*x_range))
-            can_y = float(generator.uniform(*y_range))
+            if can_grid_sampler is not None:
+                grid_sample = can_grid_sampler.sample()
+                can_x, can_y = (float(value) for value in grid_sample.xy)
+            else:
+                x_range = can_cfg.get("x_range", [0.0, 0.0])
+                y_range = can_cfg.get("y_range", [0.0, 0.0])
+                can_x = float(generator.uniform(*x_range))
+                can_y = float(generator.uniform(*y_range))
         if bool(drawer_cfg.get("enabled", True)):
             open_range = drawer_cfg.get("range", [0.0, 0.0])
             drawer_open = float(generator.uniform(*open_range))
 
-    return {
+    distractor_positions: dict[str, list[float]] = {}
+    if bool(random_cfg.get("distractor_cans_enabled", False)):
+        if bool(random_cfg.get("enabled", False)) and bool(distractor_cfg.get("enabled", True)):
+            points = sample_separated_xy(
+                generator,
+                ranges=distractor_cfg.get(
+                    "ranges",
+                    [[[0.72, 1.02], [0.12, 0.65]], [[0.72, 1.02], [-0.70, -0.30]]],
+                ),
+                forbidden_xy=[[0.54 + can_x, -0.08 + can_y]],
+                min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.14)),
+            )
+        else:
+            points = np.asarray([[0.86, 0.38], [0.86, -0.50]], dtype=np.float32)
+        distractor_positions = {
+            "distractor_can_primary": points[0].tolist(),
+            "distractor_can_secondary": points[1].tolist(),
+        }
+
+    result: dict[str, Any] = {
         "seed": int(seed),
         "can_x_offset_m": can_x,
         "can_y_offset_m": can_y,
         "drawer_open_m": drawer_open,
+        "distractor_can_xy": distractor_positions,
     }
+    if grid_sample is not None:
+        result.update(
+            can_grid_cell=[grid_sample.cell_x, grid_sample.cell_y],
+            can_grid_cycle=grid_sample.cycle,
+            can_grid_index_in_cycle=grid_sample.index_in_cycle,
+        )
+    return result
 
 
 def evaluate_drawer_success(
@@ -260,7 +317,7 @@ def aggregate_rollout_summary(
         "randomize_task": bool(randomize_task),
         "seed": int(base_seed),
         "randomization": {
-            "variables": ["can_xy_offset_m", "drawer_open_m"],
+            "variables": ["can_xy_offset_m", "drawer_open_m", "distractor_can_xy"],
             "can_xy": randomization.get("can_xy", {}),
             "drawer_initial_open": {
                 "range": (randomization.get("drawer_initial_open", {}) or {}).get("range"),

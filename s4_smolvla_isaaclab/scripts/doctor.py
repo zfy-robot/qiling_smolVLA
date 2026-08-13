@@ -43,8 +43,43 @@ def main() -> None:
 
     checks: list[bool] = []
     checks.append(_check("IsaacLab", (Path(os.environ["ISAACLAB_ROOT"]) / "isaaclab.sh").is_file(), os.environ["ISAACLAB_ROOT"]))
-    checks.append(_check("Isaac assets", Path(os.environ["ISAAC_ASSET_ROOT"]).is_dir(), os.environ["ISAAC_ASSET_ROOT"]))
+    checks.append(_check("project scene assets", Path(os.environ["S4_SCENE_ASSET_ROOT"]).is_dir(), os.environ["S4_SCENE_ASSET_ROOT"]))
     checks.append(_check("scene USD", cfg.scene.scene_usd.is_file(), str(cfg.scene.scene_usd)))
+    scene_root = Path(os.environ["S4_SCENE_ASSET_ROOT"])
+    implicit_assets = (
+        "Isaac/Props/UIElements/frame_prim.usd",
+        "Isaac/Props/UIElements/arrow_x.usd",
+        "Isaac/Environments/Simple_Warehouse/Materials/OmniUe4Base.mdl",
+        "Isaac/Environments/Simple_Warehouse/Materials/OmniUe4Function.mdl",
+    )
+    missing_implicit = [relative for relative in implicit_assets if not (scene_root / relative).is_file()]
+    checks.append(
+        _check(
+            "implicit render assets",
+            not missing_implicit,
+            "complete" if not missing_implicit else ", ".join(missing_implicit),
+        )
+    )
+    manifest_path = scene_root / "manifest.json"
+    manifest_missing: list[str] = []
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_missing = [
+            str(item["path"])
+            for item in manifest.get("files", [])
+            if not (scene_root / str(item["path"])).is_file()
+        ]
+    checks.append(
+        _check(
+            "scene asset manifest",
+            manifest_path.is_file() and not manifest_missing,
+            (
+                f"{len(manifest.get('files', []))} files complete"
+                if manifest_path.is_file() and not manifest_missing
+                else (", ".join(manifest_missing[:5]) or f"missing {manifest_path}")
+            ),
+        )
+    )
     checks.append(_check("LeRobot checkout", (REFERENCE_LEROBOT_DIR / ".git").is_dir(), str(REFERENCE_LEROBOT_DIR)))
     checks.append(_check("base model", Path(train["vlm_model_name"]).is_dir(), str(train["vlm_model_name"])))
     checks.append(_check("26D contract", cfg.features.state_dim == cfg.features.action_dim == 26, f"state={cfg.features.state_dim} action={cfg.features.action_dim}"))

@@ -13,6 +13,16 @@ fi
 export S4_PROJECT_ROOT="${S4_PROJECT_ROOT:-$PROJECT_ROOT}"
 export ISAACLAB_ROOT="${ISAACLAB_ROOT:-$HOME/IsaacLab}"
 export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-$HOME/isaacsim_assets/Assets/Isaac/5.1}"
+PROJECT_SCENE_ASSET_ROOT="$PROJECT_ROOT/local_assets/isaac/5.1"
+if [[ -z "${S4_SCENE_ASSET_ROOT:-}" ]]; then
+    if [[ -f "$PROJECT_SCENE_ASSET_ROOT/Isaac/Environments/Simple_Warehouse/warehouse.usd" ]]; then
+        export S4_SCENE_ASSET_ROOT="$PROJECT_SCENE_ASSET_ROOT"
+    else
+        # Compatibility fallback for existing workstations. Fresh clones should
+        # unpack the separately distributed local_assets bundle instead.
+        export S4_SCENE_ASSET_ROOT="$ISAAC_ASSET_ROOT"
+    fi
+fi
 export LEROBOT_ROOT="${LEROBOT_ROOT:-$(dirname "$PROJECT_ROOT")/lerobot}"
 export SMOLVLA_MODEL_ROOT="${SMOLVLA_MODEL_ROOT:-$PROJECT_ROOT/models}"
 export S4_DATA_ROOT="${S4_DATA_ROOT:-$PROJECT_ROOT/datasets}"
@@ -31,9 +41,9 @@ export S4_SMOLVLA_PREFIX="${S4_SMOLVLA_PREFIX:-$CONDA_ROOT/envs/$S4_SMOLVLA_ENV}
 export S4_SMOLVLA_PYTHON="${S4_SMOLVLA_PYTHON:-$S4_SMOLVLA_PREFIX/bin/python}"
 ISAACLAB="$ISAACLAB_ROOT/isaaclab.sh"
 
-ISAAC_LOCAL_KIT_ARGS="--/persistent/isaac/asset_root/default=$ISAAC_ASSET_ROOT --/persistent/isaac/asset_root/cloud=$ISAAC_ASSET_ROOT --/persistent/isaac/asset_root/nvidia=$ISAAC_ASSET_ROOT --/persistent/isaac/asset_root/timeout=1"
-ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.asset.browser/folders/0=file:$ISAAC_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.asset.browser/folders/1=file:$ISAAC_ASSET_ROOT/Isaac/Props --/exts/isaacsim.asset.browser/folders/2=file:$ISAAC_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.asset.browser/data/timeout=1 --/exts/isaacsim.asset.browser/visible_after_startup=false"
-ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.gui.content_browser/folders/0=file:$ISAAC_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.gui.content_browser/folders/1=file:$ISAAC_ASSET_ROOT/Isaac/Props --/exts/isaacsim.gui.content_browser/folders/2=file:$ISAAC_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.gui.content_browser/timeout=1"
+ISAAC_LOCAL_KIT_ARGS="--/persistent/isaac/asset_root/default=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/cloud=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/nvidia=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/timeout=1"
+ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.asset.browser/folders/0=file:$S4_SCENE_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.asset.browser/folders/1=file:$S4_SCENE_ASSET_ROOT/Isaac/Props --/exts/isaacsim.asset.browser/folders/2=file:$S4_SCENE_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.asset.browser/data/timeout=1 --/exts/isaacsim.asset.browser/visible_after_startup=false"
+ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.gui.content_browser/folders/0=file:$S4_SCENE_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.gui.content_browser/folders/1=file:$S4_SCENE_ASSET_ROOT/Isaac/Props --/exts/isaacsim.gui.content_browser/folders/2=file:$S4_SCENE_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.gui.content_browser/timeout=1"
 
 use_isaaclab_env() {
     local pyver
@@ -43,7 +53,7 @@ use_isaaclab_env() {
     export PYTHONPATH="$cmeel/lib/python$pyver/site-packages:${PYTHONPATH:-}"
     export LD_LIBRARY_PATH="$cmeel/lib:${LD_LIBRARY_PATH:-}"
     export PYTHONUNBUFFERED=1
-    export ISAAC_LOCAL_ASSET_ROOT="$ISAAC_ASSET_ROOT"
+    export ISAAC_LOCAL_ASSET_ROOT="$S4_SCENE_ASSET_ROOT"
 }
 
 use_smolvla_env() {
@@ -128,12 +138,14 @@ Usage: bash run.sh <command> [options]
 
 Core commands:
   doctor [--strict]                  Check paths, environments and contracts
+  prepare-assets [--source-root DIR] Build ignored local scene-asset bundle
   list-tasks                         List registered tasks
   activate-task TASK                Select a task in .local/active_task
   sim [IsaacLab options]             Start the active task scene
   teleop [options]                   Control both arms with Meta Quest 3
   teleop-cert [--ip ADDRESS]         Generate the local HTTPS certificate
   record [--episodes N] [--headless] Record successful HDF5 demonstrations
+  collect-convert [options]           Collect, validate and convert; never train
   convert [--overwrite]              Convert HDF5 to LeRobotDataset
   dataset-check [PATH]               Validate dataset and optional checkpoint
   train [--resume]                   Train SmolVLA in the smolvla environment
@@ -145,7 +157,7 @@ Core commands:
 
 Rollout notes:
   --deterministic     seed=42, disable task randomization (regression)
-  --success-rate N    seed=42, N randomized episodes (can XY + drawer open only)
+  --success-rate N    seed=42, N randomized episodes (can/drawer/distractor positions)
   Pass-through flags: --episodes, --seed (default 42), --randomize-task/--no-randomize-task,
   --can-x-range, --can-y-range, --drawer-open-range, --output-dir, --output-video,
   --summary-json, --save-videos/--no-save-videos,
@@ -162,6 +174,20 @@ EOF
 case "${1:-help}" in
     help|-h|--help) usage ;;
     doctor) shift; "$S4_ISAACLAB_PREFIX/bin/python" scripts/doctor.py "$@" ;;
+    prepare-assets)
+        shift
+        use_isaaclab_env
+        PYVER="$($S4_ISAACLAB_PREFIX/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+        USD_LIBS_ROOT="$(find "$S4_ISAACLAB_PREFIX/lib/python$PYVER/site-packages/isaacsim/extscache" -maxdepth 1 -type d -name 'omni.usd.libs-*' -print -quit)"
+        if [[ -z "$USD_LIBS_ROOT" ]]; then
+            echo "Could not locate Isaac Sim omni.usd.libs under $S4_ISAACLAB_PREFIX" >&2
+            exit 2
+        fi
+        PYTHONPATH="$USD_LIBS_ROOT:${PYTHONPATH:-}" \
+        LD_LIBRARY_PATH="$S4_ISAACLAB_PREFIX/lib:$USD_LIBS_ROOT/bin:${LD_LIBRARY_PATH:-}" \
+        PXR_PLUGINPATH_NAME="$USD_LIBS_ROOT/bin/usd" \
+            "$S4_ISAACLAB_PREFIX/bin/python" scripts/prepare_local_assets.py "$@"
+        ;;
     inspect-config) shift; python3 scripts/inspect_project.py "$@" ;;
     list-tasks) shift; python3 scripts/inspect_tasks.py "$@" ;;
     activate-task) shift; python3 scripts/activate_task.py "$@" ;;
@@ -181,6 +207,7 @@ case "${1:-help}" in
         shift; "$S4_ISAACLAB_PREFIX/bin/python" -m teleoperation.certificate "$@"
         ;;
     record|record-hdf5) shift; print_context; record_command "$@" ;;
+    collect-convert) shift; bash scripts/collect_convert.sh "$@" ;;
     record-parallel) shift; python3 scripts/record_parallel.py "$@" ;;
     convert|convert-lerobot) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/convert_lerobot.py "$@" ;;
     dataset-check) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/dataset_check.py "$@" ;;

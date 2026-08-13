@@ -13,8 +13,8 @@
     "control_mode": "right_only"
   },
   "scene": {
-    "scene_usd": "${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse.usd",
-    "table_usd": "${ISAAC_ASSET_ROOT}/Isaac/Props/PackingTable/packing_table.usd",
+    "scene_usd": "${S4_SCENE_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse.usd",
+    "table_usd": "${S4_SCENE_ASSET_ROOT}/Isaac/Props/PackingTable/packing_table.usd",
     "table_top_z": 1.0
   },
   "features": {

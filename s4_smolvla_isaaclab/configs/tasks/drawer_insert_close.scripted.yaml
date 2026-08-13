@@ -13,6 +13,29 @@ randomization:
     enabled: true
     x_range: [-0.05, 0.05]
     y_range: [-0.05, 0.05]
+    # Split the continuous XY range into 5x5 cells. Each successful group of
+    # 25 episodes visits every cell once in shuffled order, while the precise
+    # point remains uniformly random inside that cell. Failed attempts retry
+    # the same point rather than biasing the accepted dataset toward easy cells.
+    sampling: stratified_grid
+    grid_cells: [5, 5]
+  distractor_cans:
+    enabled: true
+    # One can per cabinet, restricted to rear/side free regions. These ranges
+    # are absolute base_link XY coordinates and do not overlap the task can's
+    # grasp grid. The shared minimum distance is checked again during sampling.
+    ranges:
+      - [[0.72, 1.02], [0.12, 0.65]]
+      - [[0.72, 1.02], [-0.70, -0.30]]
+    min_center_distance_m: 0.14
+  right_can_lift:
+    enabled: true
+    # Per-episode base_link XYZ jitter applied only to targets.right_can_lift.
+    # Grasp, placement, drawer and home targets are unchanged.
+    offset_ranges:
+      - [-0.02, 0.02]
+      - [-0.02, 0.02]
+      - [-0.02, 0.02]
   drawer_initial_open:
     enabled: true
     range: [0.00, 0.05]
@@ -113,9 +136,9 @@ targets:
   right_can_grasp:
     anchor: can
     offset_frame: base_link
-    offset: [-0.04, -0.025, 0.02]
+    offset: [-0.04, -0.025, 0.035]
     rpy: [0.0, -1.5, 0.0]
-    orientation_weight: 0.25
+    orientation_weight: 0.35
   right_can_lift:
     anchor: can
     offset_frame: base_link

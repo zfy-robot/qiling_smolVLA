@@ -200,7 +200,12 @@ parser.add_argument(
     default=0.0,
     help="Uniform per-episode randomization range for blue cylinder x/y position in meters.",
 )
-parser.add_argument("--random-seed", type=int, default=42, help="Seed for scripted task randomization.")
+parser.add_argument(
+    "--random-seed",
+    type=int,
+    default=None,
+    help="Override the task YAML randomization seed. Default: use YAML seed (normally 42).",
+)
 parser.add_argument(
     "--verbose-status",
     action="store_true",
@@ -266,6 +271,7 @@ from s4_robot.simulation import (
 )
 from s4_pipeline.config import load_project_config
 from s4_pipeline.paths import DATASET_CONFIG_PATH
+from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy, sample_xyz_range
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
 from tasks import get_task_spec
 from tasks.loading import import_symbol, load_yaml
@@ -1477,6 +1483,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     drawer_randomization_cfg: dict[str, object] = {}
     drawer_dashboard_cfg: dict[str, object] = {}
     drawer_rng = None
+    can_grid_sampler: StratifiedGrid2D | None = None
     episode_context: dict[str, object] = {}
     closed_handle_pose_w = get_drawer_handle_top_pose() if scene.get("task_id") == "drawer_insert_close" else None
     if scene.get("task_id") == "drawer_insert_close":
@@ -1490,7 +1497,26 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             dashboard_cfg = logging_cfg.get("progress_dashboard", {})
             if isinstance(dashboard_cfg, dict):
                 drawer_dashboard_cfg = dashboard_cfg
-        drawer_rng = np.random.default_rng(int(drawer_randomization_cfg.get("seed", 42)))
+        drawer_seed = int(
+            args_cli.random_seed
+            if args_cli.random_seed is not None
+            else drawer_randomization_cfg.get("seed", 42)
+        )
+        drawer_randomization_cfg = dict(drawer_randomization_cfg)
+        drawer_randomization_cfg["effective_seed"] = drawer_seed
+        drawer_rng = np.random.default_rng(drawer_seed)
+        can_cfg = drawer_randomization_cfg.get("can_xy", {})
+        if can_cfg.get("enabled", True) and str(can_cfg.get("sampling", "uniform")) == "stratified_grid":
+            grid_cells = can_cfg.get("grid_cells", [5, 5])
+            if not isinstance(grid_cells, (list, tuple)) or len(grid_cells) != 2:
+                raise ValueError("randomization.can_xy.grid_cells must contain [x_cells, y_cells]")
+            can_grid_sampler = StratifiedGrid2D(
+                drawer_rng,
+                x_range=tuple(float(value) for value in can_cfg.get("x_range", [-0.05, 0.05])),
+                y_range=tuple(float(value) for value in can_cfg.get("y_range", [-0.05, 0.05])),
+                cells_x=int(grid_cells[0]),
+                cells_y=int(grid_cells[1]),
+            )
 
     def sample_drawer_episode() -> dict[str, object]:
         if drawer_rng is None:
@@ -1500,11 +1526,52 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         x_range = can_cfg.get("x_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
         y_range = can_cfg.get("y_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
         open_range = drawer_cfg.get("range", [0.0, 0.0]) if drawer_cfg.get("enabled", True) else [0.0, 0.0]
-        return {
-            "can_xy_offset": [
+        if can_grid_sampler is not None:
+            grid_sample = can_grid_sampler.sample()
+            can_xy_offset = grid_sample.xy.tolist()
+            grid_metadata: dict[str, object] = {
+                "can_grid_cell": [grid_sample.cell_x, grid_sample.cell_y],
+                "can_grid_cycle": grid_sample.cycle,
+                "can_grid_index_in_cycle": grid_sample.index_in_cycle,
+            }
+        else:
+            can_xy_offset = [
                 float(drawer_rng.uniform(float(x_range[0]), float(x_range[1]))),
                 float(drawer_rng.uniform(float(y_range[0]), float(y_range[1]))),
-            ],
+            ]
+            grid_metadata = {}
+        lift_cfg = drawer_randomization_cfg.get("right_can_lift", {})
+        lift_ranges = lift_cfg.get("offset_ranges", [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]])
+        lift_offset = (
+            sample_xyz_range(drawer_rng, lift_ranges).tolist()
+            if lift_cfg.get("enabled", False)
+            else [0.0, 0.0, 0.0]
+        )
+        distractor_positions: dict[str, list[float]] = {}
+        distractor_cfg = drawer_randomization_cfg.get("distractor_cans", {})
+        distractor_names = ("distractor_can_primary", "distractor_can_secondary")
+        named_objects = scene.get("named_objects", {})
+        if distractor_cfg.get("enabled", True) and all(name in named_objects for name in distractor_names):
+            main_xy = np.asarray(scene.get("can_initial_position", (0.54, -0.08, 1.16))[:2], dtype=np.float32) + np.asarray(
+                can_xy_offset, dtype=np.float32
+            )
+            sampled_xy = sample_separated_xy(
+                drawer_rng,
+                ranges=distractor_cfg.get(
+                    "ranges",
+                    [[[0.72, 1.02], [0.12, 0.65]], [[0.72, 1.02], [-0.70, -0.30]]],
+                ),
+                forbidden_xy=[main_xy.tolist()],
+                min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.14)),
+            )
+            distractor_positions = {
+                name: sampled_xy[index].tolist() for index, name in enumerate(distractor_names)
+            }
+        return {
+            "can_xy_offset": can_xy_offset,
+            **grid_metadata,
+            "distractor_can_xy": distractor_positions,
+            "right_can_lift_offset": lift_offset,
             "drawer_initial_open_m": float(
                 drawer_rng.uniform(float(open_range[0]), float(open_range[1]))
             ),
@@ -1606,16 +1673,26 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
 
     def reset_static_objects(context: dict[str, object]) -> None:
         can_offset = np.asarray(context.get("can_xy_offset", [0.0, 0.0]), dtype=np.float32)
+        distractor_xy = context.get("distractor_can_xy", {})
+        if not isinstance(distractor_xy, dict):
+            distractor_xy = {}
+        named_objects = scene.get("named_objects", {})
         for obj, pos, quat in scene.get("object_initial_poses", []):
             object_pos = np.asarray(pos, dtype=np.float32).copy()
-            if obj is scene.get("named_objects", {}).get("can"):
+            if obj is named_objects.get("can"):
                 object_pos[:2] += can_offset
+            else:
+                for name in ("distractor_can_primary", "distractor_can_secondary"):
+                    if obj is named_objects.get(name) and name in distractor_xy:
+                        object_pos[:2] = np.asarray(distractor_xy[name], dtype=np.float32)
+                        break
             write_object_pose(obj, object_pos, sim.device, quat)
             obj.update(dt=sim_dt)
 
-    def reset_static_attempt() -> np.ndarray:
+    def reset_static_attempt(*, sample_new_context: bool = False) -> np.ndarray:
         nonlocal episode_context
-        episode_context = sample_drawer_episode()
+        if sample_new_context or not episode_context:
+            episode_context = sample_drawer_episode()
         sim.reset()
         next_target = reset_robot_only(scene, sim)
         if scene.get("task_id") == "drawer_insert_close":
@@ -1639,7 +1716,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         next_target[:] = settled
         return next_target
 
-    target = reset_static_attempt()
+    target = reset_static_attempt(sample_new_context=True)
 
     if args_cli.drawer_coast_diagnostic:
         if drawer is None or drawer_top_joint_id is None:
@@ -1774,6 +1851,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "scripted_config": str(drawer_scripted_config) if drawer_scripted_config is not None else None,
                 "randomization": drawer_randomization_cfg,
                 "success_filter": scripted_cfg.get("success", {}),
+                "distractor_cans_enabled": all(
+                    name in scene.get("named_objects", {})
+                    for name in ("distractor_can_primary", "distractor_can_secondary")
+                ),
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),
@@ -1865,6 +1946,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             config_path=drawer_scripted_config,
             initial_action=initial_action,
             anchors=anchors,
+            target_offsets={
+                "right_can_lift": np.asarray(
+                    episode_context.get("right_can_lift_offset", [0.0, 0.0, 0.0]),
+                    dtype=np.float32,
+                )
+            },
         )
 
     def log_attempt_start(controller) -> None:
@@ -2229,7 +2316,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     if writer is not None and recorded_episodes >= max_record_episodes:
                         record_complete = True
                         break
-                    target = reset_static_attempt()
+                    target = reset_static_attempt(sample_new_context=True)
                     action = control_action_from_full_target(target, robot)
                     pink_tcp_controller = None
                     drawer_controller = new_drawer_controller(action)
@@ -2377,7 +2464,8 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
         int(args_cli.reset_settle_steps),
         int(math.ceil(max(float(args_cli.reset_settle_s), 0.0) / max(float(sim_dt), 1.0e-6))),
     )
-    rng = np.random.default_rng(int(args_cli.random_seed))
+    effective_random_seed = int(args_cli.random_seed if args_cli.random_seed is not None else 42)
+    rng = np.random.default_rng(effective_random_seed)
     randomize_blue_xy = max(float(args_cli.randomize_blue_xy), 0.0)
     default_target = reset_scene(scene, cfg, sim)
     blue_offset_xy = sample_blue_xy_offset(rng, randomize_blue_xy)
@@ -2438,7 +2526,7 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
                 "record_fps": float(1.0 / (sim.get_physics_dt() * record_every_n)),
                 "randomization": {
                     "blue_xy_range_m": float(randomize_blue_xy),
-                    "random_seed": int(args_cli.random_seed),
+                    "random_seed": effective_random_seed,
                     "distribution": "uniform",
                 },
                 "success_filter": {
@@ -3382,6 +3470,10 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
 
 
 def main() -> None:
+    # Distractors are a data-collection augmentation. Keep preview, teleop and
+    # policy rollout scenes unchanged unless a caller explicitly opts in.
+    if args_cli.record_output is not None:
+        os.environ["S4_ENABLE_DRAWER_DISTRACTOR_CANS"] = "1"
     cfg = make_scene_cfg()
     if args_cli.print_layout:
         print(format_action_layout())

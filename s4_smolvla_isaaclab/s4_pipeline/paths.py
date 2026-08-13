@@ -36,6 +36,7 @@ PATH_DEFAULTS = {
     "S4_PROJECT_ROOT": str(PROJECT_DIR),
     "ISAACLAB_ROOT": str(Path.home() / "IsaacLab"),
     "ISAAC_ASSET_ROOT": str(Path.home() / "isaacsim_assets/Assets/Isaac/5.1"),
+    "S4_SCENE_ASSET_ROOT": str(PROJECT_DIR / "local_assets" / "isaac" / "5.1"),
     "LEROBOT_ROOT": str(WORKSPACE_DIR / "lerobot"),
     "SMOLVLA_MODEL_ROOT": str(PROJECT_DIR / "models"),
     "S4_DATA_ROOT": str(PROJECT_DIR / "datasets"),
@@ -71,6 +72,7 @@ def task_training_config_path(task_id: str | None = None) -> Path:
 DATASET_CONFIG_PATH = task_dataset_config_path()
 SMOLVLA_CONFIG_PATH = task_training_config_path()
 ASSETS_DIR = PROJECT_DIR / "assets"
+LOCAL_SCENE_ASSETS_DIR = Path(os.environ["S4_SCENE_ASSET_ROOT"]).expanduser()
 DATASETS_DIR = Path(os.environ["S4_DATA_ROOT"]).expanduser()
 MODELS_DIR = Path(os.environ["SMOLVLA_MODEL_ROOT"]).expanduser()
 OUTPUTS_DIR = Path(os.environ["S4_OUTPUT_ROOT"]).expanduser()

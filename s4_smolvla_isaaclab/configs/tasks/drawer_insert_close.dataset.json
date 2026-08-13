@@ -18,7 +18,7 @@
     ]
   },
   "scene": {
-    "scene_usd": "${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse.usd",
+    "scene_usd": "${S4_SCENE_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse.usd",
     "table_usd": null,
     "table_top_z": 1.0
   },

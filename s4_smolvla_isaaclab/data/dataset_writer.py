@@ -56,13 +56,23 @@ class EpisodeBuffer:
         return len(self.actions)
 
     def validate(self) -> None:
-        lengths = {
+        lengths: dict[str, int] = {
             "actions": len(self.actions),
             "full_joint_pos": len(self.full_joint_pos),
             "chest_front_rgb": len(self.chest_front_rgb),
         }
-        if self.task_descriptions:
-            lengths["task_descriptions"] = len(self.task_descriptions)
+        optional_sequences = {
+            "active_joint_pos": self.active_joint_pos,
+            "task_descriptions": self.task_descriptions,
+            "left_wrist_rgb": self.left_wrist_rgb,
+            "right_wrist_rgb": self.right_wrist_rgb,
+            "left_eef_pose": self.left_eef_pose,
+            "right_eef_pose": self.right_eef_pose,
+            "red_block_pose": self.red_block_pose,
+            "blue_block_pose": self.blue_block_pose,
+            "plate_pose": self.plate_pose,
+        }
+        lengths.update({name: len(values) for name, values in optional_sequences.items() if values})
         if len(set(lengths.values())) != 1:
             raise ValueError(f"Episode arrays have mismatched lengths: {lengths}")
         if not self.actions:

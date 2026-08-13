@@ -2,9 +2,11 @@
 
 ## 路径变量
 
-从 `.env.example` 复制 `.env`。必须配置 `ISAACLAB_ROOT`、
-`ISAAC_ASSET_ROOT`、`LEROBOT_ROOT` 和 `SMOLVLA_MODEL_ROOT`；dataset、output、
-cache 可放到其他磁盘。提交的配置只使用 `${VAR}`，不写用户绝对路径。
+从 `.env.example` 复制 `.env`。必须配置 `ISAACLAB_ROOT`、`LEROBOT_ROOT` 和
+`SMOLVLA_MODEL_ROOT`。运行场景使用 `S4_SCENE_ASSET_ROOT`，默认指向项目内被 Git
+忽略的 `local_assets/isaac/5.1`；`ISAAC_ASSET_ROOT` 只是在制作该资产包时指向完整
+Isaac 资产库。dataset、output、cache 可放到其他磁盘。提交的配置只使用
+`${VAR}`，不写用户绝对路径。
 
 ## Source of truth
 

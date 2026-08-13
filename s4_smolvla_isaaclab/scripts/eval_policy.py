@@ -71,7 +71,7 @@ parser.add_argument(
     type=int,
     default=42,
     help="Fixed experiment seed (default 42). Same seed with/without task randomization; "
-    "only can XY and drawer opening are sampled from this RNG stream.",
+    "can XY, drawer opening, and enabled distractor positions use this RNG stream.",
 )
 parser.add_argument(
     "--randomize-task",
@@ -108,6 +108,12 @@ parser.add_argument(
     metavar=("MIN", "MAX"),
     default=None,
     help="Override scripted.yaml drawer_initial_open.range in metres.",
+)
+parser.add_argument(
+    "--distractor-cans",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Override cabinet-top distractor cans. Default: follow meta/s4_contract.json; old datasets default off.",
 )
 parser.add_argument(
     "--summary-json",
@@ -161,6 +167,7 @@ from s4_pipeline.rollout_metrics import (
     default_summary_json_path,
     episode_artifact_paths,
     evaluate_drawer_success,
+    make_can_grid_sampler,
     make_randomization_rng,
     resolve_randomization_cfg,
     resolve_rollout_run_dir,
@@ -204,6 +211,15 @@ def resolve_dataset_root(project_cfg) -> Path:
     if args_cli.dataset_root is not None:
         return args_cli.dataset_root.expanduser().resolve()
     return (project_cfg.dataset.lerobot_root / project_cfg.dataset.repo_id.split("/")[-1]).resolve()
+
+
+def resolve_distractor_cans(dataset_root: Path) -> bool:
+    if args_cli.distractor_cans is not None:
+        return bool(args_cli.distractor_cans)
+    contract_path = dataset_root / "meta" / "s4_contract.json"
+    if not contract_path.is_file():
+        return False
+    return bool(json.loads(contract_path.read_text(encoding="utf-8")).get("distractor_cans_enabled", False))
 
 
 def numeric_checkpoints(root: Path) -> list[Path]:
@@ -479,10 +495,16 @@ def reset_drawer_scene(
     drawer.write_joint_state_to_sim(drawer_q, drawer_qd)
 
     can_obj = scene["named_objects"]["can"]
+    distractor_xy = init_sample.get("distractor_can_xy", {})
     for obj, position, quat in scene.get("object_initial_poses", []):
         object_position = np.asarray(position, dtype=np.float32).copy()
         if obj is can_obj:
             object_position[:2] += can_offset
+        else:
+            for name in ("distractor_can_primary", "distractor_can_secondary"):
+                if obj is scene.get("named_objects", {}).get(name) and name in distractor_xy:
+                    object_position[:2] = np.asarray(distractor_xy[name], dtype=np.float32)
+                    break
         write_object_pose(obj, object_position, sim.device, quat)
 
     reset_camera(scene["camera"], sim, cfg)
@@ -724,6 +746,7 @@ def main() -> None:
             f"No online rollout adapter for task={task_spec.task_id!r}; rollout_kind={task_spec.rollout_kind!r}"
         )
     dataset_root = resolve_dataset_root(project_cfg)
+    distractor_cans_enabled = resolve_distractor_cans(dataset_root)
     checkpoint = resolve_checkpoint(project_cfg)
     action_low, action_high = load_action_bounds(dataset_root)
     scripted_cfg = load_yaml(task_spec.scripted_config)
@@ -734,6 +757,7 @@ def main() -> None:
         can_y_range=args_cli.can_y_range,
         drawer_open_range=args_cli.drawer_open_range,
     )
+    random_cfg["distractor_cans_enabled"] = distractor_cans_enabled
     episodes = int(args_cli.episodes)
     eval_root = Path(os.environ.get("S4_OUTPUT_ROOT", PROJECT_DIR / "outputs")) / "eval"
     run_dir = resolve_rollout_run_dir(
@@ -751,6 +775,10 @@ def main() -> None:
     )
     print(f"[EVAL] output_dir={run_dir}")
 
+    if distractor_cans_enabled:
+        os.environ["S4_ENABLE_DRAWER_DISTRACTOR_CANS"] = "1"
+    else:
+        os.environ.pop("S4_ENABLE_DRAWER_DISTRACTOR_CANS", None)
     sim = create_simulation_context(args_cli.device)
     cfg = make_scene_cfg(project_cfg)
     scene_builder = resolve_scene_builder(project_cfg.dataset.task_id)
@@ -788,8 +816,7 @@ def main() -> None:
     print(f"[EVAL] dataset={dataset_root}")
     print(
         f"[EVAL] episodes={episodes} randomize_task={bool(args_cli.randomize_task)} "
-        f"seed={int(args_cli.seed)} "
-        f"(only can XY + drawer opening; seed fixed for randomized and fixed scenes)"
+        f"seed={int(args_cli.seed)} distractor_cans={distractor_cans_enabled}"
     )
     print(
         f"[EVAL] randomization can_x={random_cfg['can_xy'].get('x_range')} "
@@ -811,6 +838,7 @@ def main() -> None:
     episode_results: list[dict[str, object]] = []
     experiment_seed = int(args_cli.seed)
     randomization_rng = make_randomization_rng(experiment_seed)
+    can_grid_sampler = make_can_grid_sampler(random_cfg, randomization_rng)
     try:
         for episode_index in range(episodes):
             artifacts = episode_artifact_paths(
@@ -829,6 +857,7 @@ def main() -> None:
                 random_cfg,
                 seed=experiment_seed,
                 rng=randomization_rng,
+                can_grid_sampler=can_grid_sampler,
             )
             print(
                 f"[EVAL] ===== episode {episode_index + 1}/{episodes} "

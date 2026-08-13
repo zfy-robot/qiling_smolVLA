@@ -237,6 +237,11 @@ if [[ "$SKIP_RECORD" == true && "$SKIP_CONVERT" != true && "$HDF5_ROOT_PATH_PROV
 fi
 
 use_smolvla_env
+ACTIVE_TASK_ID="$(python3 - <<'PY'
+from s4_pipeline.config import load_project_config
+print(load_project_config().dataset.task_id)
+PY
+)"
 if [[ -z "$OUTPUT_DIR" ]]; then
     STAGING_ROOT="$(python3 - <<'PY'
 from s4_pipeline.config import load_project_config
@@ -295,7 +300,7 @@ if [[ "$SKIP_RECORD" != true ]]; then
             if (( COUNT <= 0 )); then
                 continue
             fi
-            WORKER_OUTPUT="${OUTPUT_DIR}/s4_right_blue_cylinder_plate_scripted_worker$(printf '%02d' "$WORKER_ID").hdf5"
+            WORKER_OUTPUT="${OUTPUT_DIR}/${ACTIVE_TASK_ID}_scripted_worker$(printf '%02d' "$WORKER_ID").hdf5"
             RECORD_CMD=(
                 bash run.sh record
                 --output "$WORKER_OUTPUT"
@@ -346,7 +351,7 @@ if [[ "$SKIP_RECORD" != true ]]; then
             exit 1
         fi
     else
-        HDF5_FILE="${OUTPUT_DIR}/s4_right_blue_cylinder_plate_scripted.hdf5"
+        HDF5_FILE="${OUTPUT_DIR}/${ACTIVE_TASK_ID}_scripted.hdf5"
         HDF5_ROOT_PATH="$HDF5_FILE"
         echo "[PIPELINE] recording HDF5 to $HDF5_FILE"
         RECORD_CMD=(
