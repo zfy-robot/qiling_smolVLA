@@ -79,6 +79,45 @@ class StratifiedGrid2D:
             index_in_cycle=index_in_cycle,
         )
 
+    def resample_cell(self, sample: StratifiedGridSample) -> StratifiedGridSample:
+        """Draw another continuous point in ``sample``'s cell without advancing."""
+        cell_x = int(sample.cell_x)
+        cell_y = int(sample.cell_y)
+        if not (0 <= cell_x < self.cells_x and 0 <= cell_y < self.cells_y):
+            raise ValueError(f"Grid cell out of bounds: ({cell_x}, {cell_y})")
+        x = float(self.rng.uniform(self.x_edges[cell_x], self.x_edges[cell_x + 1]))
+        y = float(self.rng.uniform(self.y_edges[cell_y], self.y_edges[cell_y + 1]))
+        return StratifiedGridSample(
+            xy=np.asarray([x, y], dtype=np.float32),
+            cell_x=cell_x,
+            cell_y=cell_y,
+            cycle=int(sample.cycle),
+            index_in_cycle=int(sample.index_in_cycle),
+        )
+
+    def state_dict(self) -> dict[str, object]:
+        """Return JSON-serializable traversal state; RNG state is stored separately."""
+        return {
+            "order": self._order.tolist(),
+            "cursor": int(self._cursor),
+            "cycle": int(self._cycle),
+        }
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        """Restore traversal state after validating it against this grid."""
+        order = np.asarray(state.get("order", []), dtype=np.int64)
+        cursor = int(state.get("cursor", 0))
+        cycle = int(state.get("cycle", -1))
+        if order.size not in {0, self.cells_per_cycle}:
+            raise ValueError(f"Invalid grid order length: {order.size}")
+        if order.size and set(order.tolist()) != set(range(self.cells_per_cycle)):
+            raise ValueError("Grid order is not a permutation of all cells")
+        if not 0 <= cursor <= order.size:
+            raise ValueError(f"Invalid grid cursor: {cursor}")
+        self._order = order
+        self._cursor = cursor
+        self._cycle = cycle
+
 
 def sample_xyz_range(rng: np.random.Generator, ranges: list[list[float]]) -> np.ndarray:
     """Sample an XYZ vector from three configured ``[min, max]`` ranges."""

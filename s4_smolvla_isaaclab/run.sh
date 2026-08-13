@@ -72,7 +72,7 @@ PY
 }
 
 record_command() {
-    local output="" episodes="1" timeout="300" block="blue"
+    local output="" episodes="1" timeout="300" block="blue" resume=0
     local -a app_args=() script_args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -80,6 +80,7 @@ record_command() {
             --episodes|--num-episodes) episodes="$2"; shift 2 ;;
             --block) block="$2"; shift 2 ;;
             --episode-timeout-s) timeout="$2"; shift 2 ;;
+            --resume) resume=1; shift ;;
             --headless|--no-render) app_args+=(--headless); shift ;;
             --render) shift ;;
             *) script_args+=("$1"); shift ;;
@@ -94,6 +95,9 @@ PY
 )"
     fi
     use_isaaclab_env
+    if [[ "$resume" -eq 1 ]]; then
+        script_args+=(--resume)
+    fi
     "$ISAACLAB" -p scripts/record_dataset.py --enable_cameras "${app_args[@]}" \
         --kit_args "$ISAAC_LOCAL_KIT_ARGS" --record-output "$output" \
         --record-episodes "$episodes" --record-episode-timeout-s "$timeout" \
@@ -144,7 +148,7 @@ Core commands:
   sim [IsaacLab options]             Start the active task scene
   teleop [options]                   Control both arms with Meta Quest 3
   teleop-cert [--ip ADDRESS]         Generate the local HTTPS certificate
-  record [--episodes N] [--headless] Record successful HDF5 demonstrations
+  record [--episodes N] [--resume]    Record/continue successful HDF5 demonstrations
   collect-convert [options]           Collect, validate and convert; never train
   convert [--overwrite]              Convert HDF5 to LeRobotDataset
   dataset-check [PATH]               Validate dataset and optional checkpoint

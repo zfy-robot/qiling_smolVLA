@@ -189,7 +189,12 @@ from s4_robot.simulation import (
 )
 from tasks import get_task_spec
 from tasks.loading import load_yaml
-from s4_pipeline.drawer_distractors import DISTRACTOR_OBJECT_NAMES, asset_contract as distractor_asset_contract
+from s4_pipeline.drawer_distractors import (
+    DISTRACTOR_OBJECT_NAMES,
+    GRASP_CAN_NOMINAL_Y_ENV,
+    LEGACY_GRASP_CAN_NOMINAL_POSITION,
+    asset_contract as distractor_asset_contract,
+)
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -229,6 +234,17 @@ def resolve_distractor_cans(dataset_root: Path) -> bool:
             "collected HDF5 data, or explicitly choose --distractor-cans/--no-distractor-cans."
         )
     return enabled
+
+
+def resolve_grasp_can_nominal_position(dataset_root: Path) -> tuple[float, float, float]:
+    contract_path = dataset_root / "meta" / "s4_contract.json"
+    if not contract_path.is_file():
+        return LEGACY_GRASP_CAN_NOMINAL_POSITION
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    values = contract.get("grasp_can_nominal_position", LEGACY_GRASP_CAN_NOMINAL_POSITION)
+    if not isinstance(values, list) or len(values) != 3:
+        raise ValueError(f"Invalid grasp_can_nominal_position in {contract_path}: {values!r}")
+    return tuple(float(value) for value in values)
 
 
 def numeric_checkpoints(root: Path) -> list[Path]:
@@ -756,6 +772,7 @@ def main() -> None:
         )
     dataset_root = resolve_dataset_root(project_cfg)
     distractor_cans_enabled = resolve_distractor_cans(dataset_root)
+    grasp_can_nominal_position = resolve_grasp_can_nominal_position(dataset_root)
     checkpoint = resolve_checkpoint(project_cfg)
     action_low, action_high = load_action_bounds(dataset_root)
     scripted_cfg = load_yaml(task_spec.scripted_config)
@@ -767,6 +784,7 @@ def main() -> None:
         drawer_open_range=args_cli.drawer_open_range,
     )
     random_cfg["distractor_cans_enabled"] = distractor_cans_enabled
+    random_cfg["grasp_can_nominal_position"] = list(grasp_can_nominal_position)
     episodes = int(args_cli.episodes)
     eval_root = Path(os.environ.get("S4_OUTPUT_ROOT", PROJECT_DIR / "outputs")) / "eval"
     run_dir = resolve_rollout_run_dir(
@@ -788,6 +806,7 @@ def main() -> None:
         os.environ["S4_ENABLE_DRAWER_DISTRACTOR_CANS"] = "1"
     else:
         os.environ.pop("S4_ENABLE_DRAWER_DISTRACTOR_CANS", None)
+    os.environ[GRASP_CAN_NOMINAL_Y_ENV] = str(grasp_can_nominal_position[1])
     sim = create_simulation_context(args_cli.device)
     cfg = make_scene_cfg(project_cfg)
     scene_builder = resolve_scene_builder(project_cfg.dataset.task_id)

@@ -11,6 +11,7 @@ from s4_pipeline.drawer_distractors import (
     DEFAULT_DISTRACTOR_RANGES,
     DEFAULT_DISTRACTOR_XY,
     DISTRACTOR_OBJECT_NAMES,
+    GRASP_CAN_NOMINAL_POSITION,
 )
 
 
@@ -115,6 +116,7 @@ def sample_randomization(
     can_cfg = random_cfg.get("can_xy", {}) or {}
     drawer_cfg = random_cfg.get("drawer_initial_open", {}) or {}
     distractor_cfg = random_cfg.get("distractor_cans", {}) or {}
+    can_nominal = random_cfg.get("grasp_can_nominal_position", GRASP_CAN_NOMINAL_POSITION)
 
     can_x = 0.0
     can_y = 0.0
@@ -143,7 +145,9 @@ def sample_randomization(
                     "ranges",
                     DEFAULT_DISTRACTOR_RANGES,
                 ),
-                forbidden_xy=[[0.54 + can_x, -0.08 + can_y]],
+                forbidden_xy=[
+                    [float(can_nominal[0]) + can_x, float(can_nominal[1]) + can_y]
+                ],
                 min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.16)),
             )
         else:

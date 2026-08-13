@@ -13,6 +13,7 @@ from s4_pipeline.rollout_metrics import (
     resolve_rollout_run_dir,
     sample_randomization,
 )
+from s4_pipeline.drawer_distractors import GRASP_CAN_NOMINAL_POSITION
 
 
 SCRIPTED = {
@@ -106,6 +107,22 @@ def test_rollout_stratified_grid_visits_every_cell_once():
     samples = [sample_randomization(cfg, rng=rng, can_grid_sampler=grid) for _ in range(25)]
     assert len({tuple(sample["can_grid_cell"]) for sample in samples}) == 25
     assert {sample["can_grid_cycle"] for sample in samples} == {0}
+
+
+def test_grasp_can_grid_is_shifted_to_right_hand_side():
+    cfg = resolve_randomization_cfg(SCRIPTED, randomize_task=True)
+    rng = make_randomization_rng(42)
+    grid = make_can_grid_sampler(cfg, rng)
+    samples = [sample_randomization(cfg, rng=rng, can_grid_sampler=grid) for _ in range(25)]
+    world_xy = [
+        (
+            GRASP_CAN_NOMINAL_POSITION[0] + sample["can_x_offset_m"],
+            GRASP_CAN_NOMINAL_POSITION[1] + sample["can_y_offset_m"],
+        )
+        for sample in samples
+    ]
+    assert all(0.49 <= x <= 0.59 for x, _ in world_xy)
+    assert all(-0.18 <= y <= -0.08 for _, y in world_xy)
 
 
 def test_rollout_run_dir_and_episode_artifacts(tmp_path: Path):

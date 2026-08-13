@@ -2,6 +2,21 @@
 
 from __future__ import annotations
 
+import os
+
+
+# Nominal grasp-can pose shared by scene construction, collection and rollout.
+# Negative base_link Y is the robot's right-hand side. The +/-5 cm sampling
+# offsets therefore cover x=[0.49, 0.59], y=[-0.18, -0.08].
+GRASP_CAN_NOMINAL_POSITION = (0.54, -0.13, 1.16)
+LEGACY_GRASP_CAN_NOMINAL_POSITION = (0.54, -0.08, 1.16)
+GRASP_CAN_NOMINAL_Y_ENV = "S4_GRASP_CAN_NOMINAL_Y"
+
+
+def scene_grasp_can_nominal_position() -> tuple[float, float, float]:
+    """Return the scene pose, allowing rollout to preserve legacy datasets."""
+    y = float(os.environ.get(GRASP_CAN_NOMINAL_Y_ENV, GRASP_CAN_NOMINAL_POSITION[1]))
+    return (GRASP_CAN_NOMINAL_POSITION[0], y, GRASP_CAN_NOMINAL_POSITION[2])
 
 DISTRACTOR_OBJECT_NAMES = (
     "distractor_master_chef_can",

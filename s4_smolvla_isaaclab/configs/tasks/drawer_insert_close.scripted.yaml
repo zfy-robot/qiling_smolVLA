@@ -15,10 +15,13 @@ randomization:
     y_range: [-0.05, 0.05]
     # Split the continuous XY range into 5x5 cells. Each successful group of
     # 25 episodes visits every cell once in shuffled order, while the precise
-    # point remains uniformly random inside that cell. Failed attempts retry
-    # the same point rather than biasing the accepted dataset toward easy cells.
+    # point remains uniformly random inside that cell. Failed points advance
+    # within the same cell according to max_points_per_cell below.
     sampling: stratified_grid
     grid_cells: [5, 5]
+    # Try at most three independently sampled points inside a cell. A failed
+    # point is never retried; after three failures the collector skips the cell.
+    max_points_per_cell: 3
   distractor_cans:
     enabled: true
     # Three different YCB objects are shuffled among these mutually separated

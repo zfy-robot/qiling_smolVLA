@@ -10,6 +10,7 @@ RECORD_EVERY_N=6
 RANDOM_SEED=42
 HEADLESS=true
 OVERWRITE=false
+RESUME=false
 OUTPUT_DIR=""
 HDF5_FILE=""
 LEROBOT_OUTPUT_ROOT=""
@@ -35,6 +36,7 @@ Options:
   --output-root PATH        Parent directory for the converted LeRobotDataset
   --repo-id ID              Converted dataset name/repo id; default comes from task config
   --overwrite               Replace an existing converted dataset
+  --resume                  Append to --hdf5-file until --episodes total successes
   -h, --help                Show this help
 
 Example:
@@ -56,10 +58,16 @@ while [[ $# -gt 0 ]]; do
         --output-root) LEROBOT_OUTPUT_ROOT="$2"; shift 2 ;;
         --repo-id) REPO_ID="$2"; shift 2 ;;
         --overwrite) OVERWRITE=true; shift ;;
+        --resume) RESUME=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown collect-convert option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ "$RESUME" == true && -z "$HDF5_FILE" ]]; then
+    echo "--resume requires --hdf5-file PATH so the existing collection is unambiguous" >&2
+    exit 2
+fi
 
 if ! [[ "$EPISODES" =~ ^[1-9][0-9]*$ ]]; then
     echo "--episodes must be a positive integer" >&2
@@ -118,6 +126,9 @@ RECORD_ARGS=(
 )
 if [[ "$HEADLESS" == true ]]; then
     RECORD_ARGS+=(--headless)
+fi
+if [[ "$RESUME" == true ]]; then
+    RECORD_ARGS+=(--resume)
 fi
 
 echo "========================================"

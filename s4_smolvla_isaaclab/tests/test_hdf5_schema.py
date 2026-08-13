@@ -54,3 +54,66 @@ def test_scene_contract_rejects_mixed_distractor_assets(tmp_path: Path):
         pass
     with pytest.raises(ValueError, match="different distractor scene contracts"):
         validate_scene_contracts([current, legacy])
+
+
+def test_hdf5_writer_resume_appends_and_restores_collection_state(tmp_path: Path):
+    path = tmp_path / "resume.hdf5"
+    env_args = {"task": "drawer", "record_every_n": 6}
+    episode = EpisodeBuffer(
+        actions=[np.zeros(26, dtype=np.float32)],
+        full_joint_pos=[np.zeros(48, dtype=np.float32)],
+        chest_front_rgb=[np.zeros((4, 4, 3), dtype=np.uint8)],
+    )
+    with Hdf5DemoWriter(path, env_args) as writer:
+        assert writer.write_episode(episode) == "demo_0"
+        writer.write_collection_state({"completed_episodes": 1, "cursor": 7})
+
+    with Hdf5DemoWriter(path, env_args, resume=True) as writer:
+        assert writer.episode_count == 1
+        assert writer.read_collection_state() == {"completed_episodes": 1, "cursor": 7}
+        assert writer.write_episode(
+            episode,
+            collection_state={"completed_episodes": 2, "cursor": 8},
+        ) == "demo_1"
+        assert writer.read_collection_state() == {"completed_episodes": 2, "cursor": 8}
+
+    with h5py.File(path, "r") as stream:
+        assert sorted(stream["data"].keys()) == ["demo_0", "demo_1"]
+
+
+def test_hdf5_writer_resume_rejects_changed_contract(tmp_path: Path):
+    path = tmp_path / "contract.hdf5"
+    with Hdf5DemoWriter(path, {"task": "drawer", "record_every_n": 6}):
+        pass
+    with pytest.raises(ValueError, match="collection contract changed"):
+        Hdf5DemoWriter(path, {"task": "drawer", "record_every_n": 3}, resume=True)
+
+
+def test_hdf5_writer_never_silently_overwrites(tmp_path: Path):
+    path = tmp_path / "keep.hdf5"
+    with Hdf5DemoWriter(path, {"task": "drawer"}):
+        pass
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        Hdf5DemoWriter(path, {"task": "drawer"}, overwrite=False)
+    with pytest.raises(FileNotFoundError, match="Cannot resume missing"):
+        Hdf5DemoWriter(tmp_path / "typo.hdf5", {"task": "drawer"}, resume=True)
+
+
+def test_resume_accepts_new_retry_policy_but_not_sampling_region_change(tmp_path: Path):
+    path = tmp_path / "live_old_process.hdf5"
+    old = {"task": "drawer", "randomization": {"can_xy": {"x_range": [-0.05, 0.05]}}}
+    with Hdf5DemoWriter(path, old):
+        pass
+    retry_policy = {
+        "task": "drawer",
+        "randomization": {"can_xy": {"x_range": [-0.05, 0.05], "max_points_per_cell": 3}},
+    }
+    with Hdf5DemoWriter(path, retry_policy, resume=True):
+        pass
+
+    changed_region = {
+        "task": "drawer",
+        "randomization": {"can_xy": {"x_range": [-0.04, 0.04], "max_points_per_cell": 3}},
+    }
+    with pytest.raises(ValueError, match="collection contract changed"):
+        Hdf5DemoWriter(path, changed_region, resume=True)

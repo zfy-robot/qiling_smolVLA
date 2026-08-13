@@ -151,6 +151,11 @@ parser.add_argument("--drawer-coast-steps", type=int, default=600, help="Physics
 parser.add_argument("--record-output", type=Path, default=None, help="Write HDF5 episodes while running scripted grasp.")
 parser.add_argument("--record-episodes", type=int, default=1, help="Number of scripted grasp episodes to record.")
 parser.add_argument(
+    "--resume",
+    action="store_true",
+    help="Append to --record-output and continue until --record-episodes total successes.",
+)
+parser.add_argument(
     "--record-every-n",
     type=int,
     default=6,
@@ -273,6 +278,7 @@ from s4_pipeline.config import load_project_config
 from s4_pipeline.drawer_distractors import (
     DEFAULT_DISTRACTOR_RANGES,
     DISTRACTOR_OBJECT_NAMES,
+    GRASP_CAN_NOMINAL_POSITION,
     asset_contract as distractor_asset_contract,
 )
 from s4_pipeline.paths import DATASET_CONFIG_PATH
@@ -1489,6 +1495,9 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     drawer_dashboard_cfg: dict[str, object] = {}
     drawer_rng = None
     can_grid_sampler: StratifiedGrid2D | None = None
+    current_grid_sample = None
+    grid_point_attempt = 1
+    skipped_grid_cells: list[dict[str, int]] = []
     episode_context: dict[str, object] = {}
     closed_handle_pose_w = get_drawer_handle_top_pose() if scene.get("task_id") == "drawer_insert_close" else None
     if scene.get("task_id") == "drawer_insert_close":
@@ -1523,7 +1532,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 cells_y=int(grid_cells[1]),
             )
 
-    def sample_drawer_episode() -> dict[str, object]:
+    def sample_drawer_episode(*, grid_sample_override=None) -> dict[str, object]:
+        nonlocal current_grid_sample
         if drawer_rng is None:
             return {}
         can_cfg = drawer_randomization_cfg.get("can_xy", {})
@@ -1532,12 +1542,14 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         y_range = can_cfg.get("y_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
         open_range = drawer_cfg.get("range", [0.0, 0.0]) if drawer_cfg.get("enabled", True) else [0.0, 0.0]
         if can_grid_sampler is not None:
-            grid_sample = can_grid_sampler.sample()
+            grid_sample = grid_sample_override or can_grid_sampler.sample()
+            current_grid_sample = grid_sample
             can_xy_offset = grid_sample.xy.tolist()
             grid_metadata: dict[str, object] = {
                 "can_grid_cell": [grid_sample.cell_x, grid_sample.cell_y],
                 "can_grid_cycle": grid_sample.cycle,
                 "can_grid_index_in_cycle": grid_sample.index_in_cycle,
+                "can_grid_point_attempt": int(grid_point_attempt),
             }
         else:
             can_xy_offset = [
@@ -1557,7 +1569,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         distractor_names = DISTRACTOR_OBJECT_NAMES
         named_objects = scene.get("named_objects", {})
         if distractor_cfg.get("enabled", True) and all(name in named_objects for name in distractor_names):
-            main_xy = np.asarray(scene.get("can_initial_position", (0.54, -0.08, 1.16))[:2], dtype=np.float32) + np.asarray(
+            main_xy = np.asarray(scene.get("can_initial_position", GRASP_CAN_NOMINAL_POSITION)[:2], dtype=np.float32) + np.asarray(
                 can_xy_offset, dtype=np.float32
             )
             sampled_xy = sample_separated_xy(
@@ -1585,6 +1597,77 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 drawer_rng.uniform(float(open_range[0]), float(open_range[1]))
             ),
         }
+
+    def collection_state() -> dict[str, object]:
+        return {
+            "version": 1,
+            "rng_state": None if drawer_rng is None else drawer_rng.bit_generator.state,
+            "grid_state": None if can_grid_sampler is None else can_grid_sampler.state_dict(),
+            "episode_context": dict(episode_context),
+            "grid_point_attempt": int(grid_point_attempt),
+            "skipped_grid_cells": list(skipped_grid_cells),
+        }
+
+    def restore_collection_state(state: dict[str, object]) -> bool:
+        nonlocal episode_context, current_grid_sample, grid_point_attempt, skipped_grid_cells
+        if drawer_rng is None or can_grid_sampler is None:
+            return False
+        rng_state = state.get("rng_state")
+        grid_state = state.get("grid_state")
+        if not isinstance(rng_state, dict) or not isinstance(grid_state, dict):
+            return False
+        drawer_rng.bit_generator.state = rng_state
+        can_grid_sampler.load_state_dict(grid_state)
+        episode_context = dict(state.get("episode_context", {}) or {})
+        grid_point_attempt = int(state.get("grid_point_attempt", 1))
+        skipped_grid_cells = list(state.get("skipped_grid_cells", []) or [])
+        if episode_context and "can_grid_cell" in episode_context:
+            cell = episode_context["can_grid_cell"]
+            from s4_pipeline.randomization import StratifiedGridSample
+
+            current_grid_sample = StratifiedGridSample(
+                xy=np.asarray(episode_context["can_xy_offset"], dtype=np.float32),
+                cell_x=int(cell[0]),
+                cell_y=int(cell[1]),
+                cycle=int(episode_context.get("can_grid_cycle", 0)),
+                index_in_cycle=int(episode_context.get("can_grid_index_in_cycle", 0)),
+            )
+        return True
+
+    def select_after_failed_point(reason: str) -> None:
+        """Choose another point in this cell, or skip after its third failure."""
+        nonlocal episode_context, current_grid_sample, grid_point_attempt
+        can_cfg = drawer_randomization_cfg.get("can_xy", {})
+        max_points = max(int(can_cfg.get("max_points_per_cell", 3)), 1)
+        if can_grid_sampler is None or current_grid_sample is None:
+            episode_context = sample_drawer_episode()
+            return
+        if grid_point_attempt < max_points:
+            grid_point_attempt += 1
+            next_sample = can_grid_sampler.resample_cell(current_grid_sample)
+            episode_context = sample_drawer_episode(grid_sample_override=next_sample)
+            log_collection_event(
+                "GRID",
+                f"cell=({next_sample.cell_x},{next_sample.cell_y}) point={grid_point_attempt}/{max_points} "
+                f"after={reason}",
+                "yellow",
+            )
+            return
+        skipped_grid_cells.append(
+            {
+                "cell_x": int(current_grid_sample.cell_x),
+                "cell_y": int(current_grid_sample.cell_y),
+                "cycle": int(current_grid_sample.cycle),
+            }
+        )
+        log_collection_event(
+            "GRID-SKIP",
+            f"cell=({current_grid_sample.cell_x},{current_grid_sample.cell_y}) "
+            f"failed_points={max_points}; advancing to next cell",
+            "red",
+        )
+        grid_point_attempt = 1
+        episode_context = sample_drawer_episode()
 
     drawer_top_joint_id = None
     if drawer is not None:
@@ -1847,9 +1930,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         flush=True,
     )
     if args_cli.record_output is not None:
-        writer = Hdf5DemoWriter(
-            args_cli.record_output,
-            env_args={
+        recording_env_args = {
                 "task": str(scene.get("task_id", "drawer_insert_close")),
                 "source": "scripted_yaml_bimanual_tcp_ik",
                 "sim_dt": float(sim_dt),
@@ -1865,6 +1946,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     for name in DISTRACTOR_OBJECT_NAMES
                 ),
                 "distractor_assets": distractor_asset_contract(),
+                "grasp_can_nominal_position": list(GRASP_CAN_NOMINAL_POSITION),
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),
@@ -1879,11 +1961,62 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     "action_dim": 26,
                     "state_order": "left_arm_7,left_hand_6,right_arm_7,right_hand_6",
                 },
-            },
+            }
+        writer = Hdf5DemoWriter(
+            args_cli.record_output,
+            env_args=recording_env_args,
+            resume=bool(args_cli.resume),
+            overwrite=False,
         )
+        recorded_episodes = writer.episode_count
+        if recorded_episodes > max_record_episodes:
+            raise ValueError(
+                f"Resume target {max_record_episodes} is below existing episode count {recorded_episodes}"
+            )
+        if args_cli.resume and recorded_episodes:
+            saved_state = writer.read_collection_state()
+            restored = bool(saved_state and restore_collection_state(saved_state))
+            if restored and int(saved_state.get("completed_episodes", -1)) != recorded_episodes:
+                restored = False
+            if not restored:
+                # Legacy recordings have no collection_state. Rebuild the RNG
+                # and grid traversal from their accepted episode count. The old
+                # retry behavior did not consume random samples on failure.
+                drawer_rng.bit_generator.state = np.random.default_rng(drawer_seed).bit_generator.state
+                if can_grid_sampler is not None:
+                    can_grid_sampler.load_state_dict({"order": [], "cursor": 0, "cycle": -1})
+                grid_point_attempt = 1
+                skipped_grid_cells = []
+                episode_context = {}
+                for _ in range(recorded_episodes):
+                    sample_drawer_episode()
+                episode_context = sample_drawer_episode()
+                log_collection_event(
+                    "RESUME",
+                    f"replayed legacy sampler to {recorded_episodes} accepted episode(s)",
+                    "yellow",
+                )
+            else:
+                log_collection_event(
+                    "RESUME",
+                    f"restored exact sampler state at {recorded_episodes} accepted episode(s)",
+                    "cyan",
+                )
+            target = reset_static_attempt()
+            action = control_action_from_full_target(target, robot)
+        if recorded_episodes >= max_record_episodes:
+            log_collection_event(
+                "COMPLETE",
+                f"file already contains target {recorded_episodes}/{max_record_episodes} episodes",
+                "green",
+            )
+            writer.close()
+            return
+        writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
         log_collection_event(
             "COLLECT",
-            f"output={args_cli.record_output} | target_successes={max_record_episodes} | "
+            f"output={args_cli.record_output} | existing={recorded_episodes} | "
+            f"target_total_successes={max_record_episodes} | "
             f"fps={1.0 / (sim_dt * record_every_n):.1f} | "
             f"timeout={max(float(args_cli.record_episode_timeout_s), 1.0):.1f}s",
             "cyan",
@@ -2223,6 +2356,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         f"elapsed={wall_elapsed:.1f}/{record_timeout_s:.1f}s | frames={len(recording_episode)} | discarded",
                         "red",
                     )
+                    select_after_failed_point("timeout")
+                    writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
                     target = reset_static_attempt()
                     action = control_action_from_full_target(target, robot)
                     pink_tcp_controller = None
@@ -2232,7 +2367,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     record_step = 0
                     record_attempt += 1
                     last_logged_phase_index = -1
-                    log_collection_event("RETRY", "scene reset; retrying the same required success", "yellow")
+                    log_collection_event("RETRY", "scene reset; trying the selected grid point", "yellow")
                     log_attempt_start(drawer_controller)
                     log_current_phase(drawer_controller)
                     last_logged_phase_index = drawer_controller.phase_index
@@ -2256,6 +2391,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             f"frames={len(recording_episode)} | {drawer_controller.failure_reason}",
                             "red",
                         )
+                        select_after_failed_point("controller_failed")
+                        writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
                         target = reset_static_attempt()
                         action = control_action_from_full_target(target, robot)
                         pink_tcp_controller = None
@@ -2265,7 +2402,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         record_step = 0
                         record_attempt += 1
                         last_logged_phase_index = -1
-                        log_collection_event("RETRY", "scene reset; retrying the same required success", "yellow")
+                        log_collection_event("RETRY", "scene reset; trying the selected grid point", "yellow")
                         log_attempt_start(drawer_controller)
                         log_current_phase(drawer_controller)
                         last_logged_phase_index = drawer_controller.phase_index
@@ -2298,6 +2435,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             f"reason={reason} | frames={len(recording_episode)}",
                             "red",
                         )
+                        select_after_failed_point(reason)
+                        writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
                         target = reset_static_attempt()
                         action = control_action_from_full_target(target, robot)
                         pink_tcp_controller = None
@@ -2307,13 +2446,26 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         record_step = 0
                         record_attempt += 1
                         last_logged_phase_index = -1
-                        log_collection_event("RETRY", "scene reset; retrying the same required success", "yellow")
+                        log_collection_event("RETRY", "scene reset; trying the selected grid point", "yellow")
                         log_attempt_start(drawer_controller)
                         log_current_phase(drawer_controller)
                         last_logged_phase_index = drawer_controller.phase_index
                         continue
                     recording_episode.metadata["final_success"] = success_details
-                    demo_name = writer.write_episode(recording_episode) if writer is not None else "demo"
+                    grid_point_attempt = 1
+                    episode_context = sample_drawer_episode()
+                    next_collection_state = {
+                        **collection_state(),
+                        "completed_episodes": recorded_episodes + 1,
+                    }
+                    demo_name = (
+                        writer.write_episode(
+                            recording_episode,
+                            collection_state=next_collection_state,
+                        )
+                        if writer is not None
+                        else "demo"
+                    )
                     sim_seconds = record_step * sim_dt
                     wall_seconds = time.monotonic() - record_wall_start if record_wall_start is not None else float("nan")
                     log_collection_event(
@@ -2326,7 +2478,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     if writer is not None and recorded_episodes >= max_record_episodes:
                         record_complete = True
                         break
-                    target = reset_static_attempt(sample_new_context=True)
+                    target = reset_static_attempt()
                     action = control_action_from_full_target(target, robot)
                     pink_tcp_controller = None
                     drawer_controller = new_drawer_controller(action)
@@ -2454,7 +2606,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             log_collection_event(
                 "COMPLETE",
                 f"accepted={recorded_episodes}/{max_record_episodes} | "
-                f"failed_attempts={failed_attempts_total} | output={args_cli.record_output}",
+                f"failed_attempts={failed_attempts_total} | skipped_grid_cells={len(skipped_grid_cells)} | "
+                f"output={args_cli.record_output}",
                 "green",
             )
             sys.stdout.flush()

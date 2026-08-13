@@ -90,6 +90,7 @@ def validate_scene_contracts(hdf5_files: list[Path]) -> dict:
     expected = {
         "distractor_cans_enabled": bool(first.get("distractor_cans_enabled", False)),
         "distractor_assets": list(first.get("distractor_assets", [])),
+        "grasp_can_nominal_position": list(first.get("grasp_can_nominal_position", [])),
     }
     mismatches: list[str] = []
     for path in hdf5_files[1:]:
@@ -97,6 +98,7 @@ def validate_scene_contracts(hdf5_files: list[Path]) -> dict:
         actual = {
             "distractor_cans_enabled": bool(contract.get("distractor_cans_enabled", False)),
             "distractor_assets": list(contract.get("distractor_assets", [])),
+            "grasp_can_nominal_position": list(contract.get("grasp_can_nominal_position", [])),
         }
         if actual != expected:
             mismatches.append(f"  {path}: {actual}")
@@ -247,6 +249,7 @@ def convert_hdf5_to_lerobot(
         "camera_paths": list(camera_paths),
         "distractor_cans_enabled": bool(recording_contract.get("distractor_cans_enabled", False)),
         "distractor_assets": list(recording_contract.get("distractor_assets", [])),
+        "grasp_can_nominal_position": list(recording_contract.get("grasp_can_nominal_position", [])),
     }
     contract_path = dataset_root / "meta" / "s4_contract.json"
     contract_path.write_text(json.dumps(portable_contract, indent=2) + "\n", encoding="utf-8")

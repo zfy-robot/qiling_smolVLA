@@ -15,8 +15,8 @@ bash run.sh record --episodes 200 --headless
 
 主任务默认使用可复现的分层网格内随机：罐子 XY 的连续范围被划分为 `5 x 5`
 网格，每一轮以随机顺序访问全部 25 个格子，并在当前格子内部均匀采样精确位置。
-失败或超时会在同一个精确位置重试，只有成功写入数据后才前进到下一个格子，避免
-数据集偏向容易成功的位置。抓住罐子后，只有 `right_can_lift` 的 XYZ 目标会分别在
+失败或超时后会在同一格内换一个精确位置；三个点都失败时记录并跳过该格，避免
+采集停滞。抓住罐子后，只有 `right_can_lift` 的 XYZ 目标会分别在
 `±2 cm` 内随机；抓取、放置、关抽屉和回零轨迹不变。参数位于
 `configs/tasks/drawer_insert_close.scripted.yaml` 的 `randomization`。
 
@@ -33,6 +33,16 @@ bash run.sh record --episodes 200 --headless
 
 默认输出：`${S4_DATA_ROOT}/staging/<dataset>/<task>_scripted.hdf5`。中断时已
 flush 的完整 `demo_N` 通常可用，但必须运行：
+
+采集中断后可在同一个 HDF5 上续采。`--episodes` 表示文件最终需要达到的成功
+条数，而不是额外追加条数；已有 episode、随机数状态、网格游标、当前格内点和
+已跳过格子都会恢复。每个格子最多尝试三个不同点，每点失败一次即换点，三点均
+失败则跳过该格，避免采集永久停滞。示例：
+
+```bash
+bash run.sh record --output datasets/staging/s4_drawer_insert_close_v0/run.hdf5 \
+  --episodes 20 --resume
+```
 
 ```bash
 bash run.sh dataset-check --hdf5

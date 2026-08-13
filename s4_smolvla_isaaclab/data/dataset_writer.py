@@ -80,19 +80,117 @@ class EpisodeBuffer:
 
 
 class Hdf5DemoWriter:
-    def __init__(self, path: Path, env_args: dict[str, Any]):
+    def __init__(
+        self,
+        path: Path,
+        env_args: dict[str, Any],
+        *,
+        resume: bool = False,
+        overwrite: bool = True,
+    ):
         self.path = Path(path)
         self.env_args = env_args
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = h5py.File(self.path, "w")
-        self._data = self._file.create_group("data")
-        self._data.attrs["env_args"] = json.dumps(env_args, ensure_ascii=False)
-        self._episode_index = 0
+        if resume and not self.path.exists():
+            raise FileNotFoundError(f"Cannot resume missing HDF5 file: {self.path}")
+        if self.path.exists() and not resume and not overwrite:
+            raise FileExistsError(
+                f"Refusing to overwrite existing HDF5: {self.path}. "
+                "Use --resume to continue it, or choose a new --output path."
+            )
+        append = bool(resume and self.path.exists())
+        self._file = h5py.File(self.path, "r+" if append else "w")
+        if append:
+            if "data" not in self._file:
+                self._file.close()
+                raise ValueError(f"Cannot resume HDF5 without /data group: {self.path}")
+            self._data = self._file["data"]
+            try:
+                self._validate_resume_contract(env_args)
+            except Exception:
+                self._file.close()
+                raise
+            for name in list(self._data):
+                if name.startswith("_pending_demo_"):
+                    del self._data[name]
+            self._file.flush()
+            indices = [
+                int(name.removeprefix("demo_"))
+                for name in self._data
+                if name.startswith("demo_") and name.removeprefix("demo_").isdigit()
+            ]
+            self._episode_index = max(indices, default=-1) + 1
+        else:
+            self._data = self._file.create_group("data")
+            self._data.attrs["env_args"] = json.dumps(env_args, ensure_ascii=False)
+            self._episode_index = 0
 
-    def write_episode(self, episode: EpisodeBuffer) -> str:
+    @property
+    def episode_count(self) -> int:
+        return sum(name.startswith("demo_") for name in self._data)
+
+    def _validate_resume_contract(self, env_args: dict[str, Any]) -> None:
+        raw = self._data.attrs.get("env_args")
+        if raw is None:
+            raise ValueError(f"Cannot resume HDF5 without env_args: {self.path}")
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        previous = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        keys = (
+            "task",
+            "sim_dt",
+            "record_every_n",
+            "randomization",
+            "distractor_cans_enabled",
+            "distractor_assets",
+            "grasp_can_nominal_position",
+            "camera",
+            "data_contract",
+        )
+        def comparable(key: str, value: Any) -> Any:
+            if key != "randomization" or not isinstance(value, dict):
+                return value
+            value = json.loads(json.dumps(value))
+            can_xy = value.get("can_xy", {})
+            if isinstance(can_xy, dict):
+                can_xy.pop("max_points_per_cell", None)
+            return value
+
+        mismatches = [
+            key
+            for key in keys
+            if comparable(key, previous.get(key)) != comparable(key, env_args.get(key))
+        ]
+        if mismatches:
+            raise ValueError(
+                f"Cannot resume {self.path}: collection contract changed for {mismatches}. "
+                "Use a new HDF5 file instead of mixing incompatible episodes."
+            )
+
+    def read_collection_state(self) -> dict[str, Any] | None:
+        raw = self._data.attrs.get("collection_state")
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+    def write_collection_state(self, state: dict[str, Any]) -> None:
+        self._data.attrs["collection_state"] = json.dumps(state, ensure_ascii=False)
+        self._file.flush()
+
+    def write_episode(
+        self,
+        episode: EpisodeBuffer,
+        *,
+        collection_state: dict[str, Any] | None = None,
+    ) -> str:
         episode.validate()
         name = f"demo_{self._episode_index}"
-        group = self._data.create_group(name)
+        pending_name = f"_pending_{name}"
+        if pending_name in self._data:
+            del self._data[pending_name]
+        group = self._data.create_group(pending_name)
         if episode.metadata:
             group.attrs["episode_metadata"] = json.dumps(episode.metadata, ensure_ascii=False)
         _create_nested_dataset(group, schema.PROCESSED_ACTIONS, np.asarray(episode.actions, dtype=np.float32))
@@ -125,8 +223,11 @@ class Hdf5DemoWriter:
             _create_nested_dataset(group, schema.BLUE_BLOCK_POSE, np.asarray(episode.blue_block_pose, dtype=np.float32))
         if episode.plate_pose:
             _create_nested_dataset(group, schema.PLATE_POSE, np.asarray(episode.plate_pose, dtype=np.float32))
-        self._episode_index += 1
+        self._data.move(pending_name, name)
+        if collection_state is not None:
+            self._data.attrs["collection_state"] = json.dumps(collection_state, ensure_ascii=False)
         self._file.flush()
+        self._episode_index += 1
         return name
 
     def close(self) -> None:
