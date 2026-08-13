@@ -1,7 +1,7 @@
 """Scene builder for the drawer insert-close task preview.
 
 This scene loads the warehouse base, two aligned Sektion cabinets and the task
-can. Dataset recording can opt into two additional visual distractor cans.
+can. Dataset recording can opt into three visually distinct YCB distractors.
 """
 
 from __future__ import annotations
@@ -23,6 +23,11 @@ from s4_robot.simulation import (
     make_wrist_cameras,
     spawn_background_and_table,
 )
+from s4_pipeline.drawer_distractors import (
+    DEFAULT_DISTRACTOR_XY,
+    DISTRACTOR_ASSET_RELATIVE_PATHS,
+    DISTRACTOR_OBJECT_NAMES,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +40,7 @@ ISAAC_ROOT = Path(
 DRAWER_USD = ISAAC_ROOT / "Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd"
 YCB_OBJECTS = (
     ISAAC_ROOT / "Isaac/Props/YCB/Axis_Aligned/005_tomato_soup_can.usd",
+    *(ISAAC_ROOT / relative_path for relative_path in DISTRACTOR_ASSET_RELATIVE_PATHS),
 )
 DRAWER_YAW_180_QUAT = (0.0, 0.0, 0.0, 1.0)
 DRAWER_X = 0.80
@@ -67,6 +73,7 @@ class DrawerAssetPlacement:
     position: tuple[float, float, float]
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
     orientation: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    mass_kg: float = TOMATO_CAN_MASS_KG
 
 
 def _require_assets(paths: tuple[Path, ...]) -> None:
@@ -227,23 +234,22 @@ def _object_placements() -> tuple[DrawerAssetPlacement, ...]:
         )
     ]
     if os.environ.get(DISTRACTOR_CANS_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}:
+        # The Axis_Aligned YCB assets are Y-up. After the shared -90-degree X
+        # rotation, root Z is cabinet_top_z + half of the model's Y extent.
+        distractor_specs = (
+            ("DistractorMasterChefCan", YCB_OBJECTS[1], 1.1721, 0.414),
+            ("DistractorMustardBottle", YCB_OBJECTS[2], 1.1977, 0.603),
+            ("DistractorBleachCleanser", YCB_OBJECTS[3], 1.2273, 1.100),
+        )
         placements.extend(
-            (
-                DrawerAssetPlacement(
-                    "DistractorCanPrimary",
-                    YCB_OBJECTS[0],
-                    (0.86, 0.38, TOMATO_SOUP_CAN_POSITION[2]),
-                    scale=TOMATO_SOUP_CAN_SCALE,
-                    orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
-                ),
-                DrawerAssetPlacement(
-                    "DistractorCanSecondary",
-                    YCB_OBJECTS[0],
-                    (0.86, -0.50, TOMATO_SOUP_CAN_POSITION[2]),
-                    scale=TOMATO_SOUP_CAN_SCALE,
-                    orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
-                ),
+            DrawerAssetPlacement(
+                usd_name,
+                usd_path,
+                (*DEFAULT_DISTRACTOR_XY[index], root_z),
+                orientation=OBJECT_ROTATE_X_NEG_90_QUAT,
+                mass_kg=mass_kg,
             )
+            for index, (usd_name, usd_path, root_z, mass_kg) in enumerate(distractor_specs)
         )
     return tuple(placements)
 
@@ -270,7 +276,7 @@ def _spawn_dynamic_usd_object(item: DrawerAssetPlacement) -> RigidObject:
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(item.usd_path),
             scale=item.scale,
-            mass_props=schemas.MassPropertiesCfg(mass=TOMATO_CAN_MASS_KG),
+            mass_props=schemas.MassPropertiesCfg(mass=item.mass_kg),
             rigid_props=rigid_props,
             collision_props=collision_props,
         ),
@@ -278,13 +284,13 @@ def _spawn_dynamic_usd_object(item: DrawerAssetPlacement) -> RigidObject:
     obj = RigidObject(cfg=obj_cfg)
     configure_usdz_rigid_meshes(
         prim_path,
-        schemas.MassPropertiesCfg(mass=TOMATO_CAN_MASS_KG),
+        schemas.MassPropertiesCfg(mass=item.mass_kg),
         rigid_props,
         collision_props,
         contact_material,
     )
     print(
-        f"[BOOT] configured graspable {item.name}: mass={TOMATO_CAN_MASS_KG:.3f}kg "
+        f"[BOOT] configured dynamic {item.name}: mass={item.mass_kg:.3f}kg "
         f"scale={item.scale} friction=({TOMATO_CAN_STATIC_FRICTION:.1f},"
         f"{TOMATO_CAN_DYNAMIC_FRICTION:.1f})",
         flush=True,
@@ -382,10 +388,12 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         dynamic_objects.append(obj)
         if item.name == "TomatoSoupCan":
             named_objects["can"] = obj
-        elif item.name == "DistractorCanPrimary":
-            named_objects["distractor_can_primary"] = obj
-        elif item.name == "DistractorCanSecondary":
-            named_objects["distractor_can_secondary"] = obj
+        elif item.name == "DistractorMasterChefCan":
+            named_objects[DISTRACTOR_OBJECT_NAMES[0]] = obj
+        elif item.name == "DistractorMustardBottle":
+            named_objects[DISTRACTOR_OBJECT_NAMES[1]] = obj
+        elif item.name == "DistractorBleachCleanser":
+            named_objects[DISTRACTOR_OBJECT_NAMES[2]] = obj
         object_initial_poses.append((obj, item.position, item.orientation))
 
     camera = make_rgb_camera("/World/DebugFrontCamera", cfg)

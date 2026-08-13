@@ -51,9 +51,9 @@ bash run.sh rollout \
 
 1. 罐子 XY 偏移（`can_xy`，按随机顺序遍历 5x5 网格并在格内均匀采样）
 2. 抽屉初始开度（`drawer_initial_open`）
-3. 两个柜面干扰罐的位置（与新采集数据的视觉分布一致）
+3. 三个不同 YCB 柜面干扰物的位置（与新采集数据的视觉分布一致）
 
-rollout 默认读取数据集的 `meta/s4_contract.json`：新采集数据自动启用两个干扰罐，
+rollout 默认读取数据集的 `meta/s4_contract.json`：新采集数据自动启用三个干扰物，
 旧数据集没有该标记时保持旧的无干扰罐场景。可用 `--distractor-cans` 或
 `--no-distractor-cans` 显式覆盖；`--deterministic` 会把所有启用的物体放在固定安全
 位置，确保重复运行画面一致。

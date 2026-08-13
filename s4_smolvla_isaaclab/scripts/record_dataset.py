@@ -270,6 +270,11 @@ from s4_robot.simulation import (
     write_object_pose,
 )
 from s4_pipeline.config import load_project_config
+from s4_pipeline.drawer_distractors import (
+    DEFAULT_DISTRACTOR_RANGES,
+    DISTRACTOR_OBJECT_NAMES,
+    asset_contract as distractor_asset_contract,
+)
 from s4_pipeline.paths import DATASET_CONFIG_PATH
 from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy, sample_xyz_range
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
@@ -1549,7 +1554,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         )
         distractor_positions: dict[str, list[float]] = {}
         distractor_cfg = drawer_randomization_cfg.get("distractor_cans", {})
-        distractor_names = ("distractor_can_primary", "distractor_can_secondary")
+        distractor_names = DISTRACTOR_OBJECT_NAMES
         named_objects = scene.get("named_objects", {})
         if distractor_cfg.get("enabled", True) and all(name in named_objects for name in distractor_names):
             main_xy = np.asarray(scene.get("can_initial_position", (0.54, -0.08, 1.16))[:2], dtype=np.float32) + np.asarray(
@@ -1559,13 +1564,17 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 drawer_rng,
                 ranges=distractor_cfg.get(
                     "ranges",
-                    [[[0.72, 1.02], [0.12, 0.65]], [[0.72, 1.02], [-0.70, -0.30]]],
+                    DEFAULT_DISTRACTOR_RANGES,
                 ),
                 forbidden_xy=[main_xy.tolist()],
-                min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.14)),
+                min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.16)),
             )
+            # Randomly permute object-to-region assignment as well as sampling
+            # continuously within each region. All three styles stay present.
+            region_order = drawer_rng.permutation(len(distractor_names))
             distractor_positions = {
-                name: sampled_xy[index].tolist() for index, name in enumerate(distractor_names)
+                name: sampled_xy[int(region_order[index])].tolist()
+                for index, name in enumerate(distractor_names)
             }
         return {
             "can_xy_offset": can_xy_offset,
@@ -1682,7 +1691,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             if obj is named_objects.get("can"):
                 object_pos[:2] += can_offset
             else:
-                for name in ("distractor_can_primary", "distractor_can_secondary"):
+                for name in DISTRACTOR_OBJECT_NAMES:
                     if obj is named_objects.get(name) and name in distractor_xy:
                         object_pos[:2] = np.asarray(distractor_xy[name], dtype=np.float32)
                         break
@@ -1853,8 +1862,9 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "success_filter": scripted_cfg.get("success", {}),
                 "distractor_cans_enabled": all(
                     name in scene.get("named_objects", {})
-                    for name in ("distractor_can_primary", "distractor_can_secondary")
+                    for name in DISTRACTOR_OBJECT_NAMES
                 ),
+                "distractor_assets": distractor_asset_contract(),
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),

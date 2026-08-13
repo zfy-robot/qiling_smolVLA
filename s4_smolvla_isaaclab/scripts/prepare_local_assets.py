@@ -27,6 +27,9 @@ ENTRY_ASSETS = (
     "Isaac/Environments/Simple_Warehouse/warehouse.usd",
     "Isaac/Props/Sektion_Cabinet/sektion_cabinet_instanceable.usd",
     "Isaac/Props/YCB/Axis_Aligned/005_tomato_soup_can.usd",
+    "Isaac/Props/YCB/Axis_Aligned/002_master_chef_can.usd",
+    "Isaac/Props/YCB/Axis_Aligned/006_mustard_bottle.usd",
+    "Isaac/Props/YCB/Axis_Aligned/021_bleach_cleanser.usd",
     "Isaac/Props/PackingTable/packing_table.usd",
     # IsaacLab visualization helpers resolve these through the global asset
     # root at runtime; they are not reachable from the task USD references.

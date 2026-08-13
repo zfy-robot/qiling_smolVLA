@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
+from data.lerobot_conversion import validate_scene_contracts
+from s4_pipeline.drawer_distractors import asset_contract
 
 
 def test_hdf5_writer_contract(tmp_path: Path):
@@ -35,3 +37,20 @@ def test_hdf5_writer_rejects_partial_camera_sequence(tmp_path: Path):
     with Hdf5DemoWriter(tmp_path / "bad.hdf5", {"record_fps": 20}) as writer:
         with pytest.raises(ValueError, match="mismatched lengths"):
             writer.write_episode(episode)
+
+
+def test_scene_contract_rejects_mixed_distractor_assets(tmp_path: Path):
+    current = tmp_path / "current.hdf5"
+    legacy = tmp_path / "legacy.hdf5"
+    with Hdf5DemoWriter(
+        current,
+        {"distractor_cans_enabled": True, "distractor_assets": asset_contract()},
+    ):
+        pass
+    with Hdf5DemoWriter(
+        legacy,
+        {"distractor_cans_enabled": True, "distractor_assets": []},
+    ):
+        pass
+    with pytest.raises(ValueError, match="different distractor scene contracts"):
+        validate_scene_contracts([current, legacy])

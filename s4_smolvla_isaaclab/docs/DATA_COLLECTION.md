@@ -20,8 +20,9 @@ bash run.sh record --episodes 200 --headless
 `±2 cm` 内随机；抓取、放置、关抽屉和回零轨迹不变。参数位于
 `configs/tasks/drawer_insert_close.scripted.yaml` 的 `randomization`。
 
-抽屉任务进入 `record` 模式时，还会在两个柜面空闲区各生成一个同款干扰罐。
-它们按配置范围随机采样，与主抓取罐及彼此保持最小中心距；控制器、成功判定和
+抽屉任务进入 `record` 模式时，还会生成 Master Chef 罐、芥末瓶和漂白剂瓶三个
+不同的 YCB 干扰物。每轮会随机打乱它们所在的三个柜面安全区并在区内连续采样，
+与主抓取罐及彼此保持最小中心距；控制器、成功判定和
 主罐的分层网格均不变。普通 `sim`、`teleop` 默认不启用；rollout 根据转换数据集的
 `meta/s4_contract.json` 自动匹配，可用 `--distractor-cans`/`--no-distractor-cans` 覆盖。
 

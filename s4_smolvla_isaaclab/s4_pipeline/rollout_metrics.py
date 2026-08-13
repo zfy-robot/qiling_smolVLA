@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy
+from s4_pipeline.drawer_distractors import (
+    DEFAULT_DISTRACTOR_RANGES,
+    DEFAULT_DISTRACTOR_XY,
+    DISTRACTOR_OBJECT_NAMES,
+)
 
 
 def resolve_randomization_cfg(
@@ -136,16 +141,21 @@ def sample_randomization(
                 generator,
                 ranges=distractor_cfg.get(
                     "ranges",
-                    [[[0.72, 1.02], [0.12, 0.65]], [[0.72, 1.02], [-0.70, -0.30]]],
+                    DEFAULT_DISTRACTOR_RANGES,
                 ),
                 forbidden_xy=[[0.54 + can_x, -0.08 + can_y]],
-                min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.14)),
+                min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.16)),
             )
         else:
-            points = np.asarray([[0.86, 0.38], [0.86, -0.50]], dtype=np.float32)
+            points = np.asarray(DEFAULT_DISTRACTOR_XY, dtype=np.float32)
+        region_order = (
+            generator.permutation(len(DISTRACTOR_OBJECT_NAMES))
+            if bool(random_cfg.get("enabled", False)) and bool(distractor_cfg.get("enabled", True))
+            else np.arange(len(DISTRACTOR_OBJECT_NAMES))
+        )
         distractor_positions = {
-            "distractor_can_primary": points[0].tolist(),
-            "distractor_can_secondary": points[1].tolist(),
+            name: points[int(region_order[index])].tolist()
+            for index, name in enumerate(DISTRACTOR_OBJECT_NAMES)
         }
 
     result: dict[str, Any] = {

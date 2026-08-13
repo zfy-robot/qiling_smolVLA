@@ -113,7 +113,7 @@ parser.add_argument(
     "--distractor-cans",
     action=argparse.BooleanOptionalAction,
     default=None,
-    help="Override cabinet-top distractor cans. Default: follow meta/s4_contract.json; old datasets default off.",
+    help="Override three cabinet-top YCB distractors. Default: follow meta/s4_contract.json; old datasets default off.",
 )
 parser.add_argument(
     "--summary-json",
@@ -189,6 +189,7 @@ from s4_robot.simulation import (
 )
 from tasks import get_task_spec
 from tasks.loading import load_yaml
+from s4_pipeline.drawer_distractors import DISTRACTOR_OBJECT_NAMES, asset_contract as distractor_asset_contract
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -219,7 +220,15 @@ def resolve_distractor_cans(dataset_root: Path) -> bool:
     contract_path = dataset_root / "meta" / "s4_contract.json"
     if not contract_path.is_file():
         return False
-    return bool(json.loads(contract_path.read_text(encoding="utf-8")).get("distractor_cans_enabled", False))
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    enabled = bool(contract.get("distractor_cans_enabled", False))
+    if enabled and list(contract.get("distractor_assets", [])) != distractor_asset_contract():
+        raise ValueError(
+            f"Dataset {contract_path} enables a legacy or unknown distractor layout. "
+            "Refusing an automatic rollout with a different visual scene. Re-convert newly "
+            "collected HDF5 data, or explicitly choose --distractor-cans/--no-distractor-cans."
+        )
+    return enabled
 
 
 def numeric_checkpoints(root: Path) -> list[Path]:
@@ -501,7 +510,7 @@ def reset_drawer_scene(
         if obj is can_obj:
             object_position[:2] += can_offset
         else:
-            for name in ("distractor_can_primary", "distractor_can_secondary"):
+            for name in DISTRACTOR_OBJECT_NAMES:
                 if obj is scene.get("named_objects", {}).get(name) and name in distractor_xy:
                     object_position[:2] = np.asarray(distractor_xy[name], dtype=np.float32)
                     break

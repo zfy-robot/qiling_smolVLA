@@ -84,6 +84,30 @@ def read_recording_contract(hdf5_path: Path) -> dict:
     return json.loads(raw) if isinstance(raw, str) else dict(raw)
 
 
+def validate_scene_contracts(hdf5_files: list[Path]) -> dict:
+    """Reject mixing recordings made with different visual scene contracts."""
+    first = read_recording_contract(hdf5_files[0])
+    expected = {
+        "distractor_cans_enabled": bool(first.get("distractor_cans_enabled", False)),
+        "distractor_assets": list(first.get("distractor_assets", [])),
+    }
+    mismatches: list[str] = []
+    for path in hdf5_files[1:]:
+        contract = read_recording_contract(path)
+        actual = {
+            "distractor_cans_enabled": bool(contract.get("distractor_cans_enabled", False)),
+            "distractor_assets": list(contract.get("distractor_assets", [])),
+        }
+        if actual != expected:
+            mismatches.append(f"  {path}: {actual}")
+    if mismatches:
+        raise ValueError(
+            "HDF5 files use different distractor scene contracts; do not merge visually "
+            "inconsistent collection runs:\n" + "\n".join(mismatches)
+        )
+    return first
+
+
 def inspect_first_demo(hdf5_path: Path, camera_path: str, control_mode: str) -> tuple[int, int, tuple[int, ...]]:
     with h5py.File(hdf5_path, "r") as f:
         demo_names = sorted(f["data"].keys(), key=lambda x: int(x.split("_")[-1]))
@@ -148,6 +172,7 @@ def convert_hdf5_to_lerobot(
     if not hdf5_files:
         raise FileNotFoundError(f"No .hdf5 files found under {root_path}")
     validate_recording_fps(hdf5_files, fps)
+    recording_contract = validate_scene_contracts(hdf5_files)
 
     state_dim, action_dim, camera_shape = inspect_first_demo(hdf5_files[0], camera_paths[0], control_mode)
     features = build_lerobot_features(camera_paths, state_dim, action_dim, camera_shape, fps=fps)
@@ -213,7 +238,6 @@ def convert_hdf5_to_lerobot(
                         frame[f"observation.images.{camera_name}"] = values[i]
                     dataset.add_frame(frame)
                 dataset.save_episode()
-    recording_contract = read_recording_contract(hdf5_files[0])
     portable_contract = {
         "schema_version": "s4_bimanual_v1",
         "action_semantics": "absolute_joint_target",
@@ -222,6 +246,7 @@ def convert_hdf5_to_lerobot(
         "fps": int(fps),
         "camera_paths": list(camera_paths),
         "distractor_cans_enabled": bool(recording_contract.get("distractor_cans_enabled", False)),
+        "distractor_assets": list(recording_contract.get("distractor_assets", [])),
     }
     contract_path = dataset_root / "meta" / "s4_contract.json"
     contract_path.write_text(json.dumps(portable_contract, indent=2) + "\n", encoding="utf-8")

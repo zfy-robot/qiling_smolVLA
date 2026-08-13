@@ -21,8 +21,12 @@ SCRIPTED = {
         "drawer_initial_open": {"enabled": True, "range": [0.0, 0.05]},
         "distractor_cans": {
             "enabled": True,
-            "ranges": [[[0.72, 1.02], [0.12, 0.65]], [[0.72, 1.02], [-0.70, -0.30]]],
-            "min_center_distance_m": 0.14,
+            "ranges": [
+                [[0.70, 1.00], [0.12, 0.30]],
+                [[0.70, 1.00], [0.48, 0.66]],
+                [[0.72, 1.00], [-0.68, -0.32]],
+            ],
+            "min_center_distance_m": 0.16,
         },
     },
     "success": {
@@ -63,14 +67,24 @@ def test_sample_randomization_keeps_fixed_seed_42():
     assert -0.05 <= samples_a[0]["can_x_offset_m"] <= 0.05
     assert 0.0 <= samples_a[0]["drawer_open_m"] <= 0.05
     assert set(samples_a[0]["distractor_can_xy"]) == {
-        "distractor_can_primary",
-        "distractor_can_secondary",
+        "distractor_master_chef_can",
+        "distractor_mustard_bottle",
+        "distractor_bleach_cleanser",
     }
 
     fixed = sample_randomization(resolve_randomization_cfg(SCRIPTED, randomize_task=False), seed=42)
     assert fixed["seed"] == 42
     assert fixed["can_x_offset_m"] == 0.0
     assert fixed["drawer_open_m"] == 0.0
+    assert list(fixed["distractor_can_xy"]) == []
+
+
+def test_fixed_rollout_keeps_distractor_assignment_stable():
+    cfg = resolve_randomization_cfg(SCRIPTED, randomize_task=False)
+    cfg["distractor_cans_enabled"] = True
+    rng = make_randomization_rng(42)
+    samples = [sample_randomization(cfg, seed=42, rng=rng) for _ in range(3)]
+    assert samples[0]["distractor_can_xy"] == samples[1]["distractor_can_xy"] == samples[2]["distractor_can_xy"]
 
 
 def test_rollout_stratified_grid_visits_every_cell_once():

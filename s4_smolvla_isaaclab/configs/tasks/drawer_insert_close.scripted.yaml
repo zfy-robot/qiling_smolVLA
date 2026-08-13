@@ -21,13 +21,14 @@ randomization:
     grid_cells: [5, 5]
   distractor_cans:
     enabled: true
-    # One can per cabinet, restricted to rear/side free regions. These ranges
-    # are absolute base_link XY coordinates and do not overlap the task can's
-    # grasp grid. The shared minimum distance is checked again during sampling.
+    # Three different YCB objects are shuffled among these mutually separated
+    # cabinet-top regions every episode. The secondary-cabinet region remains
+    # well outside the tomato can's complete 10x10 cm grasp randomization grid.
     ranges:
-      - [[0.72, 1.02], [0.12, 0.65]]
-      - [[0.72, 1.02], [-0.70, -0.30]]
-    min_center_distance_m: 0.14
+      - [[0.70, 1.00], [0.12, 0.30]]
+      - [[0.70, 1.00], [0.48, 0.66]]
+      - [[0.72, 1.00], [-0.68, -0.32]]
+    min_center_distance_m: 0.16
   right_can_lift:
     enabled: true
     # Per-episode base_link XYZ jitter applied only to targets.right_can_lift.
