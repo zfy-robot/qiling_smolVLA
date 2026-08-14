@@ -144,6 +144,7 @@ class Hdf5DemoWriter:
             "distractor_cans_enabled",
             "distractor_assets",
             "grasp_can_nominal_position",
+            "grasp_can_scale",
             "camera",
             "data_contract",
         )

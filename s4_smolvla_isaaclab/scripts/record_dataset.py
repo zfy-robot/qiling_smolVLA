@@ -149,6 +149,24 @@ parser.add_argument("--drawer-coast-start", type=float, default=0.18, help="Init
 parser.add_argument("--drawer-coast-velocity", type=float, default=-0.15, help="Initial drawer velocity for coast test.")
 parser.add_argument("--drawer-coast-steps", type=int, default=600, help="Physics steps for coast test.")
 parser.add_argument("--record-output", type=Path, default=None, help="Write HDF5 episodes while running scripted grasp.")
+parser.add_argument(
+    "--failure-log",
+    type=Path,
+    default=None,
+    help="JSONL path for one durable record per failed collection attempt. Defaults beside --record-output.",
+)
+parser.add_argument(
+    "--failure-summary",
+    type=Path,
+    default=None,
+    help="JSON summary path for failure counts by phase/type/reason. Defaults beside --record-output.",
+)
+parser.add_argument(
+    "--max-failed-attempts",
+    type=int,
+    default=None,
+    help="Abort immediately when failed attempts exceed this budget. Zero enforces a failure-free run.",
+)
 parser.add_argument("--record-episodes", type=int, default=1, help="Number of scripted grasp episodes to record.")
 parser.add_argument(
     "--resume",
@@ -224,6 +242,8 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.max_failed_attempts is not None and args_cli.max_failed_attempts < 0:
+    parser.error("--max-failed-attempts must be non-negative")
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -279,8 +299,10 @@ from s4_pipeline.drawer_distractors import (
     DEFAULT_DISTRACTOR_RANGES,
     DISTRACTOR_OBJECT_NAMES,
     GRASP_CAN_NOMINAL_POSITION,
+    GRASP_CAN_SCALE,
     asset_contract as distractor_asset_contract,
 )
+from s4_pipeline.failure_reporting import CollectionFailureReporter
 from s4_pipeline.paths import DATASET_CONFIG_PATH
 from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy, sample_xyz_range
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
@@ -1635,7 +1657,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         return True
 
     def select_after_failed_point(reason: str) -> None:
-        """Choose another point in this cell, or skip after its third failure."""
+        """Choose another point in this cell, or apply the configured exhaustion policy."""
         nonlocal episode_context, current_grid_sample, grid_point_attempt
         can_cfg = drawer_randomization_cfg.get("can_xy", {})
         max_points = max(int(can_cfg.get("max_points_per_cell", 3)), 1)
@@ -1653,11 +1675,32 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "yellow",
             )
             return
+        exhausted_cell = {
+            "cell_x": int(current_grid_sample.cell_x),
+            "cell_y": int(current_grid_sample.cell_y),
+            "cycle": int(current_grid_sample.cycle),
+        }
+        on_exhausted = str(can_cfg.get("on_cell_exhausted", "abort")).strip().lower()
+        if on_exhausted == "abort":
+            log_collection_event(
+                "GRID-EXHAUSTED",
+                f"cell=({current_grid_sample.cell_x},{current_grid_sample.cell_y}) "
+                f"failed_points={max_points}; aborting without skipping or advancing",
+                "red",
+            )
+            raise RuntimeError(
+                "Collection aborted: grid cell "
+                f"({current_grid_sample.cell_x},{current_grid_sample.cell_y}) cycle={current_grid_sample.cycle} "
+                f"failed at {max_points} independently sampled points; last_reason={reason}. "
+                "The partial HDF5 and failure log are preserved. Fix the workspace/task and resume the same file."
+            )
+        if on_exhausted != "skip":
+            raise ValueError(
+                f"randomization.can_xy.on_cell_exhausted must be 'abort' or 'skip', got {on_exhausted!r}"
+            )
         skipped_grid_cells.append(
             {
-                "cell_x": int(current_grid_sample.cell_x),
-                "cell_y": int(current_grid_sample.cell_y),
-                "cycle": int(current_grid_sample.cycle),
+                **exhausted_cell,
             }
         )
         log_collection_event(
@@ -1733,8 +1776,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
 
         can_obj = scene.get("named_objects", {}).get("can")
         can_world_z = float("nan")
+        can_world_position = [float("nan"), float("nan"), float("nan")]
         if can_obj is not None:
             can_pose_tensor = can_obj.data.root_pose_w[0]
+            can_world_position = [float(value) for value in can_pose_tensor[0:3].detach().cpu().tolist()]
             can_world_z = float(can_pose_tensor[2].item())
         can_height_valid = bool(np.isfinite(can_world_z) and min_z < can_world_z < max_z)
         details: dict[str, object] = {
@@ -1744,6 +1789,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             "drawer_open_abs_max_m": drawer_open_abs_max,
             "can_height_valid": can_height_valid,
             "can_world_z_m": can_world_z,
+            "can_world_position_m": can_world_position,
             "can_world_z_min_m": min_z,
             "can_world_z_max_m": max_z,
         }
@@ -1904,6 +1950,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         scene.get("task_id") == "drawer_insert_close" and (args_cli.record_output is not None or args_cli.auto_grasp)
     )
     writer = None
+    failure_reporter = None
     recording_episode = None
     recorded_episodes = 0
     record_attempt = 1
@@ -1930,6 +1977,12 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         flush=True,
     )
     if args_cli.record_output is not None:
+        failure_log_path = args_cli.failure_log or args_cli.record_output.with_name(
+            f"{args_cli.record_output.stem}_failures.jsonl"
+        )
+        failure_summary_path = args_cli.failure_summary or args_cli.record_output.with_name(
+            f"{args_cli.record_output.stem}_failure_summary.json"
+        )
         recording_env_args = {
                 "task": str(scene.get("task_id", "drawer_insert_close")),
                 "source": "scripted_yaml_bimanual_tcp_ik",
@@ -1947,6 +2000,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 ),
                 "distractor_assets": distractor_asset_contract(),
                 "grasp_can_nominal_position": list(GRASP_CAN_NOMINAL_POSITION),
+                "grasp_can_scale": list(GRASP_CAN_SCALE),
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
                 "camera": {
                     "eye": list(cfg.camera_eye),
@@ -1968,7 +2022,38 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             resume=bool(args_cli.resume),
             overwrite=False,
         )
+        # Open/validate the HDF5 first. This prevents a mistyped non-resume
+        # command from truncating the existing failure log before HDF5 refuses
+        # to overwrite its existing data.
+        failure_reporter = CollectionFailureReporter(
+            failure_log_path,
+            failure_summary_path,
+            resume=bool(args_cli.resume),
+        )
+        failed_attempts_total = len(failure_reporter.events)
+        log_collection_event(
+            "FAILURE-LOG",
+            f"events={failure_log_path.resolve()} | summary={failure_summary_path.resolve()}",
+            "cyan",
+        )
         recorded_episodes = writer.episode_count
+        if (
+            args_cli.max_failed_attempts is not None
+            and failed_attempts_total > int(args_cli.max_failed_attempts)
+        ):
+            failure_reporter.finalize(
+                completed=False,
+                accepted_episodes=recorded_episodes,
+                target_episodes=max_record_episodes,
+                skipped_grid_cells=skipped_grid_cells,
+                hdf5_path=args_cli.record_output,
+            )
+            writer.close()
+            writer = None
+            raise RuntimeError(
+                f"Cannot resume strict collection: existing failed_attempts={failed_attempts_total} "
+                f"exceeds --max-failed-attempts={int(args_cli.max_failed_attempts)}"
+            )
         if recorded_episodes > max_record_episodes:
             raise ValueError(
                 f"Resume target {max_record_episodes} is below existing episode count {recorded_episodes}"
@@ -2009,6 +2094,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "COMPLETE",
                 f"file already contains target {recorded_episodes}/{max_record_episodes} episodes",
                 "green",
+            )
+            failure_reporter.finalize(
+                completed=True,
+                accepted_episodes=recorded_episodes,
+                target_episodes=max_record_episodes,
+                skipped_grid_cells=skipped_grid_cells,
+                hdf5_path=args_cli.record_output,
             )
             writer.close()
             return
@@ -2113,6 +2205,104 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             f"PHASE {controller.phase_index + 1:02d}/{len(controller.phases):02d} {phase.name}",
             "blue",
         )
+
+    def record_attempt_failure(failure_type: str, reason: str, controller, wall_elapsed_s: float) -> None:
+        """Persist enough state to diagnose exactly where and where-in-space an attempt failed."""
+        if failure_reporter is None:
+            return
+
+        def vector(values) -> list[float] | None:
+            if values is None:
+                return None
+            if hasattr(values, "detach"):
+                values = values.detach().cpu().numpy()
+            return [float(value) for value in np.asarray(values).reshape(-1)]
+
+        phase = None
+        phase_index = None
+        phase_total = None
+        phase_step = None
+        if controller is not None:
+            phase_total = len(controller.phases)
+            phase_index = int(controller.phase_index) + 1
+            phase = controller.current_phase
+            phase_step = int(controller.phase_steps)
+
+        can_obj = scene.get("named_objects", {}).get("can")
+        can_position_w = None
+        if can_obj is not None:
+            can_position_w = vector(can_obj.data.root_pos_w[0])
+        can_initial = np.asarray(scene.get("can_initial_position", GRASP_CAN_NOMINAL_POSITION), dtype=np.float64)
+        can_offset = np.asarray(episode_context.get("can_xy_offset", [0.0, 0.0]), dtype=np.float64)
+        can_spawn_w = can_initial.copy()
+        can_spawn_w[:2] += can_offset
+        base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
+        left_pose_w = estimate_left_hand_tcp_pose_from_robot(robot)
+        right_pose_w = estimate_right_hand_tcp_pose_from_robot(robot)
+        left_pose_b = pose_world_to_base(left_pose_w, base_pose_w) if left_pose_w is not None else None
+        right_pose_b = pose_world_to_base(right_pose_w, base_pose_w) if right_pose_w is not None else None
+        tcp_errors = {"left_pos": None, "left_rot": None, "right_pos": None, "right_rot": None}
+        if controller is not None:
+            try:
+                tcp_errors = controller.tcp_error_metrics(left_pose_b, right_pose_b)
+            except Exception:
+                # Failure reporting must not hide the original controller error.
+                pass
+        actual_action = control_action_from_sim(robot)
+        event = {
+            "schema_version": 1,
+            "failure_type": str(failure_type),
+            "reason": str(reason),
+            "task": str(scene.get("task_id", "unknown")),
+            "accepted_episodes_before_attempt": int(recorded_episodes),
+            "target_episodes": int(max_record_episodes),
+            "attempt_for_episode": int(record_attempt),
+            "phase_index": phase_index,
+            "phase_total": phase_total,
+            "phase_name": "controller_exception" if phase is None else str(phase.name),
+            "phase_step": phase_step,
+            "wall_elapsed_s": float(wall_elapsed_s),
+            "sim_elapsed_s": float(record_step * sim_dt),
+            "recorded_frames": 0 if recording_episode is None else int(len(recording_episode)),
+            "can_grid_cell": episode_context.get("can_grid_cell"),
+            "can_grid_cycle": episode_context.get("can_grid_cycle"),
+            "can_grid_index_in_cycle": episode_context.get("can_grid_index_in_cycle"),
+            "can_grid_point_attempt": int(episode_context.get("can_grid_point_attempt", grid_point_attempt)),
+            "can_xy_offset_m": vector(can_offset),
+            "can_spawn_position_world_m": vector(can_spawn_w),
+            "can_position_world_m": can_position_w,
+            "drawer_open_m": current_drawer_open_m(),
+            "right_tcp_position_world_m": None if right_pose_w is None else vector(right_pose_w[0]),
+            "right_tcp_position_base_m": None if right_pose_b is None else vector(right_pose_b[0]),
+            "tcp_error": {
+                key: None if value is None else float(value)
+                for key, value in tcp_errors.items()
+            },
+            "right_hand_command_rad": vector(action[ACTION_SLICES.right_hand]),
+            "right_hand_actual_rad": vector(actual_action[ACTION_SLICES.right_hand]),
+        }
+        failure_reporter.record(event)
+        failure_reporter.finalize(
+            completed=False,
+            accepted_episodes=recorded_episodes,
+            target_episodes=max_record_episodes,
+            skipped_grid_cells=skipped_grid_cells,
+            hdf5_path=args_cli.record_output,
+        )
+        log_collection_event(
+            "FAILURE-RECORDED",
+            f"phase={event['phase_name']} | reason={reason} | "
+            f"grid={event['can_grid_cell']} | can_world={event['can_position_world_m']}",
+            "yellow",
+        )
+
+    def enforce_failure_budget() -> None:
+        budget = args_cli.max_failed_attempts
+        if budget is not None and failed_attempts_total > int(budget):
+            raise RuntimeError(
+                f"Collection aborted: failed_attempts={failed_attempts_total} exceeded "
+                f"--max-failed-attempts={int(budget)}. Partial HDF5 and logs are preserved."
+            )
 
     if scripted_drawer_enabled:
         drawer_controller = new_drawer_controller(action)
@@ -2293,6 +2483,14 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 except Exception as exc:
                     print(f"[WARN] drawer scripted controller failed: {exc}", flush=True)
                     traceback.print_exc()
+                    if writer is not None:
+                        record_attempt_failure(
+                            "controller_exception",
+                            f"{type(exc).__name__}: {exc}",
+                            drawer_controller,
+                            time.monotonic() - record_wall_start if record_wall_start is not None else 0.0,
+                        )
+                        raise RuntimeError("Dataset collection stopped after a controller exception") from exc
                     drawer_controller = None
             if tcp_pose_active and pink_tcp_controller is not None:
                 try:
@@ -2350,6 +2548,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 record_timeout_s = max(float(args_cli.record_episode_timeout_s), 1.0)
                 if wall_elapsed >= record_timeout_s:
                     failed_attempts_total += 1
+                    record_attempt_failure("timeout", "episode_timeout", drawer_controller, wall_elapsed)
+                    enforce_failure_budget()
                     log_collection_event(
                         "TIMEOUT",
                         f"episode={recorded_episodes + 1:03d}/{max_record_episodes:03d} attempt={record_attempt:02d} | "
@@ -2385,6 +2585,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 if scripted_done:
                     if drawer_controller.failed:
                         failed_attempts_total += 1
+                        record_attempt_failure(
+                            "controller_failed",
+                            drawer_controller.failure_reason or "controller_failed",
+                            drawer_controller,
+                            wall_elapsed,
+                        )
+                        enforce_failure_budget()
                         log_collection_event(
                             "DISCARD",
                             f"episode={recorded_episodes + 1:03d}/{max_record_episodes:03d} attempt={record_attempt:02d} | "
@@ -2429,6 +2636,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         if not success_details["can_height_valid"]:
                             failed_checks.append("can_world_z_out_of_range")
                         reason = ",".join(failed_checks) or "final_state_invalid"
+                        record_attempt_failure("final_state_invalid", reason, drawer_controller, wall_elapsed)
+                        enforce_failure_budget()
                         log_collection_event(
                             "DISCARD",
                             f"episode={recorded_episodes + 1:03d}/{max_record_episodes:03d} attempt={record_attempt:02d} | "
@@ -2600,6 +2809,14 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     finally:
         if keyboard_jog is not None:
             keyboard_jog.stop()
+        if failure_reporter is not None:
+            failure_reporter.finalize(
+                completed=record_complete,
+                accepted_episodes=recorded_episodes,
+                target_episodes=max_record_episodes,
+                skipped_grid_cells=skipped_grid_cells,
+                hdf5_path=args_cli.record_output,
+            )
         if writer is not None:
             writer.close()
         if record_complete and args_cli.record_output is not None:

@@ -11,8 +11,12 @@ randomization:
   seed: 42
   can_xy:
     enabled: true
-    x_range: [-0.05, 0.05]
-    y_range: [-0.05, 0.05]
+    # Keep the grid safely inside the secondary cabinet top. Collection logs
+    # showed that world x~=0.46 lies on its physical edge: seven reset samples
+    # fell to z~=0.03 before the task began. This 5x8 cm rectangle gives world
+    # x=[0.485, 0.535] and retains the already validated y diversity.
+    x_range: [-0.055, -0.005]
+    y_range: [-0.06, 0.02]
     # Split the continuous XY range into 5x5 cells. Each successful group of
     # 25 episodes visits every cell once in shuffled order, while the precise
     # point remains uniformly random inside that cell. Failed points advance
@@ -20,26 +24,24 @@ randomization:
     sampling: stratified_grid
     grid_cells: [5, 5]
     # Try at most three independently sampled points inside a cell. A failed
-    # point is never retried; after three failures the collector skips the cell.
+    # point is never retried. Three failures abort collection instead of hiding
+    # an unreliable region by filling the episode count from the next cycle.
     max_points_per_cell: 3
+    on_cell_exhausted: abort
   distractor_cans:
     enabled: true
     # Three different YCB objects are shuffled among these mutually separated
     # cabinet-top regions every episode. The secondary-cabinet region remains
-    # well outside the tomato can's complete 10x10 cm grasp randomization grid.
+    # well outside the tomato can's grasp randomization grid.
     ranges:
       - [[0.70, 1.00], [0.12, 0.30]]
       - [[0.70, 1.00], [0.48, 0.66]]
       - [[0.72, 1.00], [-0.68, -0.32]]
     min_center_distance_m: 0.16
   right_can_lift:
-    enabled: true
-    # Per-episode base_link XYZ jitter applied only to targets.right_can_lift.
-    # Grasp, placement, drawer and home targets are unchanged.
-    offset_ranges:
-      - [-0.02, 0.02]
-      - [-0.02, 0.02]
-      - [-0.02, 0.02]
+    # Keep the post-grasp lift deterministic. The fixed XYZ displacement is
+    # configured by targets.right_can_lift below.
+    enabled: false
   drawer_initial_open:
     enabled: true
     range: [0.00, 0.05]
@@ -54,7 +56,9 @@ hands:
   # Six policy controls: thumb yaw, thumb pitch, index, middle, ring, pinky.
   left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
   left_close: [1.0, 0.22, 0.85, 0.85, 0.85, 0.85]
-  right_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
+  # Open the right thumb yaw 0.1 rad farther than before. The close target is
+  # intentionally unchanged.
+  right_open: [0.8, 0.0, 0.05, 0.05, 0.05, 0.05]
   right_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
   action_hold_seconds: 1.0
 
@@ -140,7 +144,9 @@ targets:
   right_can_grasp:
     anchor: can
     offset_frame: base_link
-    offset: [-0.04, -0.025, 0.035]
+    # Lower the grasp TCP by 5 mm for better finger overlap. This conservative
+    # change preserves pinky/table clearance without changing hand orientation.
+    offset: [-0.04, -0.025, 0.030]
     rpy: [0.0, -1.5, 0.0]
     orientation_weight: 0.35
   right_can_lift:
@@ -201,6 +207,9 @@ phases:
     task: "Move the right hand to the pre-grasp pose above the can."
     left: {target: left_drawer_open}
     right: {target: right_can_pregrasp}
+    # Keep commanding the left hand on the drawer, but do not let its small
+    # steady-state tracking error block an otherwise completed right-hand phase.
+    require_left_tcp_reached: false
     tolerance: 0.075
     min_steps: 20
     max_steps: 1000
@@ -209,8 +218,24 @@ phases:
     task: "Move the right hand from the pre-grasp pose to the can."
     left: {target: left_drawer_open}
     right: {target: right_can_grasp}
-    tolerance: 0.050
+    require_left_tcp_reached: false
+    # Do not begin the grasp while the TCP is still centimetres from its final
+    # pose. This was 0.050 m and produced concurrent approach/closure motion.
+    tolerance: 0.012
+    target_alpha: 0.18
+    max_joint_step: 0.020
     min_steps: 20
+    max_steps: 1000
+
+  - name: right_settle_before_close
+    task: "Hold the open right hand steady around the can before closing."
+    left: {target: left_drawer_open}
+    right: {target: right_can_grasp}
+    right_hand: open
+    hold_current_right_pose: true
+    require_left_tcp_reached: false
+    tolerance: 0.012
+    hold_seconds: 1.0
     max_steps: 1000
 
   - name: right_close_hand
@@ -218,8 +243,21 @@ phases:
     left: {target: left_drawer_open}
     right: {target: right_can_grasp}
     right_hand: close
-    tolerance: 0.050
+    hold_current_right_pose: true
+    require_left_tcp_reached: false
+    tolerance: 0.012
     hold_seconds: 1.0
+    max_steps: 1000
+
+  - name: right_hold_grasp
+    task: "Keep the closed right hand steady around the can before lifting."
+    left: {target: left_drawer_open}
+    right: {target: right_can_grasp}
+    right_hand: close
+    hold_current_right_pose: true
+    require_left_tcp_reached: false
+    tolerance: 0.012
+    hold_seconds: 0.5
     max_steps: 1000
 
   - name: right_lift_can

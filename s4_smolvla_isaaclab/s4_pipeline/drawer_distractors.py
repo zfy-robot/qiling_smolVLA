@@ -6,17 +6,31 @@ import os
 
 
 # Nominal grasp-can pose shared by scene construction, collection and rollout.
-# Negative base_link Y is the robot's right-hand side. The +/-5 cm sampling
-# offsets therefore cover x=[0.49, 0.59], y=[-0.18, -0.08].
+# Negative base_link Y is the robot's right-hand side. The task configuration
+# defines the current IK-validated stratified sampling bounds around this pose.
 GRASP_CAN_NOMINAL_POSITION = (0.54, -0.13, 1.16)
 LEGACY_GRASP_CAN_NOMINAL_POSITION = (0.54, -0.08, 1.16)
 GRASP_CAN_NOMINAL_Y_ENV = "S4_GRASP_CAN_NOMINAL_Y"
+
+# Keep the original grasp-can dimensions. A scale-1.00 physical trial made the
+# can about 10.19 mm longer and blocked drawer closure, so grasp geometry is
+# improved through the TCP target instead of changing the object.
+GRASP_CAN_SCALE = (1.0, 0.90, 1.0)
+LEGACY_GRASP_CAN_SCALE = (1.0, 0.90, 1.0)
+GRASP_CAN_SCALE_Y_ENV = "S4_GRASP_CAN_SCALE_Y"
 
 
 def scene_grasp_can_nominal_position() -> tuple[float, float, float]:
     """Return the scene pose, allowing rollout to preserve legacy datasets."""
     y = float(os.environ.get(GRASP_CAN_NOMINAL_Y_ENV, GRASP_CAN_NOMINAL_POSITION[1]))
     return (GRASP_CAN_NOMINAL_POSITION[0], y, GRASP_CAN_NOMINAL_POSITION[2])
+
+
+def scene_grasp_can_scale() -> tuple[float, float, float]:
+    """Return the grasp-can scale, allowing rollout of legacy datasets."""
+    scale_y = float(os.environ.get(GRASP_CAN_SCALE_Y_ENV, GRASP_CAN_SCALE[1]))
+    return (GRASP_CAN_SCALE[0], scale_y, GRASP_CAN_SCALE[2])
+
 
 DISTRACTOR_OBJECT_NAMES = (
     "distractor_master_chef_can",

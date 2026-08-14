@@ -18,7 +18,7 @@ def _fail(message: str) -> None:
     raise ValueError(message)
 
 
-def _check_hdf5(path: Path, cfg) -> None:
+def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
     import h5py
     import numpy as np
     from data.hdf5_schema import (
@@ -33,9 +33,25 @@ def _check_hdf5(path: Path, cfg) -> None:
     if not files:
         _fail(f"No HDF5 files under {path}")
     episodes = frames = 0
+    grid_samples: list[tuple[int, int, int]] = []
+    expected_grid_shape: tuple[int, int] | None = None
     for file in files:
         with h5py.File(file, "r") as stream:
+            raw_env_args = stream["data"].attrs.get("env_args")
+            env_args = {}
+            if raw_env_args is not None:
+                if isinstance(raw_env_args, bytes):
+                    raw_env_args = raw_env_args.decode("utf-8")
+                env_args = json.loads(raw_env_args) if isinstance(raw_env_args, str) else dict(raw_env_args)
+                grid_cells = env_args.get("randomization", {}).get("can_xy", {}).get("grid_cells")
+                if isinstance(grid_cells, list) and len(grid_cells) == 2:
+                    shape = (int(grid_cells[0]), int(grid_cells[1]))
+                    if expected_grid_shape is not None and shape != expected_grid_shape:
+                        _fail(f"HDF5 files use different grid shapes: {expected_grid_shape} vs {shape}")
+                    expected_grid_shape = shape
             for name, group in stream["data"].items():
+                if not name.startswith("demo_"):
+                    continue
                 action = group[PROCESSED_ACTIONS]
                 if action.ndim != 2 or action.shape[1] != cfg.features.action_dim:
                     _fail(f"{file}:{name} action shape={action.shape}")
@@ -56,12 +72,61 @@ def _check_hdf5(path: Path, cfg) -> None:
                     _fail(f"{file}:{name} contains NaN/Inf actions")
                 if not np.isfinite(active_state[:]).all():
                     _fail(f"{file}:{name} contains NaN/Inf active states")
+                raw_metadata = group.attrs.get("episode_metadata")
+                if raw_metadata is not None:
+                    if isinstance(raw_metadata, bytes):
+                        raw_metadata = raw_metadata.decode("utf-8")
+                    metadata = json.loads(raw_metadata)
+                    randomization = metadata.get("randomization", {})
+                    if env_args.get("task") == "drawer_insert_close":
+                        final_success = metadata.get("final_success")
+                        if not isinstance(final_success, dict) or not final_success.get("accepted", False):
+                            _fail(f"{file}:{name} is missing an accepted final_success record")
+                        if not final_success.get("drawer_closed", False) or not final_success.get("can_height_valid", False):
+                            _fail(f"{file}:{name} has invalid final_success={final_success}")
+                    cell = randomization.get("can_grid_cell")
+                    if cell is not None:
+                        if not isinstance(cell, list) or len(cell) != 2:
+                            _fail(f"{file}:{name} invalid can_grid_cell={cell!r}")
+                        grid_samples.append(
+                            (int(randomization.get("can_grid_cycle", 0)), int(cell[0]), int(cell[1]))
+                        )
                 episodes += 1
                 frames += count
+    if grid_samples:
+        if len(grid_samples) != episodes:
+            _fail(f"Grid metadata only present for {len(grid_samples)}/{episodes} HDF5 episodes")
+        by_cycle: dict[int, list[tuple[int, int]]] = {}
+        for cycle, cell_x, cell_y in grid_samples:
+            by_cycle.setdefault(cycle, []).append((cell_x, cell_y))
+        for cycle, cells in sorted(by_cycle.items()):
+            if len(cells) != len(set(cells)):
+                _fail(f"Grid cycle {cycle} contains duplicate accepted cells: {cells}")
+        if expected_grid_shape is not None:
+            expected_cells = {
+                (x, y)
+                for x in range(expected_grid_shape[0])
+                for y in range(expected_grid_shape[1])
+            }
+            cells_per_cycle = len(expected_cells)
+            if episodes % cells_per_cycle == 0:
+                expected_cycles = episodes // cells_per_cycle
+                if len(by_cycle) != expected_cycles:
+                    _fail(
+                        f"Expected {expected_cycles} complete grid cycle(s) for {episodes} episodes, "
+                        f"found cycles={sorted(by_cycle)}"
+                    )
+                for cycle, cells in sorted(by_cycle.items()):
+                    if set(cells) != expected_cells:
+                        missing = sorted(expected_cells - set(cells))
+                        _fail(f"Grid cycle {cycle} is incomplete; missing cells={missing}")
     print(f"[OK] HDF5 files={len(files)} episodes={episodes} frames={frames} action=26D cameras=3 schema={cfg.dataset.schema_version}")
+    if grid_samples:
+        print(f"[OK] stratified-grid metadata episodes={len(grid_samples)} cycles={len(by_cycle)} no_duplicate_cells_per_cycle")
+    return episodes, frames
 
 
-def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> None:
+def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> tuple[int, int]:
     import av
     import numpy as np
     import pyarrow as pa
@@ -149,6 +214,62 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> None:
     print(f"[OK] cameras=3 shape=480x680x3 decoded_files={len(video_files)} tasks={task_rows.num_rows}")
     if checkpoint:
         print(f"[OK] checkpoint compatible: {checkpoint}")
+    return len(previous), table.num_rows
+
+
+def _check_failure_summary(
+    path: Path,
+    *,
+    expected_episodes: int | None,
+    max_failed_attempts: int | None,
+    allow_skipped_grid_cells: bool,
+    expected_hdf5: Path | None = None,
+) -> None:
+    if not path.is_file():
+        _fail(f"Failure summary does not exist: {path}")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    if not summary.get("completed", False):
+        _fail(f"Collection did not complete according to {path}")
+    accepted = int(summary.get("accepted_episodes", -1))
+    target = int(summary.get("target_episodes", -1))
+    if accepted != target:
+        _fail(f"Failure summary accepted={accepted}, target={target}")
+    if expected_episodes is not None and (accepted != expected_episodes or target != expected_episodes):
+        _fail(
+            f"Failure summary accepted/target={accepted}/{target}, expected={expected_episodes}"
+        )
+    if expected_hdf5 is not None:
+        reported_hdf5 = summary.get("hdf5_path")
+        if not reported_hdf5 or Path(str(reported_hdf5)).resolve() != expected_hdf5.resolve():
+            _fail(
+                f"Failure summary HDF5={reported_hdf5!r}, checked HDF5={str(expected_hdf5)!r}"
+            )
+    failures = int(summary.get("failed_attempts", -1))
+    if failures < 0:
+        _fail("Failure summary has no valid failed_attempts count")
+    if max_failed_attempts is not None and failures > max_failed_attempts:
+        _fail(f"failed_attempts={failures} exceeds allowed maximum={max_failed_attempts}")
+    skipped = summary.get("skipped_grid_cells", [])
+    if skipped and not allow_skipped_grid_cells:
+        _fail(f"Collection skipped {len(skipped)} grid cell(s): {skipped}")
+    failure_log = Path(str(summary.get("failure_log", "")))
+    if not failure_log.is_file():
+        _fail(f"Failure event log referenced by summary is missing: {failure_log}")
+    lines = [line for line in failure_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(lines) != failures:
+        _fail(f"Failure log lines={len(lines)}, summary failed_attempts={failures}")
+    for line_number, line in enumerate(lines, 1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            _fail(f"Invalid failure JSONL line {failure_log}:{line_number}: {exc}")
+        for key in ("failure_type", "reason", "phase_name", "can_position_world_m"):
+            if key not in event:
+                _fail(f"Failure event {failure_log}:{line_number} missing {key}")
+    print(
+        f"[OK] failure report completed=true accepted={accepted}/{target} "
+        f"failed_attempts={failures} skipped_grid_cells={len(skipped)}"
+    )
 
 
 def main() -> None:
@@ -156,13 +277,33 @@ def main() -> None:
     parser.add_argument("path", nargs="?", type=Path)
     parser.add_argument("--hdf5", action="store_true")
     parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--expected-episodes", type=int)
+    parser.add_argument("--failure-summary", type=Path)
+    parser.add_argument("--max-failed-attempts", type=int)
+    parser.add_argument("--allow-skipped-grid-cells", action="store_true")
     args = parser.parse_args()
     cfg = load_project_config()
     default = cfg.dataset.staging_root if args.hdf5 else cfg.dataset.lerobot_root / cfg.dataset.repo_id.split("/")[-1]
     path = (args.path or default).expanduser().resolve()
     if not path.exists():
         _fail(f"Path does not exist: {path}")
-    _check_hdf5(path, cfg) if args.hdf5 else _check_lerobot(path, cfg, args.checkpoint)
+    if args.expected_episodes is not None and args.expected_episodes <= 0:
+        _fail("--expected-episodes must be positive")
+    if args.max_failed_attempts is not None and args.max_failed_attempts < 0:
+        _fail("--max-failed-attempts must be non-negative")
+    episodes, _frames = (
+        _check_hdf5(path, cfg) if args.hdf5 else _check_lerobot(path, cfg, args.checkpoint)
+    )
+    if args.expected_episodes is not None and episodes != args.expected_episodes:
+        _fail(f"Dataset episodes={episodes}, expected={args.expected_episodes}")
+    if args.failure_summary is not None:
+        _check_failure_summary(
+            args.failure_summary.expanduser().resolve(),
+            expected_episodes=args.expected_episodes,
+            max_failed_attempts=args.max_failed_attempts,
+            allow_skipped_grid_cells=args.allow_skipped_grid_cells,
+            expected_hdf5=path if args.hdf5 and path.is_file() else None,
+        )
 
 
 if __name__ == "__main__":

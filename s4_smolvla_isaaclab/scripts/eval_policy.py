@@ -56,7 +56,12 @@ parser.add_argument("--policy-device", choices=["cuda", "cpu"], default="cuda")
 parser.add_argument("--policy-startup-timeout", type=float, default=180.0)
 parser.add_argument("--policy-request-timeout", type=float, default=60.0)
 parser.add_argument("--action-clip", choices=["none", "dataset_minmax", "dataset_q01_q99"], default="dataset_minmax")
-parser.add_argument("--chunk-replan-frames", type=int, default=25, help="Predict a new overlapping action chunk every N policy frames.")
+parser.add_argument(
+    "--chunk-replan-frames",
+    type=int,
+    default=20,
+    help="Predict a new overlapping action chunk every N policy frames (default: 20 = 1.0 s at 20 Hz).",
+)
 parser.add_argument("--chunk-overlap-blend-frames", type=int, default=5, help="Cross-fade only the previous and newest stochastic chunks for N frames.")
 parser.add_argument("--phase-transition-blend-frames", type=int, default=8)
 parser.add_argument("--phase-state-gating", action=argparse.BooleanOptionalAction, default=True)
@@ -192,6 +197,8 @@ from tasks.loading import load_yaml
 from s4_pipeline.drawer_distractors import (
     DISTRACTOR_OBJECT_NAMES,
     GRASP_CAN_NOMINAL_Y_ENV,
+    GRASP_CAN_SCALE_Y_ENV,
+    LEGACY_GRASP_CAN_SCALE,
     LEGACY_GRASP_CAN_NOMINAL_POSITION,
     asset_contract as distractor_asset_contract,
 )
@@ -245,6 +252,21 @@ def resolve_grasp_can_nominal_position(dataset_root: Path) -> tuple[float, float
     if not isinstance(values, list) or len(values) != 3:
         raise ValueError(f"Invalid grasp_can_nominal_position in {contract_path}: {values!r}")
     return tuple(float(value) for value in values)
+
+
+def resolve_grasp_can_scale(dataset_root: Path) -> tuple[float, float, float]:
+    """Load the physical grasp-can scale used to collect this dataset."""
+    contract_path = dataset_root / "meta" / "s4_contract.json"
+    if not contract_path.is_file():
+        return LEGACY_GRASP_CAN_SCALE
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    values = contract.get("grasp_can_scale", LEGACY_GRASP_CAN_SCALE)
+    if not isinstance(values, list) or len(values) != 3:
+        raise ValueError(f"Invalid grasp_can_scale in {contract_path}: {values!r}")
+    scale = tuple(float(value) for value in values)
+    if not all(np.isfinite(value) and value > 0.0 for value in scale):
+        raise ValueError(f"Invalid grasp_can_scale in {contract_path}: {values!r}")
+    return scale
 
 
 def numeric_checkpoints(root: Path) -> list[Path]:
@@ -773,6 +795,7 @@ def main() -> None:
     dataset_root = resolve_dataset_root(project_cfg)
     distractor_cans_enabled = resolve_distractor_cans(dataset_root)
     grasp_can_nominal_position = resolve_grasp_can_nominal_position(dataset_root)
+    grasp_can_scale = resolve_grasp_can_scale(dataset_root)
     checkpoint = resolve_checkpoint(project_cfg)
     action_low, action_high = load_action_bounds(dataset_root)
     scripted_cfg = load_yaml(task_spec.scripted_config)
@@ -785,6 +808,7 @@ def main() -> None:
     )
     random_cfg["distractor_cans_enabled"] = distractor_cans_enabled
     random_cfg["grasp_can_nominal_position"] = list(grasp_can_nominal_position)
+    random_cfg["grasp_can_scale"] = list(grasp_can_scale)
     episodes = int(args_cli.episodes)
     eval_root = Path(os.environ.get("S4_OUTPUT_ROOT", PROJECT_DIR / "outputs")) / "eval"
     run_dir = resolve_rollout_run_dir(
@@ -807,6 +831,7 @@ def main() -> None:
     else:
         os.environ.pop("S4_ENABLE_DRAWER_DISTRACTOR_CANS", None)
     os.environ[GRASP_CAN_NOMINAL_Y_ENV] = str(grasp_can_nominal_position[1])
+    os.environ[GRASP_CAN_SCALE_Y_ENV] = str(grasp_can_scale[1])
     sim = create_simulation_context(args_cli.device)
     cfg = make_scene_cfg(project_cfg)
     scene_builder = resolve_scene_builder(project_cfg.dataset.task_id)
@@ -849,7 +874,8 @@ def main() -> None:
     print(
         f"[EVAL] randomization can_x={random_cfg['can_xy'].get('x_range')} "
         f"can_y={random_cfg['can_xy'].get('y_range')} "
-        f"drawer_open={random_cfg['drawer_initial_open'].get('range')}"
+        f"drawer_open={random_cfg['drawer_initial_open'].get('range')} "
+        f"grasp_can_scale={grasp_can_scale}"
     )
     print_schedule(schedule, policy_interval, project_cfg.dataset.fps)
     print(

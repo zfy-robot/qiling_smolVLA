@@ -15,6 +15,8 @@ OUTPUT_DIR=""
 HDF5_FILE=""
 LEROBOT_OUTPUT_ROOT=""
 REPO_ID=""
+MAX_FAILED_ATTEMPTS=""
+ALLOW_SKIPPED_GRID_CELLS=false
 
 usage() {
     cat <<'EOF'
@@ -37,6 +39,9 @@ Options:
   --repo-id ID              Converted dataset name/repo id; default comes from task config
   --overwrite               Replace an existing converted dataset
   --resume                  Append to --hdf5-file until --episodes total successes
+  --max-failed-attempts N   Abort if failures exceed N (default: 0, strict mode)
+  --allow-skipped-grid-cells
+                            Permit conversion when a grid cell was skipped
   -h, --help                Show this help
 
 Example:
@@ -59,6 +64,8 @@ while [[ $# -gt 0 ]]; do
         --repo-id) REPO_ID="$2"; shift 2 ;;
         --overwrite) OVERWRITE=true; shift ;;
         --resume) RESUME=true; shift ;;
+        --max-failed-attempts) MAX_FAILED_ATTEMPTS="$2"; shift 2 ;;
+        --allow-skipped-grid-cells) ALLOW_SKIPPED_GRID_CELLS=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown collect-convert option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -75,6 +82,17 @@ if ! [[ "$EPISODES" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$RECORD_EVERY_N" =~ ^[1-9][0-9]*$ ]]; then
     echo "--record-every-n must be a positive integer" >&2
+    exit 2
+fi
+if [[ "$RECORD_EVERY_N" -ne 6 ]]; then
+    echo "--record-every-n must be 6 for the configured 120 Hz simulation -> 20 Hz dataset contract" >&2
+    exit 2
+fi
+if [[ -z "$MAX_FAILED_ATTEMPTS" ]]; then
+    MAX_FAILED_ATTEMPTS=0
+fi
+if ! [[ "$MAX_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+    echo "--max-failed-attempts must be a non-negative integer" >&2
     exit 2
 fi
 
@@ -114,6 +132,8 @@ if [[ -z "$HDF5_FILE" ]]; then
 else
     OUTPUT_DIR="$(dirname "$HDF5_FILE")"
 fi
+FAILURE_LOG="${HDF5_FILE%.hdf5}_failures.jsonl"
+FAILURE_SUMMARY="${HDF5_FILE%.hdf5}_failure_summary.json"
 mkdir -p "$OUTPUT_DIR"
 
 RECORD_ARGS=(
@@ -123,6 +143,9 @@ RECORD_ARGS=(
     --reset-settle-s "$RESET_SETTLE_S"
     --record-every-n "$RECORD_EVERY_N"
     --random-seed "$RANDOM_SEED"
+    --failure-log "$FAILURE_LOG"
+    --failure-summary "$FAILURE_SUMMARY"
+    --max-failed-attempts "$MAX_FAILED_ATTEMPTS"
 )
 if [[ "$HEADLESS" == true ]]; then
     RECORD_ARGS+=(--headless)
@@ -140,6 +163,7 @@ echo "  Record stride:  $RECORD_EVERY_N simulation steps"
 echo "  Random seed:    $RANDOM_SEED"
 echo "  Attempt timeout:${EPISODE_TIMEOUT_S}s"
 echo "  Reset settle:   ${RESET_SETTLE_S}s"
+echo "  Failure report: $FAILURE_SUMMARY"
 echo "  Headless:       $HEADLESS"
 echo "  Dataset repo:   $REPO_ID"
 echo "  Dataset parent: $LEROBOT_OUTPUT_ROOT"
@@ -149,7 +173,16 @@ echo "[1/4] Collecting successful HDF5 demonstrations"
 bash run.sh record "${RECORD_ARGS[@]}"
 
 echo "[2/4] Validating HDF5 contract"
-bash run.sh dataset-check "$HDF5_FILE" --hdf5
+CHECK_ARGS=(
+    "$HDF5_FILE" --hdf5
+    --expected-episodes "$EPISODES"
+    --failure-summary "$FAILURE_SUMMARY"
+    --max-failed-attempts "$MAX_FAILED_ATTEMPTS"
+)
+if [[ "$ALLOW_SKIPPED_GRID_CELLS" == true ]]; then
+    CHECK_ARGS+=(--allow-skipped-grid-cells)
+fi
+bash run.sh dataset-check "${CHECK_ARGS[@]}"
 
 CONVERT_ARGS=(
     --root-path "$HDF5_FILE"
@@ -165,7 +198,7 @@ bash run.sh convert "${CONVERT_ARGS[@]}"
 
 DATASET_DIR="$LEROBOT_OUTPUT_ROOT/${REPO_ID##*/}"
 echo "[4/4] Validating converted LeRobotDataset"
-bash run.sh dataset-check "$DATASET_DIR"
+bash run.sh dataset-check "$DATASET_DIR" --expected-episodes "$EPISODES"
 
 echo "[DONE] Collection and conversion completed; training was not started."
 echo "[DONE] HDF5: $HDF5_FILE"

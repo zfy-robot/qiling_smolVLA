@@ -28,6 +28,7 @@ from s4_pipeline.drawer_distractors import (
     DISTRACTOR_ASSET_RELATIVE_PATHS,
     DISTRACTOR_OBJECT_NAMES,
     scene_grasp_can_nominal_position,
+    scene_grasp_can_scale,
 )
 
 
@@ -56,13 +57,13 @@ DRAWER_PLACEMENTS = (
     ("DrawerCabinet", (DRAWER_X, PRIMARY_DRAWER_Y, DRAWER_Z)),
     ("DrawerCabinetSecondary", (DRAWER_X, SECONDARY_DRAWER_Y, DRAWER_Z)),
 )
-# Keep the complete 10 x 10 cm sampling grid on the right-hand side of the
-# robot and away from the secondary cabinet's near edge.
+# Keep the IK-validated sampling grid on the right-hand side of the robot and
+# away from the secondary cabinet's near edge.
 TOMATO_SOUP_CAN_POSITION = scene_grasp_can_nominal_position()
 OBJECT_ROTATE_X_NEG_90_QUAT = (0.7071068, -0.7071068, 0.0, 0.0)
 # The YCB can is authored Y-up and rotated -90 degrees about local X when
 # spawned. Its local Y scale therefore controls its height in world Z.
-TOMATO_SOUP_CAN_SCALE = (1.0, 0.90, 1.0)
+TOMATO_SOUP_CAN_SCALE = scene_grasp_can_scale()
 TOMATO_CAN_MASS_KG = 0.08
 TOMATO_CAN_STATIC_FRICTION = 2.2
 TOMATO_CAN_DYNAMIC_FRICTION = 1.8

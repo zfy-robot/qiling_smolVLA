@@ -13,7 +13,7 @@ batch_size: 16
 num_workers: 30
 device: cuda
 seed: 42
-save_freq: 20000
+save_freq: 50000
 resume: false
 
 chunk_size: 50

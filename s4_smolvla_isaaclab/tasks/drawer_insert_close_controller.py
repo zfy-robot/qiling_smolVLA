@@ -60,6 +60,7 @@ class DrawerPhase:
     drawer_close_target_open_m: float
     drawer_close_overtravel_m: float
     hold_current_left_pose: bool
+    hold_current_right_pose: bool
     left_offset_from_current: np.ndarray | None
     right_offset_from_current: np.ndarray | None
     target_alpha: float | None
@@ -338,6 +339,7 @@ class DrawerInsertCloseController:
                         float(raw.get("drawer_close_overtravel_m", 0.0)), 0.0
                     ),
                     hold_current_left_pose=bool(raw.get("hold_current_left_pose", False)),
+                    hold_current_right_pose=bool(raw.get("hold_current_right_pose", False)),
                     left_offset_from_current=left_offset_from_current,
                     right_offset_from_current=right_offset_from_current,
                     target_alpha=(
@@ -436,7 +438,13 @@ class DrawerInsertCloseController:
             )
             updated_phase = replace(updated_phase, left=dynamic_target)
 
-        if phase.right_offset_from_current is not None:
+        if phase.hold_current_right_pose:
+            if right_pos is None or right_quat is None:
+                raise RuntimeError("hold_current_right_pose requires a live right TCP pose")
+            orientation_weight = updated_phase.right.orientation_weight if updated_phase.right is not None else 1.0
+            dynamic_target = TcpTarget(right_pos.copy(), right_quat.copy(), orientation_weight)
+            updated_phase = replace(updated_phase, right=dynamic_target)
+        elif phase.right_offset_from_current is not None:
             if right_pos is None or right_quat is None:
                 raise RuntimeError("right_offset_from_current requires a live right TCP pose")
             orientation_weight = updated_phase.right.orientation_weight if updated_phase.right is not None else 1.0

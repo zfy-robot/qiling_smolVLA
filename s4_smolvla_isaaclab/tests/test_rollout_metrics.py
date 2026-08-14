@@ -110,7 +110,20 @@ def test_rollout_stratified_grid_visits_every_cell_once():
 
 
 def test_grasp_can_grid_is_shifted_to_right_hand_side():
-    cfg = resolve_randomization_cfg(SCRIPTED, randomize_task=True)
+    scripted = {
+        **SCRIPTED,
+        "randomization": {
+            **SCRIPTED["randomization"],
+            "can_xy": {
+                "enabled": True,
+                "sampling": "stratified_grid",
+                "grid_cells": [5, 5],
+                "x_range": [-0.055, -0.005],
+                "y_range": [-0.06, 0.02],
+            },
+        },
+    }
+    cfg = resolve_randomization_cfg(scripted, randomize_task=True)
     rng = make_randomization_rng(42)
     grid = make_can_grid_sampler(cfg, rng)
     samples = [sample_randomization(cfg, rng=rng, can_grid_sampler=grid) for _ in range(25)]
@@ -121,8 +134,8 @@ def test_grasp_can_grid_is_shifted_to_right_hand_side():
         )
         for sample in samples
     ]
-    assert all(0.49 <= x <= 0.59 for x, _ in world_xy)
-    assert all(-0.18 <= y <= -0.08 for _, y in world_xy)
+    assert all(0.485 <= x <= 0.535 for x, _ in world_xy)
+    assert all(-0.19 <= y <= -0.11 for _, y in world_xy)
 
 
 def test_rollout_run_dir_and_episode_artifacts(tmp_path: Path):
