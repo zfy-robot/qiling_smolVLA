@@ -12,6 +12,7 @@ def failure_event(reason: str = "ik_timeout") -> dict[str, object]:
     return {
         "failure_type": "controller_failed",
         "reason": reason,
+        "diagnostic_cause": "right_tcp_target_not_reached",
         "phase_name": "right_reach_can",
         "can_position_world_m": [0.52, -0.08, 1.16],
         "can_grid_cell": [2, 3],
@@ -45,6 +46,7 @@ def test_failure_report_is_append_only_and_resume_safe(tmp_path) -> None:
     assert payload["completed"] is True
     assert payload["failed_attempts"] == 2
     assert payload["failures_by_phase"] == {"right_reach_can": 2}
+    assert payload["failures_by_diagnostic_cause"] == {"right_tcp_target_not_reached": 2}
     assert payload["failures_by_reason"] == {"grasp_unstable": 1, "ik_timeout": 1}
     assert len(events.read_text(encoding="utf-8").splitlines()) == 2
     _check_failure_summary(

@@ -39,7 +39,7 @@ Options:
   --repo-id ID              Converted dataset name/repo id; default comes from task config
   --overwrite               Replace an existing converted dataset
   --resume                  Append to --hdf5-file until --episodes total successes
-  --max-failed-attempts N   Abort if failures exceed N (default: 0, strict mode)
+  --max-failed-attempts N   Abort if failures exceed N (default: 1000 safety cap)
   --allow-skipped-grid-cells
                             Permit conversion when a grid cell was skipped
   -h, --help                Show this help
@@ -89,7 +89,7 @@ if [[ "$RECORD_EVERY_N" -ne 6 ]]; then
     exit 2
 fi
 if [[ -z "$MAX_FAILED_ATTEMPTS" ]]; then
-    MAX_FAILED_ATTEMPTS=0
+    MAX_FAILED_ATTEMPTS=1000
 fi
 if ! [[ "$MAX_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
     echo "--max-failed-attempts must be a non-negative integer" >&2

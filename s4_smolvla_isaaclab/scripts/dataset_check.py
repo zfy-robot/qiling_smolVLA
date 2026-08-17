@@ -27,6 +27,7 @@ def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
         LEFT_WRIST_RGB,
         PROCESSED_ACTIONS,
         RIGHT_WRIST_RGB,
+        DRAWER_TASK_OBJECT_POSE,
     )
 
     files = [path] if path.is_file() else sorted(path.rglob("*.hdf5"))
@@ -72,6 +73,10 @@ def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
                     _fail(f"{file}:{name} contains NaN/Inf actions")
                 if not np.isfinite(active_state[:]).all():
                     _fail(f"{file}:{name} contains NaN/Inf active states")
+                if DRAWER_TASK_OBJECT_POSE in group:
+                    object_pose = group[DRAWER_TASK_OBJECT_POSE]
+                    if object_pose.shape != (count, 7) or not np.isfinite(object_pose[:]).all():
+                        _fail(f"{file}:{name} invalid drawer task object pose shape/data={object_pose.shape}")
                 raw_metadata = group.attrs.get("episode_metadata")
                 if raw_metadata is not None:
                     if isinstance(raw_metadata, bytes):

@@ -45,7 +45,7 @@ Collection:
 
 Safety gates:
   --max-failed-attempts N         Abort collection immediately if exceeded;
-                                  default: 0 (strict failure-free collection)
+                                  default: 1000 (guards against endless systemic failure)
   --allow-skipped-grid-cells      Permit training when a 3-point grid cell was skipped
   --overwrite-dataset             Explicitly replace existing converted dataset
 
@@ -106,7 +106,7 @@ if [[ "$RECORD_EVERY_N" -ne 6 ]]; then
     exit 2
 fi
 if [[ -z "$MAX_FAILED_ATTEMPTS" ]]; then
-    MAX_FAILED_ATTEMPTS=0
+    MAX_FAILED_ATTEMPTS=1000
 fi
 if ! [[ "$MAX_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
     echo "--max-failed-attempts must be a non-negative integer" >&2

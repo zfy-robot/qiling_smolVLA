@@ -153,6 +153,7 @@ Core commands:
   collect-train [options]             Guarded collect, convert, check, then train
   convert [--overwrite]              Convert HDF5 to LeRobotDataset
   dataset-check [PATH]               Validate dataset and optional checkpoint
+  validate-workspace [options]       Dense offline IK/singularity audit for grasp region
   train [--resume]                   Train SmolVLA in the smolvla environment
   preview                            Offline checkpoint preview
   rollout [--deterministic|--success-rate N]
@@ -217,6 +218,11 @@ case "${1:-help}" in
     record-parallel) shift; python3 scripts/record_parallel.py "$@" ;;
     convert|convert-lerobot) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/convert_lerobot.py "$@" ;;
     dataset-check) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/dataset_check.py "$@" ;;
+    validate-workspace)
+        shift
+        use_isaaclab_env
+        "$S4_ISAACLAB_PREFIX/bin/python" scripts/validate_drawer_grasp_workspace.py "$@"
+        ;;
     train|train-smolvla) shift; print_context; use_smolvla_env; bash scripts/train_smolvla_local.sh "$@" ;;
     preview|preview-smolvla) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/preview_policy.py "$@" ;;
     visualize-smolvla) shift; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/visualize_policy.py "$@" ;;

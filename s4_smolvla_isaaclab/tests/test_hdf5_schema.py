@@ -18,6 +18,7 @@ def test_hdf5_writer_contract(tmp_path: Path):
         chest_front_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
         left_wrist_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
         right_wrist_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
+        drawer_task_object_pose=[np.asarray([0.52, -0.13, 1.16, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)],
     )
     path = tmp_path / "fixture.hdf5"
     with Hdf5DemoWriter(path, {"record_fps": 20}) as writer:
@@ -25,6 +26,7 @@ def test_hdf5_writer_contract(tmp_path: Path):
     with h5py.File(path, "r") as stream:
         assert stream["data/demo_0/processed_actions"].shape == (1, 26)
         assert stream["data/demo_0/obs/chest_front_rgb"].shape == (1, 8, 8, 3)
+        assert stream["data/demo_0/states/rigid_object/drawer_task_object/root_pose"].shape == (1, 7)
 
 
 def test_hdf5_writer_rejects_partial_camera_sequence(tmp_path: Path):

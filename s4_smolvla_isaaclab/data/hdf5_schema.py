@@ -15,6 +15,7 @@ RIGHT_EEF_POSE = "obs/right_arm_eef_pose"
 RED_BLOCK_POSE = "states/rigid_object/red_block/root_pose"
 BLUE_BLOCK_POSE = "states/rigid_object/blue_block/root_pose"
 PLATE_POSE = "states/rigid_object/plate/root_pose"
+DRAWER_TASK_OBJECT_POSE = "states/rigid_object/drawer_task_object/root_pose"
 
 
 REQUIRED_FOR_LEROBOT_CONVERSION = (

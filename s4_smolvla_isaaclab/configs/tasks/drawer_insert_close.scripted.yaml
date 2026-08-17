@@ -13,21 +13,28 @@ randomization:
     enabled: true
     # Keep the grid safely inside the secondary cabinet top. Collection logs
     # showed that world x~=0.46 lies on its physical edge: seven reset samples
-    # fell to z~=0.03 before the task began. This 5x8 cm rectangle gives world
-    # x=[0.485, 0.535] and retains the already validated y diversity.
-    x_range: [-0.055, -0.005]
-    y_range: [-0.06, 0.02]
+    # fell to z~=0.03 before the task began. USD geometry puts the load-bearing
+    # near edge at world x=0.4752 and the can radius at 0.03383 m. Requiring the
+    # complete can base plus >5 mm margin gives center x>=0.515. The later
+    # x=[0.525,0.535] edge exhausted all three points at the old 12 mm grasp gate.
+    # The verified continuous IK posture branch supports world x=[0.515,0.535],
+    # while preserving >=5 mm table-edge margin.
+    x_range: [-0.025, -0.005]
+    # Extend toward the right shoulder, where the arm has substantially better
+    # leverage. Keep the far corner out of the higher-condition IK band:
+    # world y=[-0.300,-0.120]. The resulting
+    # 2 cm x 18 cm = 36 cm^2 region is still over 5x the previous 7 cm^2 area.
+    y_range: [-0.17, 0.01]
     # Split the continuous XY range into 5x5 cells. Each successful group of
     # 25 episodes visits every cell once in shuffled order, while the precise
     # point remains uniformly random inside that cell. Failed points advance
-    # within the same cell according to max_points_per_cell below.
+    # within the same cell according to the retry policy below.
     sampling: stratified_grid
     grid_cells: [5, 5]
-    # Try at most three independently sampled points inside a cell. A failed
-    # point is never retried. Three failures abort collection instead of hiding
-    # an unreliable region by filling the episode count from the next cycle.
-    max_points_per_cell: 3
-    on_cell_exhausted: abort
+    # A grasp-related failure retries the exact same randomized scene three
+    # times. After those retries, or after any later-stage failure, replace only
+    # the precise point inside this same cell. The cell advances only on success.
+    max_grasp_retries_same_position: 3
   distractor_cans:
     enabled: true
     # Three different YCB objects are shuffled among these mutually separated
@@ -56,9 +63,9 @@ hands:
   # Six policy controls: thumb yaw, thumb pitch, index, middle, ring, pinky.
   left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
   left_close: [1.0, 0.22, 0.85, 0.85, 0.85, 0.85]
-  # Open the right thumb yaw 0.1 rad farther than before. The close target is
-  # intentionally unchanged.
-  right_open: [0.8, 0.0, 0.05, 0.05, 0.05, 0.05]
+  # Fully extend the four fingers and spread the thumb farther before the
+  # lateral approach. The close target remains intentionally unchanged.
+  right_open: [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
   right_close: [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
   action_hold_seconds: 1.0
 
@@ -128,26 +135,24 @@ targets:
     pos: [0.3550, 0.3725, 0.0760]
     rpy: [-1.5, 0.05, 1.5]
     orientation_weight: 0.60
-  left_lift_after_release:
-    # Position is replaced at phase entry by current TCP + configured offset;
-    # this target independently configures the lift orientation in base_link.
-    anchor: drawer_handle_closed
-    offset_frame: base_link
-    offset: [0.0, 0.0, 0.0]
-    rpy: [-1.5, 0.05, 1.5]
-    orientation_weight: 0.60
   right_can_pregrasp:
     anchor: can
     offset_frame: base_link
-    offset: [-0.06, -0.07, 0.07]
-    rpy: [0.0, -1.5, 0.0]
+    # First stage the open hand farther toward the robot (-X), toward its right
+    # side (-Y), and slightly higher (+Z).  At the far-right grid corner the old
+    # [-0.08,-0.09,+0.08] target let the extended fingers sweep through the can
+    # while leaving Home.  This target makes lateral/upward clearance dominate
+    # before the separate, precise right_can_grasp approach begins.
+    offset: [-0.12, -0.12, 0.10]
+    rpy: [0.0, -1.4, 0.0]
   right_can_grasp:
     anchor: can
     offset_frame: base_link
-    # Lower the grasp TCP by 5 mm for better finger overlap. This conservative
-    # change preserves pinky/table clearance without changing hand orientation.
-    offset: [-0.04, -0.025, 0.030]
-    rpy: [0.0, -1.5, 0.0]
+    # At the palm-up orientation this lower, deeper target puts the fingers at
+    # the can mid-body.  It is the grasp geometry that previously produced 108
+    # accepted episodes; closure happens only after stable physical contact.
+    offset: [-0.050, -0.038, 0.030]
+    rpy: [0.0, -1.4, 0.0]
     orientation_weight: 0.35
   right_can_lift:
     anchor: can
@@ -167,6 +172,13 @@ phases:
     left_hand: open
     right_hand: open
     hold_seconds: 1.0
+    require_left_hand_actual_reached: true
+    require_right_hand_actual_reached: true
+    # This is a reset/readiness gate, not a grasp-quality gate. Finger drives
+    # can settle a few degrees above the exact 0-rad hard stop; accepting up to
+    # 0.10 rad prevents a harmless open-finger residual from stalling an
+    # otherwise valid episode. Later grasp/release phases keep strict limits.
+    hand_actual_tolerance: 0.10
     max_steps: 1000
 
   - name: left_approach_handle
@@ -210,7 +222,12 @@ phases:
     # Keep commanding the left hand on the drawer, but do not let its small
     # steady-state tracking error block an otherwise completed right-hand phase.
     require_left_tcp_reached: false
-    tolerance: 0.075
+    # Arrive at a real staging pose before beginning the final approach. A
+    # 75 mm gate could skip pre-grasp while the arm was still far from the can.
+    tolerance: 0.010
+    # Before finger closure the can should remain close to where it settled.
+    # Allow up to 20 mm of contact displacement before discarding the attempt.
+    task_object_max_displacement_from_start_m: 0.020
     min_steps: 20
     max_steps: 1000
 
@@ -219,13 +236,19 @@ phases:
     left: {target: left_drawer_open}
     right: {target: right_can_grasp}
     require_left_tcp_reached: false
-    # Do not begin the grasp while the TCP is still centimetres from its final
-    # pose. This was 0.050 m and produced concurrent approach/closure motion.
-    tolerance: 0.012
+    # TCP is a wrist-frame virtual point, not a fingertip. Physical tests show
+    # first stable open-hand contact at 25--27 mm TCP error; forcing 10 mm makes
+    # the still-open hand push the can. Stop at contact, then the next phase
+    # holds the arm stationary for one second before closing the fingers.
+    tolerance: 0.028
+    task_object_max_displacement_from_start_m: 0.020
     target_alpha: 0.18
     max_joint_step: 0.020
     min_steps: 20
     max_steps: 1000
+    # Preserve the bent-arm null-space reference selected at pre-grasp instead
+    # of switching IK branches close to the can.
+    keep_ik_posture_reference: true
 
   - name: right_settle_before_close
     task: "Hold the open right hand steady around the can before closing."
@@ -234,9 +257,11 @@ phases:
     right_hand: open
     hold_current_right_pose: true
     require_left_tcp_reached: false
-    tolerance: 0.012
+    tolerance: 0.010
     hold_seconds: 1.0
     max_steps: 1000
+    keep_ik_posture_reference: true
+    require_right_hand_actual_reached: true
 
   - name: right_close_hand
     task: "Close the right hand around the can and wait."
@@ -245,9 +270,10 @@ phases:
     right_hand: close
     hold_current_right_pose: true
     require_left_tcp_reached: false
-    tolerance: 0.012
+    tolerance: 0.010
     hold_seconds: 1.0
     max_steps: 1000
+    keep_ik_posture_reference: true
 
   - name: right_hold_grasp
     task: "Keep the closed right hand steady around the can before lifting."
@@ -256,9 +282,10 @@ phases:
     right_hand: close
     hold_current_right_pose: true
     require_left_tcp_reached: false
-    tolerance: 0.012
+    tolerance: 0.010
     hold_seconds: 0.5
     max_steps: 1000
+    keep_ik_posture_reference: true
 
   - name: right_lift_can
     task: "Lift the grasped can clear of the support surface."
@@ -266,6 +293,10 @@ phases:
     right: {target: right_can_lift}
     min_steps: 20
     max_steps: 1000
+    keep_ik_posture_reference: true
+    # Do not proceed merely because the wrist reached its target: the can must
+    # have physically followed the hand upward.
+    task_object_world_bounds: {z: [1.20, 1.35]}
 
   - name: right_place_in_drawer
     task: "Move the grasped can into the open drawer."
@@ -279,53 +310,111 @@ phases:
     left: {target: left_drawer_open}
     right: {target: right_place_in_drawer}
     right_hand: open
-    hold_seconds: 1.0
+    # Give the released can time to settle in the drawer before either hand
+    # retreats or starts moving the drawer. One rare run dropped it to floor.
+    hold_seconds: 1.5
+    max_steps: 1000
+
+    # Opening fingers inside the drawer can push the wrist a few centimetres;
+    # hold the measured release pose and judge the phase by the hand and can,
+    # not by an unreachable theoretical TCP target.
+    hold_current_right_pose: true
+    require_left_tcp_reached: false
+    require_right_tcp_reached: false
+    require_right_hand_actual_reached: true
+    task_object_world_bounds:
+      x: [0.34, 0.46]
+      y: [0.05, 0.23]
+      z: [1.00, 1.04]
+    task_object_max_speed_m_s: 0.05
+
+  - name: right_lift_clear_drawer
+    task: "After release is complete, lift the open right hand vertically clear of the drawer."
+    left: {target: left_drawer_open}
+    right: {target: right_place_in_drawer}
+    right_offset_from_current: [0.0, 0.0, 0.10]
+    right_hand: open
+    require_left_tcp_reached: false
+    require_right_hand_actual_reached: true
+    min_steps: 20
+    max_steps: 1000
+
+  - name: right_retreat_clear_drawer
+    task: "Retreat the open right hand toward the robot and away from the drawer."
+    left: {target: left_drawer_open}
+    right: {target: right_place_in_drawer}
+    right_offset_from_current: [-0.10, -0.18, 0.02]
+    right_hand: open
+    require_left_tcp_reached: false
+    require_right_hand_actual_reached: true
+    min_steps: 20
     max_steps: 1000
 
   - name: right_retreat_and_start_close
-    task: "Retreat the open right hand while the left hand starts closing the drawer."
+    task: "Return the cleared right arm home while the left hand closes the drawer."
     left: {target: left_drawer_closed}
-    # Fallback target supplies IK weights; position/orientation are replaced at
-    # phase entry using the measured right TCP in base_link.
-    right: {target: right_place_in_drawer}
-    right_offset_from_current: [-0.10, -0.20, 0.0]
-    # The right retreat runs concurrently but never gates phase completion.
-    # The next phase sends the right arm Home.
-    require_right_tcp_reached: false
+    # The right hand has already lifted and retreated clear of the drawer, so
+    # it can return Home concurrently instead of waiting for the left arm.
+    right_arm_home: true
     # Closing is judged from the live drawer joint, not from an ideal rigid
     # hand-to-handle TCP displacement.
     require_left_tcp_reached: false
     close_drawer_from_current: true
-    # Command exactly to the logical q=0 closed pose for one fixed-duration
-    # push. No TCP or drawer-distance condition gates this phase.
+    # Command exactly to the logical q=0 closed pose. TCP error does not gate
+    # this phase; the live drawer distance below does.
     drawer_close_target_open_m: 0.000
     drawer_close_overtravel_m: 0.000
+    # Do not advance merely because the fixed push duration elapsed. Normal
+    # demos finish below 0.004 m; keep pushing until the live joint is <0.02 m.
+    drawer_open_max: 0.020
     min_steps: 360
     max_steps: 1000
 
   - name: left_open_hand
     task: "Open the left hand after the single drawer-close push and wait."
     left: {target: left_drawer_closed}
-    right_arm_home: true
     left_hand: open
     hold_current_left_pose: true
     hold_seconds: 1.0
+    require_left_hand_actual_reached: true
+    # The closed drawer handle physically prevents one left finger from
+    # reaching the no-contact open angle. Recent successful place attempts
+    # consistently settle at ~0.30 rad maximum error; this phase only needs to
+    # verify release before lifting away, not free-space full extension.
+    hand_actual_tolerance: 0.35
     max_steps: 1000
 
-  - name: left_lift_after_release
-    task: "Lift the open left hand upward clear of the closed drawer."
-    # Position resolves from the measured post-release TCP in base_link;
-    # orientation comes from targets.left_lift_after_release.rpy.
-    left: {target: left_lift_after_release}
-    left_offset_from_current: [-0.04, 0.0, 0.07]
+  - name: left_joint_transition_after_release
+    task: "Move the open left hand backward and upward with the elbow tucked before returning home."
+    # Explicit joint-space bridge from the measured post-close branch.  Unlike
+    # the former Cartesian lift/retreat, this bends the elbow rearward instead
+    # of letting IK flip it forward and drive the wrist joints toward limits.
+    # Joint order: shoulder_pitch, shoulder_roll, shoulder_yaw, elbow,
+    # wrist_roll, wrist_pitch, wrist_yaw.
+    # The wrist values are halfway between the former safe transition and
+    # Home. Shoulder/elbow angles were re-solved around that wrist compromise
+    # so the TCP still retreats and rises monotonically without a wide return
+    # arc after reaching this waypoint.
+    left_arm_joint_target: [0.430, 0.677, 0.100, -1.782, -0.029, -0.098, -0.402]
+    left_hand: open
     right_arm_home: true
-    min_steps: 30
+    require_left_hand_actual_reached: true
+    hand_actual_tolerance: 0.05
+    drawer_open_max: 0.040
+    arm_joint_tolerance: 0.040
+    target_alpha: 0.12
+    max_joint_step: 0.015
+    min_steps: 150
     max_steps: 1000
 
   - name: left_home
     task: "Return the left arm home after completing the task."
     left_arm_home: true
     right_arm_home: true
+    left_hand: open
+    require_left_hand_actual_reached: true
+    hand_actual_tolerance: 0.05
+    drawer_open_max: 0.040
     target_alpha: 0.20
     max_joint_step: 0.025
     min_steps: 120

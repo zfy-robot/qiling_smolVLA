@@ -80,6 +80,9 @@ class CollectionFailureReporter:
     ) -> None:
         by_phase = Counter(str(event.get("phase_name", "unknown")) for event in self.events)
         by_type = Counter(str(event.get("failure_type", "unknown")) for event in self.events)
+        by_diagnostic_cause = Counter(
+            str(event.get("diagnostic_cause", "unknown")) for event in self.events
+        )
         by_reason = Counter(str(event.get("reason", "unknown")) for event in self.events)
         summary = {
             "schema_version": 1,
@@ -91,6 +94,7 @@ class CollectionFailureReporter:
             "skipped_grid_cells": list(skipped_grid_cells),
             "failures_by_phase": dict(sorted(by_phase.items())),
             "failures_by_type": dict(sorted(by_type.items())),
+            "failures_by_diagnostic_cause": dict(sorted(by_diagnostic_cause.items())),
             "failures_by_reason": dict(sorted(by_reason.items())),
             "failure_log": str(self.jsonl_path.resolve()),
             "hdf5_path": None if hdf5_path is None else str(Path(hdf5_path).resolve()),

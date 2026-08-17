@@ -305,6 +305,7 @@ from s4_pipeline.drawer_distractors import (
 from s4_pipeline.failure_reporting import CollectionFailureReporter
 from s4_pipeline.paths import DATASET_CONFIG_PATH
 from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy, sample_xyz_range
+from s4_pipeline.retry_policy import decide_drawer_retry
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
 from tasks import get_task_spec
 from tasks.loading import import_symbol, load_yaml
@@ -588,6 +589,9 @@ def append_bimanual_record_frame(
     right_tcp = estimate_right_hand_tcp_pose_from_robot(robot)
     if right_tcp is not None:
         episode.right_eef_pose.append(np.concatenate([right_tcp[0], right_tcp[1]]).astype(np.float32))
+    can_obj = scene.get("named_objects", {}).get("can")
+    if can_obj is not None:
+        episode.drawer_task_object_pose.append(pose7_from_rigid_object(can_obj))
 
 
 def default_grasp_payload(block: str) -> dict[str, object]:
@@ -1518,9 +1522,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     drawer_rng = None
     can_grid_sampler: StratifiedGrid2D | None = None
     current_grid_sample = None
-    grid_point_attempt = 1
+    grasp_retry_count = 0
     skipped_grid_cells: list[dict[str, int]] = []
     episode_context: dict[str, object] = {}
+    phase_state_history: list[dict[str, object]] = []
     closed_handle_pose_w = get_drawer_handle_top_pose() if scene.get("task_id") == "drawer_insert_close" else None
     if scene.get("task_id") == "drawer_insert_close":
         if task_spec.scripted_config is None:
@@ -1571,7 +1576,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "can_grid_cell": [grid_sample.cell_x, grid_sample.cell_y],
                 "can_grid_cycle": grid_sample.cycle,
                 "can_grid_index_in_cycle": grid_sample.index_in_cycle,
-                "can_grid_point_attempt": int(grid_point_attempt),
+                "can_grid_point_attempt": int(grasp_retry_count + 1),
+                "can_grasp_retry_count": int(grasp_retry_count),
             }
         else:
             can_xy_offset = [
@@ -1622,16 +1628,16 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
 
     def collection_state() -> dict[str, object]:
         return {
-            "version": 1,
+            "version": 2,
             "rng_state": None if drawer_rng is None else drawer_rng.bit_generator.state,
             "grid_state": None if can_grid_sampler is None else can_grid_sampler.state_dict(),
             "episode_context": dict(episode_context),
-            "grid_point_attempt": int(grid_point_attempt),
+            "grasp_retry_count": int(grasp_retry_count),
             "skipped_grid_cells": list(skipped_grid_cells),
         }
 
     def restore_collection_state(state: dict[str, object]) -> bool:
-        nonlocal episode_context, current_grid_sample, grid_point_attempt, skipped_grid_cells
+        nonlocal episode_context, current_grid_sample, grasp_retry_count, skipped_grid_cells
         if drawer_rng is None or can_grid_sampler is None:
             return False
         rng_state = state.get("rng_state")
@@ -1641,7 +1647,9 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         drawer_rng.bit_generator.state = rng_state
         can_grid_sampler.load_state_dict(grid_state)
         episode_context = dict(state.get("episode_context", {}) or {})
-        grid_point_attempt = int(state.get("grid_point_attempt", 1))
+        grasp_retry_count = int(
+            state.get("grasp_retry_count", max(int(state.get("grid_point_attempt", 1)) - 1, 0))
+        )
         skipped_grid_cells = list(state.get("skipped_grid_cells", []) or [])
         if episode_context and "can_grid_cell" in episode_context:
             cell = episode_context["can_grid_cell"]
@@ -1656,61 +1664,54 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             )
         return True
 
-    def select_after_failed_point(reason: str) -> None:
-        """Choose another point in this cell, or apply the configured exhaustion policy."""
-        nonlocal episode_context, current_grid_sample, grid_point_attempt
+    def select_after_failed_attempt(phase_name: str, reason: str) -> None:
+        """Apply phase-aware retry policy without advancing the stratified cell."""
+        nonlocal episode_context, current_grid_sample, grasp_retry_count
         can_cfg = drawer_randomization_cfg.get("can_xy", {})
-        max_points = max(int(can_cfg.get("max_points_per_cell", 3)), 1)
-        if can_grid_sampler is None or current_grid_sample is None:
-            episode_context = sample_drawer_episode()
-            return
-        if grid_point_attempt < max_points:
-            grid_point_attempt += 1
-            next_sample = can_grid_sampler.resample_cell(current_grid_sample)
-            episode_context = sample_drawer_episode(grid_sample_override=next_sample)
+        max_retries = max(int(can_cfg.get("max_grasp_retries_same_position", 3)), 0)
+        decision = decide_drawer_retry(
+            phase_name,
+            grasp_retry_count=grasp_retry_count,
+            max_grasp_retries_same_position=max_retries,
+        )
+        if decision.retry_same_position:
+            grasp_retry_count = decision.next_grasp_retry_count
+            episode_context["can_grid_point_attempt"] = int(grasp_retry_count + 1)
+            episode_context["can_grasp_retry_count"] = int(grasp_retry_count)
             log_collection_event(
-                "GRID",
-                f"cell=({next_sample.cell_x},{next_sample.cell_y}) point={grid_point_attempt}/{max_points} "
-                f"after={reason}",
+                "GRASP-RETRY",
+                f"same_position retry={grasp_retry_count}/{max_retries} "
+                f"cell={episode_context.get('can_grid_cell')} "
+                f"xy={episode_context.get('can_xy_offset')} after={reason}",
                 "yellow",
             )
             return
-        exhausted_cell = {
-            "cell_x": int(current_grid_sample.cell_x),
-            "cell_y": int(current_grid_sample.cell_y),
-            "cycle": int(current_grid_sample.cycle),
-        }
-        on_exhausted = str(can_cfg.get("on_cell_exhausted", "abort")).strip().lower()
-        if on_exhausted == "abort":
+
+        if decision.exhausted_grasp_position:
             log_collection_event(
-                "GRID-EXHAUSTED",
-                f"cell=({current_grid_sample.cell_x},{current_grid_sample.cell_y}) "
-                f"failed_points={max_points}; aborting without skipping or advancing",
-                "red",
+                "GRASP-POSITION-EXHAUSTED",
+                f"same_position retries={max_retries}; replacing the precise point "
+                f"inside cell={episode_context.get('can_grid_cell')}",
+                "yellow",
             )
-            raise RuntimeError(
-                "Collection aborted: grid cell "
-                f"({current_grid_sample.cell_x},{current_grid_sample.cell_y}) cycle={current_grid_sample.cycle} "
-                f"failed at {max_points} independently sampled points; last_reason={reason}. "
-                "The partial HDF5 and failure log are preserved. Fix the workspace/task and resume the same file."
+        else:
+            log_collection_event(
+                "NON-GRASP-DISCARD",
+                f"phase={phase_name}; replacing the precise point inside "
+                f"cell={episode_context.get('can_grid_cell')} after={reason}",
+                "yellow",
             )
-        if on_exhausted != "skip":
-            raise ValueError(
-                f"randomization.can_xy.on_cell_exhausted must be 'abort' or 'skip', got {on_exhausted!r}"
-            )
-        skipped_grid_cells.append(
-            {
-                **exhausted_cell,
-            }
-        )
+        grasp_retry_count = 0
+        if can_grid_sampler is None or current_grid_sample is None:
+            episode_context = sample_drawer_episode()
+            return
+        next_sample = can_grid_sampler.resample_cell(current_grid_sample)
+        episode_context = sample_drawer_episode(grid_sample_override=next_sample)
         log_collection_event(
-            "GRID-SKIP",
-            f"cell=({current_grid_sample.cell_x},{current_grid_sample.cell_y}) "
-            f"failed_points={max_points}; advancing to next cell",
-            "red",
+            "GRID-RESAMPLE",
+            f"cell=({next_sample.cell_x},{next_sample.cell_y}) new_xy={next_sample.xy.tolist()}",
+            "yellow",
         )
-        grid_point_attempt = 1
-        episode_context = sample_drawer_episode()
 
     drawer_top_joint_id = None
     if drawer is not None:
@@ -1845,6 +1846,19 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 dtype=np.float32,
             )
             write_action_to_full_target(next_target, robot, reset_action)
+            # Reset both the measured state and the drive target to the same
+            # configured open-hand pose. Previously the state was written at
+            # DEFAULT_POSE (0.3-rad bent fingers) and only the target was made
+            # open, which could occasionally leave one finger resting above
+            # the 0-rad hard stop for an entire readiness phase.
+            reset_joint_state = torch.tensor(
+                next_target, dtype=torch.float32, device=sim.device
+            ).view(1, -1)
+            robot.write_joint_state_to_sim(
+                reset_joint_state,
+                torch.zeros_like(reset_joint_state),
+            )
+            robot.reset()
         reset_drawer(episode_context)
         reset_static_objects(episode_context)
         robot.set_joint_position_target(torch.tensor(next_target, device=sim.device).view(1, -1))
@@ -1992,6 +2006,17 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "reset_settle_s": float(max(float(args_cli.reset_settle_s), 0.0)),
                 "reset_settle_steps": int(reset_settle_steps),
                 "scripted_config": str(drawer_scripted_config) if drawer_scripted_config is not None else None,
+                "ik_runtime": {
+                    "solver": "PinkBimanualTcpController",
+                    "posture_gain": float(args_cli.tcp_posture_gain),
+                    "damping": float(args_cli.tcp_ik_damping),
+                    "max_joint_delta": float(args_cli.tcp_max_joint_delta),
+                    "tcp_offset_wrist_m": [float(value) for value in DEFAULT_TCP_OFFSET_WRIST],
+                },
+                "gravity_compensation": {
+                    "enabled": bool(args_cli.gravity_compensation),
+                    "scale": float(args_cli.gravity_comp_scale),
+                },
                 "randomization": drawer_randomization_cfg,
                 "success_filter": scripted_cfg.get("success", {}),
                 "distractor_cans_enabled": all(
@@ -2070,7 +2095,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 drawer_rng.bit_generator.state = np.random.default_rng(drawer_seed).bit_generator.state
                 if can_grid_sampler is not None:
                     can_grid_sampler.load_state_dict({"order": [], "cursor": 0, "cycle": -1})
-                grid_point_attempt = 1
+                grasp_retry_count = 0
                 skipped_grid_cells = []
                 episode_context = {}
                 for _ in range(recorded_episodes):
@@ -2190,6 +2215,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         )
 
     def log_attempt_start(controller) -> None:
+        phase_state_history.clear()
         log_collection_event(
             "EPISODE",
             f"EP{recorded_episodes + 1:03d}/{max_record_episodes:03d} "
@@ -2203,6 +2229,90 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             "PHASE",
             f"EP{recorded_episodes + 1:03d}/{max_record_episodes:03d} TRY{record_attempt:02d} | "
             f"PHASE {controller.phase_index + 1:02d}/{len(controller.phases):02d} {phase.name}",
+            "blue",
+        )
+        can_obj = scene.get("named_objects", {}).get("can")
+        can_pos = None if can_obj is None else can_obj.data.root_pos_w[0].detach().cpu().numpy()
+        right_pose_w = estimate_right_hand_tcp_pose_from_robot(robot)
+        base_pose_w = estimate_body_pose_from_robot(robot, "base_link")
+        right_pose_b = pose_world_to_base(right_pose_w, base_pose_w) if right_pose_w is not None else None
+        right_target = None if phase.right is None else phase.right.pos
+        right_error = (
+            float("nan")
+            if right_pose_b is None or right_target is None
+            else float(np.linalg.norm(np.asarray(right_target) - np.asarray(right_pose_b[0])))
+        )
+        start_pos = controller._task_object_start_position_world
+        can_displacement = (
+            float("nan")
+            if can_pos is None or start_pos is None
+            else float(np.linalg.norm(np.asarray(can_pos) - np.asarray(start_pos)))
+        )
+        can_shift_text = "n/a" if not np.isfinite(can_displacement) else f"{can_displacement:.4f}m"
+        right_error_text = "n/a" if not np.isfinite(right_error) else f"{right_error:.4f}m"
+        actual_action = control_action_from_sim(robot)
+        fingertip_positions: dict[str, list[float]] = {}
+        for body_name in (
+            "rh_thumb_distal",
+            "rh_index_distal",
+            "rh_middle_distal",
+            "rh_ring_distal",
+            "rh_pinky_distal",
+        ):
+            try:
+                body_id = robot.body_names.index(body_name)
+                fingertip_positions[body_name] = [
+                    float(value)
+                    for value in robot.data.body_pos_w[0, body_id].detach().cpu().numpy()
+                ]
+            except (ValueError, AttributeError, IndexError):
+                continue
+        fingertip_centroid = (
+            None
+            if not fingertip_positions
+            else np.mean(np.asarray(list(fingertip_positions.values()), dtype=np.float64), axis=0)
+        )
+        phase_snapshot = {
+            "phase": str(phase.name),
+            "can_world_m": None if can_pos is None else [float(value) for value in can_pos],
+            "can_shift_m": None if not np.isfinite(can_displacement) else float(can_displacement),
+            "right_tcp_world_m": None if right_pose_w is None else [float(value) for value in right_pose_w[0]],
+            "right_tcp_base_m": None if right_pose_b is None else [float(value) for value in right_pose_b[0]],
+            "left_tcp_world_m": (
+                None
+                if (left_pose_w := estimate_left_hand_tcp_pose_from_robot(robot)) is None
+                else [float(value) for value in left_pose_w[0]]
+            ),
+            "can_minus_right_tcp_world_m": (
+                None
+                if can_pos is None or right_pose_w is None
+                else [float(value) for value in np.asarray(can_pos) - np.asarray(right_pose_w[0])]
+            ),
+            "right_fingertip_centroid_world_m": (
+                None if fingertip_centroid is None else [float(value) for value in fingertip_centroid]
+            ),
+            "can_minus_right_fingertip_centroid_world_m": (
+                None
+                if can_pos is None or fingertip_centroid is None
+                else [float(value) for value in np.asarray(can_pos) - fingertip_centroid]
+            ),
+            "right_fingertip_link_positions_world_m": fingertip_positions,
+            "drawer_open_m": current_drawer_open_m(),
+            "left_hand_command_rad": [float(value) for value in action[ACTION_SLICES.left_hand]],
+            "left_hand_actual_rad": [float(value) for value in actual_action[ACTION_SLICES.left_hand]],
+            "right_hand_command_rad": [float(value) for value in action[ACTION_SLICES.right_hand]],
+            "right_hand_actual_rad": [float(value) for value in actual_action[ACTION_SLICES.right_hand]],
+        }
+        phase_state_history.append(phase_snapshot)
+        finger_center_delta = phase_snapshot["can_minus_right_fingertip_centroid_world_m"]
+        log_collection_event(
+            "PHASE-STATE",
+            f"phase={phase.name} | can_world={None if can_pos is None else np.round(can_pos, 4).tolist()} "
+            f"can_shift={can_shift_text} | "
+            f"right_target_base={None if right_target is None else np.round(right_target, 4).tolist()} "
+            f"right_tcp_error={right_error_text} | "
+            f"can_minus_fingertip_center="
+            f"{None if finger_center_delta is None else np.round(finger_center_delta, 4).tolist()}",
             "blue",
         )
 
@@ -2230,8 +2340,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
 
         can_obj = scene.get("named_objects", {}).get("can")
         can_position_w = None
+        can_linear_velocity_w = None
         if can_obj is not None:
             can_position_w = vector(can_obj.data.root_pos_w[0])
+            can_linear_velocity_w = vector(can_obj.data.root_lin_vel_w[0])
         can_initial = np.asarray(scene.get("can_initial_position", GRASP_CAN_NOMINAL_POSITION), dtype=np.float64)
         can_offset = np.asarray(episode_context.get("can_xy_offset", [0.0, 0.0]), dtype=np.float64)
         can_spawn_w = can_initial.copy()
@@ -2249,6 +2361,108 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 # Failure reporting must not hide the original controller error.
                 pass
         actual_action = control_action_from_sim(robot)
+        left_hand_tracking_error = float(
+            np.max(np.abs(action[ACTION_SLICES.left_hand] - actual_action[ACTION_SLICES.left_hand]))
+        )
+        right_arm_tracking_error = float(
+            np.max(np.abs(action[ACTION_SLICES.right_arm] - actual_action[ACTION_SLICES.right_arm]))
+        )
+        right_hand_tracking_error = float(
+            np.max(np.abs(action[ACTION_SLICES.right_hand] - actual_action[ACTION_SLICES.right_hand]))
+        )
+        can_trace = None
+        if recording_episode is not None and recording_episode.drawer_task_object_pose:
+            poses = np.asarray(recording_episode.drawer_task_object_pose, dtype=np.float32)
+            below_support = np.flatnonzero(poses[:, 2] < 1.10)
+            first_below_index = int(below_support[0]) if below_support.size else None
+            displacement_vectors = poses[:, :3] - poses[0, :3]
+            displacement_norms = np.linalg.norm(displacement_vectors, axis=1)
+
+            def first_displacement(threshold_m: float) -> tuple[int | None, str | None, str | None]:
+                indices = np.flatnonzero(displacement_norms >= threshold_m)
+                frame_index = int(indices[0]) if indices.size else None
+                if frame_index is None or frame_index >= len(recording_episode.task_descriptions):
+                    return frame_index, None, None
+                task_text = str(recording_episode.task_descriptions[frame_index])
+                phase_name = next(
+                    (candidate.name for candidate in controller.phases if candidate.task == task_text),
+                    None,
+                )
+                return frame_index, phase_name, task_text
+
+            first_5mm_frame, first_5mm_phase, first_5mm_task = first_displacement(0.005)
+            first_10mm_frame, first_10mm_phase, first_10mm_task = first_displacement(0.010)
+            can_trace = {
+                "first_position_world_m": vector(poses[0, :3]),
+                "last_position_world_m": vector(poses[-1, :3]),
+                "last_displacement_from_first_m": vector(displacement_vectors[-1]),
+                "min_world_z_m": float(np.min(poses[:, 2])),
+                "max_world_z_m": float(np.max(poses[:, 2])),
+                "max_displacement_from_first_m": float(np.max(displacement_norms)),
+                "max_xy_displacement_from_first_m": float(
+                    np.max(np.linalg.norm(displacement_vectors[:, :2], axis=1))
+                ),
+                "first_displacement_5mm_frame": first_5mm_frame,
+                "first_displacement_5mm_phase": first_5mm_phase,
+                "first_displacement_5mm_task": first_5mm_task,
+                "first_displacement_10mm_frame": first_10mm_frame,
+                "first_displacement_10mm_phase": first_10mm_phase,
+                "first_displacement_10mm_task": first_10mm_task,
+                "first_below_support_frame": first_below_index,
+                "first_below_support_phase": (
+                    None
+                    if first_below_index is None or first_below_index >= len(recording_episode.task_descriptions)
+                    else str(recording_episode.task_descriptions[first_below_index])
+                ),
+            }
+        sampled_can_shift = (
+            float("nan")
+            if can_trace is None
+            else float(can_trace["max_displacement_from_first_m"])
+        )
+        settled_can_start = (
+            None if controller is None else controller._task_object_start_position_world
+        )
+        current_can_array = None if can_position_w is None else np.asarray(can_position_w, dtype=np.float32)
+        settled_can_displacement = (
+            None
+            if settled_can_start is None or current_can_array is None
+            else current_can_array - np.asarray(settled_can_start, dtype=np.float32)
+        )
+        settled_can_shift = (
+            float("nan")
+            if settled_can_displacement is None
+            else float(np.linalg.norm(settled_can_displacement))
+        )
+        finite_can_shifts = [value for value in (sampled_can_shift, settled_can_shift) if np.isfinite(value)]
+        can_shift = max(finite_can_shifts, default=float("nan"))
+        phase_name = "controller_exception" if phase is None else str(phase.name)
+        if phase_name in {"right_pregrasp_can", "right_grasp_can"} and can_shift > 0.010:
+            diagnostic_cause = "can_pushed_before_grasp_closure"
+        elif (
+            phase_name == "right_lift_can"
+            and can_trace is not None
+            and float(can_trace["max_world_z_m"]) < 1.20
+        ):
+            diagnostic_cause = "grasp_not_secured_or_slipped_during_lift"
+        elif phase_name == "initial_open_hands" and right_hand_tracking_error > 0.030:
+            diagnostic_cause = "initial_right_hand_not_fully_open"
+        elif phase_name == "initial_open_hands" and left_hand_tracking_error > 0.030:
+            diagnostic_cause = "initial_left_hand_not_fully_open"
+        elif phase_name == "left_open_hand" and left_hand_tracking_error > 0.030:
+            diagnostic_cause = "left_hand_release_blocked_by_drawer_handle"
+        elif right_arm_tracking_error > 0.10:
+            diagnostic_cause = "right_arm_command_tracking_error"
+        elif tcp_errors.get("right_pos") is not None and float(tcp_errors["right_pos"]) > 0.010:
+            diagnostic_cause = "right_tcp_target_not_reached"
+        else:
+            diagnostic_cause = "phase_gate_or_final_state_failure"
+        right_target_base = None if phase is None or phase.right is None else vector(phase.right.pos)
+        right_target_delta = (
+            None
+            if phase is None or phase.right is None or right_pose_b is None
+            else vector(np.asarray(phase.right.pos) - np.asarray(right_pose_b[0]))
+        )
         event = {
             "schema_version": 1,
             "failure_type": str(failure_type),
@@ -2259,27 +2473,55 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             "attempt_for_episode": int(record_attempt),
             "phase_index": phase_index,
             "phase_total": phase_total,
-            "phase_name": "controller_exception" if phase is None else str(phase.name),
+            "phase_name": phase_name,
             "phase_step": phase_step,
             "wall_elapsed_s": float(wall_elapsed_s),
             "sim_elapsed_s": float(record_step * sim_dt),
+            "simulation_realtime_factor": float(
+                (record_step * sim_dt) / max(float(wall_elapsed_s), 1.0e-6)
+            ),
             "recorded_frames": 0 if recording_episode is None else int(len(recording_episode)),
             "can_grid_cell": episode_context.get("can_grid_cell"),
             "can_grid_cycle": episode_context.get("can_grid_cycle"),
             "can_grid_index_in_cycle": episode_context.get("can_grid_index_in_cycle"),
-            "can_grid_point_attempt": int(episode_context.get("can_grid_point_attempt", grid_point_attempt)),
+            "can_grid_point_attempt": int(episode_context.get("can_grid_point_attempt", grasp_retry_count + 1)),
+            "can_grasp_retry_count": int(episode_context.get("can_grasp_retry_count", grasp_retry_count)),
             "can_xy_offset_m": vector(can_offset),
             "can_spawn_position_world_m": vector(can_spawn_w),
             "can_position_world_m": can_position_w,
+            "can_linear_velocity_world_m_s": can_linear_velocity_w,
+            "can_settled_start_position_world_m": vector(settled_can_start),
+            "can_displacement_from_settled_start_m": vector(settled_can_displacement),
+            "can_displacement_norm_from_settled_start_m": (
+                None if not np.isfinite(settled_can_shift) else settled_can_shift
+            ),
             "drawer_open_m": current_drawer_open_m(),
+            "left_tcp_position_world_m": None if left_pose_w is None else vector(left_pose_w[0]),
+            "left_tcp_position_base_m": None if left_pose_b is None else vector(left_pose_b[0]),
             "right_tcp_position_world_m": None if right_pose_w is None else vector(right_pose_w[0]),
             "right_tcp_position_base_m": None if right_pose_b is None else vector(right_pose_b[0]),
+            "right_tcp_target_base_m": right_target_base,
+            "right_tcp_target_delta_m": right_target_delta,
             "tcp_error": {
                 key: None if value is None else float(value)
                 for key, value in tcp_errors.items()
             },
             "right_hand_command_rad": vector(action[ACTION_SLICES.right_hand]),
             "right_hand_actual_rad": vector(actual_action[ACTION_SLICES.right_hand]),
+            "left_hand_command_rad": vector(action[ACTION_SLICES.left_hand]),
+            "left_hand_actual_rad": vector(actual_action[ACTION_SLICES.left_hand]),
+            "left_hand_command_actual_max_error_rad": left_hand_tracking_error,
+            "right_arm_command_actual_max_error_rad": right_arm_tracking_error,
+            "right_hand_command_actual_max_error_rad": right_hand_tracking_error,
+            "gravity_compensation": {
+                "enabled": bool(args_cli.gravity_compensation),
+                "scale": float(args_cli.gravity_comp_scale),
+                "last_max_abs_effort": float(last_gravity_comp_stats[0]),
+                "last_mean_abs_effort": float(last_gravity_comp_stats[1]),
+            },
+            "diagnostic_cause": diagnostic_cause,
+            "phase_state_history": list(phase_state_history),
+            "can_trace": can_trace,
         }
         failure_reporter.record(event)
         failure_reporter.finalize(
@@ -2292,7 +2534,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         log_collection_event(
             "FAILURE-RECORDED",
             f"phase={event['phase_name']} | reason={reason} | "
-            f"grid={event['can_grid_cell']} | can_world={event['can_position_world_m']}",
+            f"diagnostic={diagnostic_cause} | grid={event['can_grid_cell']} | "
+            f"can_world={event['can_position_world_m']} | can_shift={can_shift:.4f}m | "
+            f"right_arm_track={right_arm_tracking_error:.4f}rad | "
+            f"gravity_effort_max={float(last_gravity_comp_stats[0]):.2f}",
             "yellow",
         )
 
@@ -2442,12 +2687,28 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     right_pose_w = estimate_right_hand_tcp_pose_from_robot(robot)
                     left_pose_b = pose_world_to_base(left_pose_w, base_pose_w) if left_pose_w is not None else None
                     right_pose_b = pose_world_to_base(right_pose_w, base_pose_w) if right_pose_w is not None else None
+                    actual_action = control_action_from_sim(robot)
+                    can_obj = scene.get("named_objects", {}).get("can")
+                    can_position_w = (
+                        None
+                        if can_obj is None
+                        else can_obj.data.root_pos_w[0].detach().cpu().numpy()
+                    )
+                    can_linear_velocity_w = (
+                        None
+                        if can_obj is None
+                        else can_obj.data.root_lin_vel_w[0].detach().cpu().numpy()
+                    )
                     desired_action, current_scripted_phase, current_scripted_task, scripted_done = drawer_controller.step(
                         current_q,
                         max(sim_dt, 1.0 / 120.0),
                         left_pose_b,
                         right_pose_b,
                         current_drawer_open_m(),
+                        commanded_action=action,
+                        actual_action=actual_action,
+                        task_object_position_world=can_position_w,
+                        task_object_linear_velocity_world=can_linear_velocity_w,
                     )
                     if drawer_controller.phase_index != last_logged_phase_index and not drawer_controller.failed:
                         log_current_phase(drawer_controller)
@@ -2556,7 +2817,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         f"elapsed={wall_elapsed:.1f}/{record_timeout_s:.1f}s | frames={len(recording_episode)} | discarded",
                         "red",
                     )
-                    select_after_failed_point("timeout")
+                    select_after_failed_attempt(drawer_controller.current_phase.name, "timeout")
                     writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
                     target = reset_static_attempt()
                     action = control_action_from_full_target(target, robot)
@@ -2598,7 +2859,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             f"frames={len(recording_episode)} | {drawer_controller.failure_reason}",
                             "red",
                         )
-                        select_after_failed_point("controller_failed")
+                        select_after_failed_attempt(
+                            drawer_controller.current_phase.name,
+                            drawer_controller.failure_reason or "controller_failed",
+                        )
                         writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
                         target = reset_static_attempt()
                         action = control_action_from_full_target(target, robot)
@@ -2644,7 +2908,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             f"reason={reason} | frames={len(recording_episode)}",
                             "red",
                         )
-                        select_after_failed_point(reason)
+                        select_after_failed_attempt(drawer_controller.current_phase.name, reason)
                         writer.write_collection_state({**collection_state(), "completed_episodes": recorded_episodes})
                         target = reset_static_attempt()
                         action = control_action_from_full_target(target, robot)
@@ -2661,7 +2925,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         last_logged_phase_index = drawer_controller.phase_index
                         continue
                     recording_episode.metadata["final_success"] = success_details
-                    grid_point_attempt = 1
+                    grasp_retry_count = 0
                     episode_context = sample_drawer_episode()
                     next_collection_state = {
                         **collection_state(),

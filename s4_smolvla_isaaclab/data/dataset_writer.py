@@ -51,6 +51,7 @@ class EpisodeBuffer:
     red_block_pose: list[np.ndarray] = field(default_factory=list)
     blue_block_pose: list[np.ndarray] = field(default_factory=list)
     plate_pose: list[np.ndarray] = field(default_factory=list)
+    drawer_task_object_pose: list[np.ndarray] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -71,6 +72,7 @@ class EpisodeBuffer:
             "red_block_pose": self.red_block_pose,
             "blue_block_pose": self.blue_block_pose,
             "plate_pose": self.plate_pose,
+            "drawer_task_object_pose": self.drawer_task_object_pose,
         }
         lengths.update({name: len(values) for name, values in optional_sequences.items() if values})
         if len(set(lengths.values())) != 1:
@@ -224,6 +226,12 @@ class Hdf5DemoWriter:
             _create_nested_dataset(group, schema.BLUE_BLOCK_POSE, np.asarray(episode.blue_block_pose, dtype=np.float32))
         if episode.plate_pose:
             _create_nested_dataset(group, schema.PLATE_POSE, np.asarray(episode.plate_pose, dtype=np.float32))
+        if episode.drawer_task_object_pose:
+            _create_nested_dataset(
+                group,
+                schema.DRAWER_TASK_OBJECT_POSE,
+                np.asarray(episode.drawer_task_object_pose, dtype=np.float32),
+            )
         self._data.move(pending_name, name)
         if collection_state is not None:
             self._data.attrs["collection_state"] = json.dumps(collection_state, ensure_ascii=False)

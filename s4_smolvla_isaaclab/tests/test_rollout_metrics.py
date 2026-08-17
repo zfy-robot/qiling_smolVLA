@@ -118,8 +118,8 @@ def test_grasp_can_grid_is_shifted_to_right_hand_side():
                 "enabled": True,
                 "sampling": "stratified_grid",
                 "grid_cells": [5, 5],
-                "x_range": [-0.055, -0.005],
-                "y_range": [-0.06, 0.02],
+                "x_range": [-0.025, -0.015],
+                "y_range": [-0.06, 0.01],
             },
         },
     }
@@ -134,8 +134,8 @@ def test_grasp_can_grid_is_shifted_to_right_hand_side():
         )
         for sample in samples
     ]
-    assert all(0.485 <= x <= 0.535 for x, _ in world_xy)
-    assert all(-0.19 <= y <= -0.11 for _, y in world_xy)
+    assert all(0.515 <= x <= 0.525 for x, _ in world_xy)
+    assert all(-0.19 <= y <= -0.12 for _, y in world_xy)
 
 
 def test_rollout_run_dir_and_episode_artifacts(tmp_path: Path):
