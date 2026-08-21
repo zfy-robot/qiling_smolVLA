@@ -45,6 +45,7 @@ def test_resolve_randomization_respects_cli_and_disable():
         drawer_open_range=(0.01, 0.03),
     )
     assert enabled["enabled"] is True
+    assert enabled["can_xy"]["enabled"] is True
     assert enabled["can_xy"]["x_range"] == [-0.02, 0.02]
     assert enabled["can_xy"]["y_range"] == [-0.05, 0.05]
     assert enabled["drawer_initial_open"]["range"] == [0.01, 0.03]
@@ -53,6 +54,25 @@ def test_resolve_randomization_respects_cli_and_disable():
     assert disabled["enabled"] is False
     assert disabled["can_xy"]["x_range"] == [0.0, 0.0]
     assert disabled["drawer_initial_open"]["range"] == [0.0, 0.0]
+
+
+def test_yaml_can_xy_off_keeps_drawer_random_under_success_rate():
+    scripted = {
+        "randomization": {
+            "can_xy": {"enabled": False, "x_range": [-0.05, 0.05], "y_range": [-0.05, 0.05]},
+            "drawer_initial_open": {"enabled": True, "range": [0.0, 0.05]},
+            "distractor_cans": {"enabled": False},
+        }
+    }
+    cfg = resolve_randomization_cfg(scripted, randomize_task=True)
+    assert cfg["can_xy"]["enabled"] is False
+    assert cfg["drawer_initial_open"]["enabled"] is True
+    assert make_can_grid_sampler(cfg, make_randomization_rng(42)) is None
+    sample = sample_randomization(cfg, seed=42, rng=make_randomization_rng(42))
+    assert sample["can_x_offset_m"] == 0.0
+    assert sample["can_y_offset_m"] == 0.0
+    assert 0.0 <= sample["drawer_open_m"] <= 0.05
+    assert sample["distractor_can_xy"] == {}
 
 
 def test_sample_randomization_keeps_fixed_seed_42():

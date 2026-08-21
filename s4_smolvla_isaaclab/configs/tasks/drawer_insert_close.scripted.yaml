@@ -9,6 +9,9 @@ controller:
 
 randomization:
   seed: 42
+  # Collection/rollout switches. can_xy on + distractors off is the current
+  # default recipe: randomize the grasp can, but do not spawn the three YCB
+  # cabinet-top distractors.
   can_xy:
     enabled: true
     # Keep the grid safely inside the secondary cabinet top. Collection logs
@@ -36,7 +39,10 @@ randomization:
     # the precise point inside this same cell. The cell advances only on success.
     max_grasp_retries_same_position: 3
   distractor_cans:
-    enabled: true
+    # Off by default: do not spawn the three cabinet-top YCB distractors during
+    # collection or matched rollouts. Re-enable together with can_xy when you
+    # want the harder visual/spatial distribution again.
+    enabled: false
     # Three different YCB objects are shuffled among these mutually separated
     # cabinet-top regions every episode. The secondary-cabinet region remains
     # well outside the tomato can's grasp randomization grid.

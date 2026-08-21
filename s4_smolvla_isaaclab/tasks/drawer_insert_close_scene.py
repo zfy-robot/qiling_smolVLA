@@ -26,6 +26,7 @@ from s4_robot.simulation import (
 from s4_pipeline.drawer_distractors import (
     DEFAULT_DISTRACTOR_XY,
     DISTRACTOR_ASSET_RELATIVE_PATHS,
+    DISTRACTOR_CANS_ENV,
     DISTRACTOR_OBJECT_NAMES,
     scene_grasp_can_nominal_position,
     scene_grasp_can_scale,
@@ -67,7 +68,6 @@ TOMATO_SOUP_CAN_SCALE = scene_grasp_can_scale()
 TOMATO_CAN_MASS_KG = 0.08
 TOMATO_CAN_STATIC_FRICTION = 2.2
 TOMATO_CAN_DYNAMIC_FRICTION = 1.8
-DISTRACTOR_CANS_ENV = "S4_ENABLE_DRAWER_DISTRACTOR_CANS"
 
 
 @dataclass(frozen=True)

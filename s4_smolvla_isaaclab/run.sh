@@ -163,11 +163,13 @@ Core commands:
 
 Rollout notes:
   --deterministic     seed=42, disable task randomization (regression)
-  --success-rate N    seed=42, N randomized episodes (can/drawer/distractor positions)
+  --success-rate N    seed=42, N episodes; honors YAML can_xy/drawer/distractor enables
   Pass-through flags: --episodes, --seed (default 42), --randomize-task/--no-randomize-task,
-  --can-x-range, --can-y-range, --drawer-open-range, --output-dir, --output-video,
-  --summary-json, --save-videos/--no-save-videos,
+  --can-x-range, --can-y-range, --drawer-open-range, --distractor-cans/--no-distractor-cans,
+  --output-dir, --output-video, --summary-json, --save-videos/--no-save-videos,
   --save-diagnostics/--no-save-diagnostics
+  Record pass-through: --can-xy-randomization/--no-can-xy-randomization,
+  --distractor-cans/--no-distractor-cans (default: scripted.yaml enabled flags)
   Outputs default to one folder per run under outputs/eval/:
   rollout_<timestamp>_<det|randN>_ckpt<step>/{rollout|epXXX}.avi + *_actions.* + summary.json
 

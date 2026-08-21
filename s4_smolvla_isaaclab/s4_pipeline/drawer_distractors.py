@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 
 # Nominal grasp-can pose shared by scene construction, collection and rollout.
@@ -59,6 +60,9 @@ DEFAULT_DISTRACTOR_XY = (
     (0.86, -0.50),
 )
 
+# Scene builder reads this env var before spawning cabinet-top distractors.
+DISTRACTOR_CANS_ENV = "S4_ENABLE_DRAWER_DISTRACTOR_CANS"
+
 
 def asset_contract() -> list[dict[str, str]]:
     """Return JSON-serializable names and portable asset-relative paths."""
@@ -66,3 +70,25 @@ def asset_contract() -> list[dict[str, str]]:
         {"object_name": name, "asset_relative_path": path}
         for name, path in zip(DISTRACTOR_OBJECT_NAMES, DISTRACTOR_ASSET_RELATIVE_PATHS, strict=True)
     ]
+
+
+def can_xy_enabled_from_scripted(scripted_cfg: dict[str, Any] | None) -> bool:
+    """Return whether grasp-can XY randomization is enabled in scripted YAML."""
+    randomization = dict((scripted_cfg or {}).get("randomization", {}) or {})
+    can_cfg = dict(randomization.get("can_xy", {}) or {})
+    return bool(can_cfg.get("enabled", False))
+
+
+def distractor_cans_enabled_from_scripted(scripted_cfg: dict[str, Any] | None) -> bool:
+    """Return whether the three cabinet-top distractors are enabled in YAML."""
+    randomization = dict((scripted_cfg or {}).get("randomization", {}) or {})
+    distractor_cfg = dict(randomization.get("distractor_cans", {}) or {})
+    return bool(distractor_cfg.get("enabled", False))
+
+
+def apply_distractor_spawn_env(enabled: bool) -> None:
+    """Opt the drawer scene builder into or out of distractor spawning."""
+    if enabled:
+        os.environ[DISTRACTOR_CANS_ENV] = "1"
+    else:
+        os.environ.pop(DISTRACTOR_CANS_ENV, None)

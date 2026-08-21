@@ -200,6 +200,7 @@ from s4_pipeline.drawer_distractors import (
     GRASP_CAN_SCALE_Y_ENV,
     LEGACY_GRASP_CAN_SCALE,
     LEGACY_GRASP_CAN_NOMINAL_POSITION,
+    apply_distractor_spawn_env,
     asset_contract as distractor_asset_contract,
 )
 
@@ -827,9 +828,9 @@ def main() -> None:
     print(f"[EVAL] output_dir={run_dir}")
 
     if distractor_cans_enabled:
-        os.environ["S4_ENABLE_DRAWER_DISTRACTOR_CANS"] = "1"
+        apply_distractor_spawn_env(True)
     else:
-        os.environ.pop("S4_ENABLE_DRAWER_DISTRACTOR_CANS", None)
+        apply_distractor_spawn_env(False)
     os.environ[GRASP_CAN_NOMINAL_Y_ENV] = str(grasp_can_nominal_position[1])
     os.environ[GRASP_CAN_SCALE_Y_ENV] = str(grasp_can_scale[1])
     sim = create_simulation_context(args_cli.device)
@@ -872,8 +873,10 @@ def main() -> None:
         f"seed={int(args_cli.seed)} distractor_cans={distractor_cans_enabled}"
     )
     print(
-        f"[EVAL] randomization can_x={random_cfg['can_xy'].get('x_range')} "
+        f"[EVAL] randomization can_xy_enabled={bool(random_cfg['can_xy'].get('enabled'))} "
+        f"can_x={random_cfg['can_xy'].get('x_range')} "
         f"can_y={random_cfg['can_xy'].get('y_range')} "
+        f"drawer_open_enabled={bool(random_cfg['drawer_initial_open'].get('enabled'))} "
         f"drawer_open={random_cfg['drawer_initial_open'].get('range')} "
         f"grasp_can_scale={grasp_can_scale}"
     )

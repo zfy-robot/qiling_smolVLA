@@ -230,6 +230,24 @@ parser.add_argument(
     help="Override the task YAML randomization seed. Default: use YAML seed (normally 42).",
 )
 parser.add_argument(
+    "--can-xy-randomization",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help=(
+        "Randomize grasp-can XY each episode. Default: follow scripted.yaml "
+        "randomization.can_xy.enabled."
+    ),
+)
+parser.add_argument(
+    "--distractor-cans",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help=(
+        "Spawn the three cabinet-top YCB distractors during recording. Default: follow "
+        "scripted.yaml randomization.distractor_cans.enabled."
+    ),
+)
+parser.add_argument(
     "--verbose-status",
     action="store_true",
     help="Print high-frequency TCP/Jacobian/status diagnostics. Default keeps logs concise.",
@@ -300,7 +318,10 @@ from s4_pipeline.drawer_distractors import (
     DISTRACTOR_OBJECT_NAMES,
     GRASP_CAN_NOMINAL_POSITION,
     GRASP_CAN_SCALE,
+    apply_distractor_spawn_env,
     asset_contract as distractor_asset_contract,
+    can_xy_enabled_from_scripted,
+    distractor_cans_enabled_from_scripted,
 )
 from s4_pipeline.failure_reporting import CollectionFailureReporter
 from s4_pipeline.paths import DATASET_CONFIG_PATH
@@ -439,6 +460,30 @@ def resolve_scene_builder():
         return build_default_scene
     module = importlib.import_module(module_name)
     return getattr(module, func_name)
+
+
+def load_active_drawer_scripted_cfg() -> dict[str, object] | None:
+    """Load the active drawer scripted YAML when the current task is drawer_insert_close."""
+    project_cfg = load_project_config(CONFIG_PATH)
+    if project_cfg.dataset.task_id != "drawer_insert_close":
+        return None
+    task_spec = get_task_spec(project_cfg.dataset.task_id)
+    scripted_path = args_cli.drawer_scripted_config or task_spec.scripted_config
+    if scripted_path is None:
+        return None
+    return load_yaml(Path(scripted_path).resolve())
+
+
+def resolve_record_can_xy_enabled(scripted_cfg: dict[str, object] | None) -> bool:
+    if args_cli.can_xy_randomization is not None:
+        return bool(args_cli.can_xy_randomization)
+    return can_xy_enabled_from_scripted(scripted_cfg)
+
+
+def resolve_record_distractor_cans_enabled(scripted_cfg: dict[str, object] | None) -> bool:
+    if args_cli.distractor_cans is not None:
+        return bool(args_cli.distractor_cans)
+    return distractor_cans_enabled_from_scripted(scripted_cfg)
 
 
 def set_named_joint_targets(
@@ -1545,9 +1590,20 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         )
         drawer_randomization_cfg = dict(drawer_randomization_cfg)
         drawer_randomization_cfg["effective_seed"] = drawer_seed
+        can_cfg = dict(drawer_randomization_cfg.get("can_xy", {}) or {})
+        distractor_cfg = dict(drawer_randomization_cfg.get("distractor_cans", {}) or {})
+        can_cfg["enabled"] = resolve_record_can_xy_enabled(scripted_cfg)
+        distractor_cfg["enabled"] = resolve_record_distractor_cans_enabled(scripted_cfg)
+        drawer_randomization_cfg["can_xy"] = can_cfg
+        drawer_randomization_cfg["distractor_cans"] = distractor_cfg
+        print(
+            f"[RECORD] can_xy_randomization={bool(can_cfg['enabled'])} "
+            f"distractor_cans={bool(distractor_cfg['enabled'])} "
+            f"drawer_initial_open={bool((drawer_randomization_cfg.get('drawer_initial_open') or {}).get('enabled', True))}",
+            flush=True,
+        )
         drawer_rng = np.random.default_rng(drawer_seed)
-        can_cfg = drawer_randomization_cfg.get("can_xy", {})
-        if can_cfg.get("enabled", True) and str(can_cfg.get("sampling", "uniform")) == "stratified_grid":
+        if can_cfg.get("enabled", False) and str(can_cfg.get("sampling", "uniform")) == "stratified_grid":
             grid_cells = can_cfg.get("grid_cells", [5, 5])
             if not isinstance(grid_cells, (list, tuple)) or len(grid_cells) != 2:
                 raise ValueError("randomization.can_xy.grid_cells must contain [x_cells, y_cells]")
@@ -1565,8 +1621,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             return {}
         can_cfg = drawer_randomization_cfg.get("can_xy", {})
         drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
-        x_range = can_cfg.get("x_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
-        y_range = can_cfg.get("y_range", [0.0, 0.0]) if can_cfg.get("enabled", True) else [0.0, 0.0]
+        x_range = can_cfg.get("x_range", [0.0, 0.0]) if can_cfg.get("enabled", False) else [0.0, 0.0]
+        y_range = can_cfg.get("y_range", [0.0, 0.0]) if can_cfg.get("enabled", False) else [0.0, 0.0]
         open_range = drawer_cfg.get("range", [0.0, 0.0]) if drawer_cfg.get("enabled", True) else [0.0, 0.0]
         if can_grid_sampler is not None:
             grid_sample = grid_sample_override or can_grid_sampler.sample()
@@ -1596,7 +1652,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         distractor_cfg = drawer_randomization_cfg.get("distractor_cans", {})
         distractor_names = DISTRACTOR_OBJECT_NAMES
         named_objects = scene.get("named_objects", {})
-        if distractor_cfg.get("enabled", True) and all(name in named_objects for name in distractor_names):
+        if distractor_cfg.get("enabled", False) and all(name in named_objects for name in distractor_names):
             main_xy = np.asarray(scene.get("can_initial_position", GRASP_CAN_NOMINAL_POSITION)[:2], dtype=np.float32) + np.asarray(
                 can_xy_offset, dtype=np.float32
             )
@@ -2019,11 +2075,16 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 },
                 "randomization": drawer_randomization_cfg,
                 "success_filter": scripted_cfg.get("success", {}),
-                "distractor_cans_enabled": all(
-                    name in scene.get("named_objects", {})
-                    for name in DISTRACTOR_OBJECT_NAMES
+                "distractor_cans_enabled": bool(
+                    (drawer_randomization_cfg.get("distractor_cans") or {}).get("enabled", False)
+                )
+                and all(name in scene.get("named_objects", {}) for name in DISTRACTOR_OBJECT_NAMES),
+                "distractor_assets": (
+                    distractor_asset_contract()
+                    if bool((drawer_randomization_cfg.get("distractor_cans") or {}).get("enabled", False))
+                    and all(name in scene.get("named_objects", {}) for name in DISTRACTOR_OBJECT_NAMES)
+                    else []
                 ),
-                "distractor_assets": distractor_asset_contract(),
                 "grasp_can_nominal_position": list(GRASP_CAN_NOMINAL_POSITION),
                 "grasp_can_scale": list(GRASP_CAN_SCALE),
                 "record_fps": float(1.0 / (sim_dt * record_every_n)),
@@ -4114,10 +4175,16 @@ def run_debug(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> None:
 
 
 def main() -> None:
-    # Distractors are a data-collection augmentation. Keep preview, teleop and
-    # policy rollout scenes unchanged unless a caller explicitly opts in.
-    if args_cli.record_output is not None:
-        os.environ["S4_ENABLE_DRAWER_DISTRACTOR_CANS"] = "1"
+    # Match collection and rollout to the same scripted YAML switches. Preview /
+    # teleop stay distractor-free unless recording (or an explicit CLI override)
+    # enables them.
+    scripted_cfg = load_active_drawer_scripted_cfg()
+    distractor_enabled = (
+        resolve_record_distractor_cans_enabled(scripted_cfg)
+        if args_cli.record_output is not None
+        else bool(args_cli.distractor_cans) if args_cli.distractor_cans is not None else False
+    )
+    apply_distractor_spawn_env(distractor_enabled)
     cfg = make_scene_cfg()
     if args_cli.print_layout:
         print(format_action_layout())

@@ -47,16 +47,24 @@ bash run.sh rollout \
 
 ## 随机化成功率评估
 
-任务随机化采样三项：
+`--success-rate N` 打开任务随机化，但**每一项仍受 scripted YAML 的 `enabled`
+开关约束**（与采集同一文件）：
 
-1. 罐子 XY 偏移（`can_xy`，按随机顺序遍历 5x5 网格并在格内均匀采样）
-2. 抽屉初始开度（`drawer_initial_open`）
-3. 三个不同 YCB 柜面干扰物的位置（与新采集数据的视觉分布一致）
+| 变量 | YAML 开关 | 当前默认 |
+|---|---|---|
+| 罐子 XY 偏移 | `can_xy.enabled` | **true**（5×5 分层网格） |
+| 抽屉初始开度 | `drawer_initial_open.enabled` | true（`[0.00, 0.05]` m） |
+| 三个柜面干扰物 | `distractor_cans.enabled` + 数据集 `s4_contract.json` | **false**（不生成） |
 
-rollout 默认读取数据集的 `meta/s4_contract.json`：新采集数据自动启用三个干扰物，
-旧数据集没有该标记时保持旧的无干扰罐场景。可用 `--distractor-cans` 或
-`--no-distractor-cans` 显式覆盖；`--deterministic` 会把所有启用的物体放在固定安全
-位置，确保重复运行画面一致。
+因此在当前默认配置下，`--success-rate 20` 会随机**主罐 XY + 抽屉初开度**，
+但不会放入三个干扰罐。这与新采集分布一致。
+
+- 旧数据集若 `meta/s4_contract.json` 写有 `distractor_cans_enabled: true`，
+  rollout 仍会按 contract 生成干扰物，以匹配当时训练视觉。
+- 可用 `--distractor-cans` / `--no-distractor-cans` 显式覆盖 contract。
+- 若要固定主罐评估，传 `--deterministic`，或 `--no-randomize-task`，或把 YAML
+  `can_xy.enabled` 临时改成 `false`。
+- `--deterministic` 关闭全部任务随机（罐/抽屉都固定）；种子仍为 **42**。
 
 默认范围来自
 [`drawer_insert_close.scripted.yaml`](../configs/tasks/drawer_insert_close.scripted.yaml)。
@@ -70,7 +78,7 @@ bash run.sh rollout \
   --policy-device cuda
 ```
 
-自定义范围与目录：
+自定义范围与目录（会重新打开罐 XY 随机）：
 
 ```bash
 bash run.sh rollout \
@@ -86,8 +94,9 @@ bash run.sh rollout \
   --output-dir outputs/eval/rand20_360k
 ```
 
-结束日志会打印 `output_dir=...` 和 `success=K/N`。可用
-`--no-save-videos` / `--no-save-diagnostics` 只写 `summary.json`。
+结束日志会打印 `output_dir=...`、`can_xy_enabled=...`、`distractor_cans=...`
+和 `success=K/N`。可用 `--no-save-videos` / `--no-save-diagnostics` 只写
+`summary.json`。
 
 成功条件见 scripted YAML 的 `success`：`drawer_open_abs_max` 与 `can_world_z`。
 

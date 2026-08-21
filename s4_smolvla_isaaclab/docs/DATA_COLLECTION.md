@@ -13,16 +13,42 @@ bash run.sh record --episodes 200 --headless
 配置等待场景稳定。超时或 success criteria 失败的 episode 不写入文件，直到
 达到请求的成功轮数。
 
-主任务默认使用可复现的分层网格内随机：罐子 XY 的连续范围被划分为 `5 x 5`
-网格，每一轮以随机顺序访问全部 25 个格子，并在当前格子内部均匀采样精确位置。
-抓取相关阶段失败时会在完全相同的初始场景重试三次；三次重试仍失败后，才在同一
-网格内换一个精确位置。其他阶段失败只丢弃本轮，并立即在同一格换点继续。只有成功
-episode 会写入 HDF5，网格单元也只在成功后才前进，因此不会造成缺格。当前抓取罐使用柜面安全区内的
-`2 cm x 18 cm = 36 cm^2` 连续分层网格区域：世界坐标
-`x=[0.515, 0.535] m`、`y=[-0.300, -0.120] m`。每个 5x5 网格内部仍然
-连续随机，并不是 25 个固定点；罐底与柜面边缘至少保留 5 mm 几何余量。抓住
-罐子后的抬升偏移固定，不再随机。这个区域不移动机器人、柜子或左手抽屉轨迹。
-参数位于 `configs/tasks/drawer_insert_close.scripted.yaml` 的 `randomization`。
+## 采集随机化开关（与 rollout 对齐）
+
+主开关在
+[`drawer_insert_close.scripted.yaml`](../configs/tasks/drawer_insert_close.scripted.yaml)
+的 `randomization`：
+
+| 开关 | 当前默认 | 作用 |
+|---|---|---|
+| `can_xy.enabled` | **true** | 主抓取罐按 5×5 分层网格在验证范围内随机 XY |
+| `distractor_cans.enabled` | **false** | **不生成**三个柜面 YCB 干扰物 |
+| `drawer_initial_open.enabled` | true | 仍随机抽屉初始开度 `[0.00, 0.05]` m |
+
+采集日志会打印：
+
+```text
+[RECORD] can_xy_randomization=True distractor_cans=False drawer_initial_open=True
+```
+
+写入 HDF5 / 转换后的 `meta/s4_contract.json` 会记录 `distractor_cans_enabled`
+与当时的 `randomization` 快照。rollout 默认跟 contract：新采无干扰物数据不会
+再塞回三个干扰罐；`can_xy.enabled=true` 时 `--success-rate` 会按同一网格/范围偏置主罐。
+
+CLI 可临时覆盖 YAML（不必改文件）：
+
+```bash
+# 固定主罐、不要干扰物
+bash run.sh record --episodes 10 --headless \
+  --no-can-xy-randomization --no-distractor-cans
+
+# 主罐随机 + 三个干扰物（旧配方）
+bash run.sh record --episodes 10 --headless \
+  --can-xy-randomization --distractor-cans
+```
+
+YAML 里仍保留已验证的 `can_xy` 范围与干扰物区域；干扰物仅在
+`distractor_cans.enabled=true`（或 `--distractor-cans`）时生成。
 
 在正式采集前可重复运行离线密集检查：
 
@@ -40,11 +66,10 @@ bash run.sh validate-workspace --grid 41 61
 实际手指张开、罐子位于抽屉内且线速度不超过 0.05 m/s，随后先竖直抬高手，
 再向外退出，最后才关抽屉。
 
-抽屉任务进入 `record` 模式时，还会生成 Master Chef 罐、芥末瓶和漂白剂瓶三个
-不同的 YCB 干扰物。每轮会随机打乱它们所在的三个柜面安全区并在区内连续采样，
-与主抓取罐及彼此保持最小中心距；控制器、成功判定和
-主罐的分层网格均不变。普通 `sim`、`teleop` 默认不启用；rollout 根据转换数据集的
-`meta/s4_contract.json` 自动匹配，可用 `--distractor-cans`/`--no-distractor-cans` 覆盖。
+普通 `sim`、`teleop` 默认不生成干扰物。录制时是否生成由
+`randomization.distractor_cans.enabled`（或 `--distractor-cans` /
+`--no-distractor-cans`）决定。rollout 根据转换数据集的
+`meta/s4_contract.json` 自动匹配，也可用同样的 CLI 覆盖。
 
 场景光照是固定的，不参与随机化。预览、采集和 rollout 将任务区附近的仓库灯缩放
 到原始强度的 18%，远处背景灯设为 55%，并共用低强度环境光、前侧柔光与 RTX

@@ -37,14 +37,17 @@ def resolve_randomization_cfg(
         if len(can_x_range) != 2:
             raise ValueError(f"--can-x-range expects 2 values, got {can_x_range!r}")
         can_cfg["x_range"] = [float(can_x_range[0]), float(can_x_range[1])]
+        can_cfg["enabled"] = True
     if can_y_range is not None:
         if len(can_y_range) != 2:
             raise ValueError(f"--can-y-range expects 2 values, got {can_y_range!r}")
         can_cfg["y_range"] = [float(can_y_range[0]), float(can_y_range[1])]
+        can_cfg["enabled"] = True
     if drawer_open_range is not None:
         if len(drawer_open_range) != 2:
             raise ValueError(f"--drawer-open-range expects 2 values, got {drawer_open_range!r}")
         drawer_cfg["range"] = [float(drawer_open_range[0]), float(drawer_open_range[1])]
+        drawer_cfg["enabled"] = True
 
     if not randomize_task:
         can_cfg["x_range"] = [0.0, 0.0]
@@ -53,6 +56,8 @@ def resolve_randomization_cfg(
         can_cfg["enabled"] = False
         drawer_cfg["enabled"] = False
     else:
+        # Preserve explicit YAML/CLI enabled flags. Missing can_xy.enabled defaults
+        # on so collection and rollout match the random-can / no-distractor recipe.
         can_cfg.setdefault("enabled", True)
         drawer_cfg.setdefault("enabled", True)
         can_cfg.setdefault("x_range", [0.0, 0.0])
@@ -82,7 +87,7 @@ def make_can_grid_sampler(random_cfg: dict[str, Any], rng: Any) -> StratifiedGri
     can_cfg = random_cfg.get("can_xy", {}) or {}
     if (
         not bool(random_cfg.get("enabled", False))
-        or not bool(can_cfg.get("enabled", True))
+        or not bool(can_cfg.get("enabled", False))
         or str(can_cfg.get("sampling", "uniform")) != "stratified_grid"
     ):
         return None
@@ -123,7 +128,7 @@ def sample_randomization(
     drawer_open = 0.0
     grid_sample = None
     if bool(random_cfg.get("enabled", False)):
-        if bool(can_cfg.get("enabled", True)):
+        if bool(can_cfg.get("enabled", False)):
             if can_grid_sampler is not None:
                 grid_sample = can_grid_sampler.sample()
                 can_x, can_y = (float(value) for value in grid_sample.xy)
@@ -138,7 +143,10 @@ def sample_randomization(
 
     distractor_positions: dict[str, list[float]] = {}
     if bool(random_cfg.get("distractor_cans_enabled", False)):
-        if bool(random_cfg.get("enabled", False)) and bool(distractor_cfg.get("enabled", True)):
+        # Presence comes from the dataset contract (collection-time switch). Pose
+        # randomization follows --randomize-task; the live YAML enabled flag only
+        # gates new recording / scene spawn, not replay of older distractor demos.
+        if bool(random_cfg.get("enabled", False)):
             points = sample_separated_xy(
                 generator,
                 ranges=distractor_cfg.get(
@@ -150,13 +158,10 @@ def sample_randomization(
                 ],
                 min_center_distance=float(distractor_cfg.get("min_center_distance_m", 0.16)),
             )
+            region_order = generator.permutation(len(DISTRACTOR_OBJECT_NAMES))
         else:
             points = np.asarray(DEFAULT_DISTRACTOR_XY, dtype=np.float32)
-        region_order = (
-            generator.permutation(len(DISTRACTOR_OBJECT_NAMES))
-            if bool(random_cfg.get("enabled", False)) and bool(distractor_cfg.get("enabled", True))
-            else np.arange(len(DISTRACTOR_OBJECT_NAMES))
-        )
+            region_order = np.arange(len(DISTRACTOR_OBJECT_NAMES))
         distractor_positions = {
             name: points[int(region_order[index])].tolist()
             for index, name in enumerate(DISTRACTOR_OBJECT_NAMES)

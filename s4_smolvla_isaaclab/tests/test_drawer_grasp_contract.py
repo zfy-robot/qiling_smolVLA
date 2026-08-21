@@ -41,17 +41,20 @@ def test_original_can_scale_and_rollout_override(monkeypatch):
 
 def test_grasp_config_is_stationary_and_deterministic():
     cfg = load_scripted_config()
+    assert cfg["randomization"]["can_xy"]["enabled"] is True
+    assert cfg["randomization"]["distractor_cans"]["enabled"] is False
     assert cfg["randomization"]["can_xy"]["x_range"] == [-0.025, -0.005]
     assert cfg["randomization"]["can_xy"]["y_range"] == [-0.17, 0.01]
     x_width = np.ptp(cfg["randomization"]["can_xy"]["x_range"])
     y_width = np.ptp(cfg["randomization"]["can_xy"]["y_range"])
-    assert np.isclose(x_width * y_width, 0.0036)  # 36 cm^2
+    assert np.isclose(x_width * y_width, 0.0036)  # 36 cm^2 reserved re-enable area
     assert cfg["randomization"]["can_xy"]["max_grasp_retries_same_position"] == 3
     cabinet_support_near_x = 0.4752
     tomato_can_radius_x = 0.03383
     minimum_center_x = 0.54 + cfg["randomization"]["can_xy"]["x_range"][0]
     assert minimum_center_x - tomato_can_radius_x >= cabinet_support_near_x + 0.005
     assert cfg["randomization"]["right_can_lift"]["enabled"] is False
+    assert cfg["randomization"]["drawer_initial_open"]["enabled"] is True
     assert cfg["hands"]["right_open"] == [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert cfg["hands"]["right_close"] == [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
     assert cfg["targets"]["right_can_grasp"]["offset"] == [-0.050, -0.038, 0.030]
