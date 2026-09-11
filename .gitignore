@@ -10,9 +10,8 @@ outputs/
 /docker/vendor/
 /docker/runtime/
 
-# Local release resolution and downloaded runtime storage.  The example manifest
-# is tracked; the resolved manifest may contain private ModelScope revisions.
-/release/manifest.yaml
+# Generated upload staging and downloaded runtime storage. The public formal
+# release manifest is tracked; secrets and private revisions must never enter it.
 /release/staging/
 !/release/staging/.gitkeep
 /.s4/

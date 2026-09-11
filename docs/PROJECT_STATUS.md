@@ -209,28 +209,59 @@
   `ros_env.sh` 与 `cameras.yaml` 已取消跟踪并确认仍保留在本地；
 - [x] 把主机/机器人差异拆成公开 example 与被忽略的本地 override；相机模板通过
   `S4_CAMERA_*_SERIAL` 展开，ROS 与相机真实配置均已加入 `.gitignore`；
-- [ ] 生成正式 `release/manifest.yaml`，写满 commit、revision、SHA256 和三个 image digest；
+- [x] 完成正式 `release/manifest.yaml`；
+  - [x] 模块化源码快照已提交：`86fab172e974c06d65828f228ac030bb1cee8c4f`；
+  - [x] `v0.1.0` manifest candidate 已生成，包含三个本地 OCI digest、ModelScope revision、
+    submodule commit、NVIDIA locks、artifact tree hash 和实际验证状态；
+  - [x] 将三个镜像推送 GHCR、核对远端 digest 后，把 candidate/pending 状态改为正式发布；
+    - 首次 robot push 在创建 package 前被 GHCR 拒绝：`permission_denied: The token provided
+      does not match expected scopes`；没有 layer 上传成功；
+    - 必须使用 token 所属个人 GitHub 用户名登录，并使用 classic PAT 的 `write:packages`；若
+      `zfy-robot` 是组织而非个人用户，不能把组织名当登录用户名；
+    - package 关联仓库和 Public 可见性只能在首次成功 push、package 创建后设置；
+    - [x] robot `v0.1.0` 已成功推送；远端 OCI index digest
+      `sha256:6a36352a87939ec296a663343a8949c9685ef8fc0af0d3e2f63a599bf1d0b1b5`
+      与本地/manifest 一致；使用不含登录凭据的临时 Docker config 匿名查询成功，Public 生效；
+    - [x] 推送并匿名验证 policy；
+      - 首次 policy push 已复用大部分远端 layer，但上传 blob `7c7efac...` 时失败；根因是
+        Docker daemon 的 HTTPS proxy `127.0.0.1:7890` 重置 PUT 连接，不是 GHCR 权限或镜像
+        问题；shell 对 GHCR 直连实测约 0.47 秒；
+      - Docker daemon 的 `NO_PROXY` 已加入
+        `ghcr.io,.ghcr.io,pkg-containers.githubusercontent.com,.pkg-containers.githubusercontent.com`
+        并完成重启；`docker info` 已确认配置生效；
+      - policy 第二次幂等重试期间，上传进程与 HTTPS 发送连接曾保持存活；大 layer 上传期间
+        Docker CLI 不输出百分比，因此日志长时间停留在 `Waiting`；随后父 shell 与推送进程一并
+        消失，Docker daemon 无重启、OOM 或 push 错误记录，远端标签仍为 `not found`；下一次
+        使用脱离终端会话的后台 runner，最终以记录在日志中的 `PUSH_RC` 和远端 digest 为准；
+      - [x] 后台 runner 重试成功，`PUSH_RC=0`；远端 OCI index digest
+        `sha256:9f2bced045e647c1ca210bc37a217f9ac43f3c8ad15e7764224af36fa266fedb`
+        与本地/manifest 一致，amd64 manifest 为
+        `sha256:757f6643bc5f840f008628e0b8c1e12a5394776a7b5d4ef9a0e65150b9f53b75`；
+      - [x] 所有者已把 policy Package 关联主仓库并改为 Public；使用无登录凭据的临时 Docker
+        config 匿名查询成功，返回的 index/amd64 digest 与本地及 manifest 一致；
+    - [x] 推送并匿名验证 sim；
+      - [x] 后台 runner 上传成功，`PUSH_RC=0`；远端 OCI index digest
+        `sha256:e0fb24a132c27ef271e20fd234fa215d34cf2e331296010f3f92d0ee55288c44`
+        与本地/manifest 一致，amd64 manifest 为
+        `sha256:954140a9d6748fecc9b9b6f80e84fcd60171629e017ec5a96cf6d142e305b84f`；
+      - [x] 所有者已把 sim Package 关联主仓库并改为 Public；使用无登录凭据的临时 Docker
+        config 匿名查询成功，返回的 index/amd64 digest 与本地及 manifest 一致；
+    - [x] `release_status: released`、`images.publication_status: public`，三个镜像各自记录
+      `anonymous_pull_verified: 2026-09-11`；
 - [x] 完成根 README 的最短教程、部署拓扑、安全门禁、制品边界和网络故障排查；
 - [x] 增加 CI：shell/Python/Compose 静态检查、lock、submodule、敏感信息和无大文件检查；
-  取消跟踪后，本地完整门禁已通过：446 个 tracked paths；
+  取消跟踪后，本地完整门禁已通过：494 个 tracked paths；
 - [ ] 在干净 clone 上执行一次教程级复现；
-- [ ] 提交主项目与 IsaacLab 远端，创建版本 tag 和 GitHub Release。
+- [x] 创建主项目模块化源码快照 commit；IsaacLab fork commit 已存在远端；
+- [ ] 推送主项目远端，创建 manifest commit、版本 tag 和 GitHub Release。
 
 ## 项目所有者下一步只需执行
 
-耗时命令由项目所有者执行，并把完整退出末尾或日志发回：
+三个镜像均已成功上传、公开并通过匿名 digest 验证。下一步由项目所有者在临时目录执行干净
+clone 教程复现门；维护者核对结果后创建最终 release commit，再由所有者推送 main 和 tag。
 
-```bash
-cd "$(git rev-parse --show-toplevel)"
-git add -A
-git status --short
-git diff --cached --check
-bash scripts/ci/static_checks.sh
-```
-
-确认暂存内容与门禁输出后，创建“模块化发布源码快照”提交。维护者随后用该 commit 生成正式
-`release/manifest.yaml`，再做 manifest 提交、干净 clone 验收和 tag；不要在首个提交前手工
-创建浮动或伪造的 project commit。
+干净 clone 验收通过前不创建 `v0.1.0` tag；如果发现教程问题，先补修并更新 release commit，
+重新通过静态检查与干净 clone 后再打 tag，避免移动已公开版本标签。
 
 ## 变更与长任务协作规则
 

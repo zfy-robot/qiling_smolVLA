@@ -52,6 +52,21 @@ git submodule update --init --recursive
 IsaacLab 固定到 `zfy-robot/IsaacLab` 的兼容分支；LeRobot 也固定到经过验证的 commit。不要在
 复现时自动追踪两个上游仓库的最新分支。
 
+## 使用预构建环境镜像
+
+推荐教程用户直接拉取经过验证的 GHCR 镜像。`./s4 pull` 从 `release/manifest.yaml` 读取不可变
+digest，并自动标记为 Compose 使用的本地镜像；不使用会漂移的 `latest`：
+
+```bash
+./s4 pull sim       # 仿真采集与 rollout
+./s4 pull policy    # 训练与 GPU policy server
+./s4 pull robot     # ROS、遥操采集与真机 client
+# 或一次拉取三个环境：./s4 pull all
+```
+
+只想使用项目时执行 `pull`，需要修改底层依赖或重新制作镜像时才执行 `build`。ModelScope 制品、
+NVIDIA 官方资产和项目源码仍按下文挂载，不包含在这些环境镜像中。
+
 ## 仿真 rollout
 
 第一次安装需要下载 ModelScope 运行制品、约 500MB 的 NVIDIA 官方 Isaac 资产子集，以及两个
@@ -63,7 +78,7 @@ ModelScope 或项目镜像。
 ./s4 setup sim_rollout
 ./s4 setup-isaac-assets
 ./s4 setup-kit-extensions
-./s4 build sim
+./s4 pull sim
 ./s4 verify sim
 ./s4 rollout sim-smoke-offline
 ./s4 rollout sim-offline
@@ -82,7 +97,7 @@ ModelScope 或项目镜像。
 
 ```bash
 ./s4 setup sim_training
-./s4 build policy
+./s4 pull policy
 ./s4 verify policy
 ./s4 train policy-smoke
 ```
@@ -103,7 +118,7 @@ cp .env.example .env
 GPU 服务器：
 
 ```bash
-./s4 build policy
+./s4 pull policy
 ./s4 verify real-policy
 ./s4 verify real-server
 docker compose --profile real up policy-server
@@ -112,7 +127,7 @@ docker compose --profile real up policy-server
 机器人电脑：
 
 ```bash
-./s4 build robot
+./s4 pull robot
 ./s4 verify robot
 ```
 

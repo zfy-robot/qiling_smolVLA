@@ -16,7 +16,54 @@ export S4_HOST_UID="${host_uid}"
 export S4_HOST_GID="${host_gid}"
 
 artifact_revision() {
-  python3 -c 'import yaml; print(yaml.safe_load(open("release/artifacts.yaml", encoding="utf-8"))["repository"]["revision"])'
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+text = Path("release/artifacts.yaml").read_text(encoding="utf-8")
+match = re.search(r"(?m)^  revision:\s*([0-9a-f]{40})\s*$", text)
+if match is None:
+    raise SystemExit("release/artifacts.yaml: missing immutable revision")
+print(match.group(1))
+PY
+}
+
+release_image_ref() {
+  local service="$1"
+  python3 - "${service}" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+service = sys.argv[1]
+text = Path("release/manifest.yaml").read_text(encoding="utf-8")
+section = re.search(
+    rf"(?ms)^  {re.escape(service)}:\s*\n(.*?)(?=^  [a-z][a-z0-9_]*:\s*$|^artifacts:)",
+    text,
+)
+if section is None:
+    raise SystemExit(f"release/manifest.yaml: missing image section {service}")
+image_ref = re.search(r"(?m)^    ref:\s*(\S+)\s*$", section.group(1))
+if image_ref is None:
+    raise SystemExit(f"release/manifest.yaml: missing immutable ref for {service}")
+print(image_ref.group(1))
+PY
+}
+
+pull_release_image() {
+  local service="$1"
+  local remote_ref local_ref
+  remote_ref="$(release_image_ref "${service}")"
+  case "${service}" in
+    sim) local_ref="${S4_SIM_IMAGE:-s4-smolvla-sim:dev}" ;;
+    policy) local_ref="${S4_POLICY_IMAGE:-s4-smolvla-policy:dev}" ;;
+    robot) local_ref="${S4_ROBOT_IMAGE:-s4-smolvla-robot:dev}" ;;
+    *) echo "Unknown release image: ${service}" >&2; return 2 ;;
+  esac
+  echo "[S4][PULL] ${remote_ref}"
+  docker image pull "${remote_ref}"
+  docker image tag "${remote_ref}" "${local_ref}"
+  echo "[S4][PULL] ready: ${local_ref} <- ${remote_ref}"
 }
 
 usage() {
@@ -34,6 +81,9 @@ Usage: ./s4 COMMAND [ARG]
                             the ignored persistent cache (requires license acceptance).
   build SERVICE             Build artifacts, policy, robot or sim.
   build all                 Build all four images.
+  pull SERVICE              Pull a released sim, policy or robot image by
+                            immutable digest and tag it for local Compose use.
+  pull all                  Pull all three released runtime images.
   verify sim                Verify CUDA, Vulkan, Isaac headless, camera and
                             the mounted simulation rollout checkpoint.
   verify policy             Verify CUDA, dependencies, local models and the
@@ -111,6 +161,20 @@ case "${1:-}" in
     case "${target}" in
       artifacts|policy|robot|sim) exec docker compose build "${target}" ;;
       *) echo "Unknown build target: ${target}" >&2; exit 2 ;;
+    esac
+    ;;
+  pull)
+    target="${2:-}"
+    case "${target}" in
+      all)
+        for service in robot policy sim; do
+          pull_release_image "${service}"
+        done
+        ;;
+      sim|policy|robot)
+        pull_release_image "${target}"
+        ;;
+      *) echo "Unknown pull target: ${target:-<missing>}" >&2; exit 2 ;;
     esac
     ;;
   verify)
