@@ -19,8 +19,8 @@
 
 ## v0.1.0 最后操作
 
-- [ ] 合入“退役旧单体镜像链路与文档收口”的最终提交；
-- [ ] 确认该提交的 GitHub Actions 通过；
+- [x] 合入“退役旧单体镜像链路与文档收口”的最终提交 `6e95541`；
+- [x] 确认该提交的 GitHub Actions run `34571153032` 通过；
 - [ ] 创建并推送不可移动的 annotated tag `v0.1.0`；
 - [ ] 使用 [`RELEASE_NOTES_v0.1.0.md`](../release/RELEASE_NOTES_v0.1.0.md) 创建 GitHub Release。
 
