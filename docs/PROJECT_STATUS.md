@@ -253,7 +253,10 @@
   取消跟踪后，本地完整门禁已通过：494 个 tracked paths；
 - [ ] 在干净 clone 上执行一次教程级复现；
 - [x] 创建主项目模块化源码快照 commit；IsaacLab fork commit 已存在远端；
-- [ ] 推送主项目远端，创建 manifest commit、版本 tag 和 GitHub Release。
+- [x] 正常 fast-forward 推送主项目 `main` 至 release commit `5f3e72c`；公开远端 HEAD 核对一致；
+- [x] GitHub Actions `static-release-checks`（run `34567064694`）完成且结论为 `success`；
+- [ ] 合入干净 clone 前发现的许可证参数文档修复，重新推送 main；
+- [ ] 创建版本 tag 和 GitHub Release。
 
 ## 项目所有者下一步只需执行
 

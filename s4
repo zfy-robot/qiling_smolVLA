@@ -78,7 +78,8 @@ Usage: ./s4 COMMAND [ARG]
   setup-isaac-assets [DIR]  Download the required Isaac Sim 5.1 subset from
                             NVIDIA, or extract it from a local official DIR.
   setup-kit-extensions      Download and verify NVIDIA Kit extensions into
-                            the ignored persistent cache (requires license acceptance).
+                            the ignored persistent cache; pass
+                            --accept-nvidia-license after reviewing the terms.
   build SERVICE             Build artifacts, policy, robot or sim.
   build all                 Build all four images.
   pull SERVICE              Pull a released sim, policy or robot image by

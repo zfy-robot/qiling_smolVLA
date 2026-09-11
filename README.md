@@ -77,7 +77,7 @@ ModelScope 或项目镜像。
 ./s4 build artifacts
 ./s4 setup sim_rollout
 ./s4 setup-isaac-assets
-./s4 setup-kit-extensions
+./s4 setup-kit-extensions --accept-nvidia-license
 ./s4 pull sim
 ./s4 verify sim
 ./s4 rollout sim-smoke-offline
@@ -89,6 +89,9 @@ ModelScope 或项目镜像。
 ```bash
 ./s4 setup-isaac-assets /path/to/Assets/Isaac/5.1
 ```
+
+`--accept-nvidia-license` 表示用户已经阅读并接受 NVIDIA 对相应 Kit extension 的许可条款；
+脚本不会代替用户接受条款，缺少该参数时会拒绝下载。
 
 输出写入 `.s4/outputs/eval/`。发布的仿真 checkpoint 是 350K；环境验收通过不代表该策略必然
 成功完成任务，成功率应以 rollout 的 `summary.json` 为准。
