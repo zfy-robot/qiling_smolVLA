@@ -4,10 +4,27 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_ROOT"
 if [[ -f .env ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source .env
-    set +a
+    # Compose/CLI values describe the active runtime and must win over
+    # workstation defaults saved in this ignored file. Keep the parser aligned
+    # with s4_pipeline.paths._load_dotenv: .env only fills missing variables.
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+        line="${raw_line#"${raw_line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        key="${key%"${key##*[![:space:]]}"}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+            value="${value:1:${#value}-2}"
+        elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+            value="${value:1:${#value}-2}"
+        fi
+        if [[ ! -v "$key" ]]; then
+            export "$key=$value"
+        fi
+    done < .env
 fi
 
 export S4_PROJECT_ROOT="${S4_PROJECT_ROOT:-$PROJECT_ROOT}"
@@ -49,6 +66,28 @@ ISAACLAB="$ISAACLAB_ROOT/isaaclab.sh"
 ISAAC_LOCAL_KIT_ARGS="--/persistent/isaac/asset_root/default=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/cloud=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/nvidia=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/timeout=1"
 ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.asset.browser/folders/0=file:$S4_SCENE_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.asset.browser/folders/1=file:$S4_SCENE_ASSET_ROOT/Isaac/Props --/exts/isaacsim.asset.browser/folders/2=file:$S4_SCENE_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.asset.browser/data/timeout=1 --/exts/isaacsim.asset.browser/visible_after_startup=false"
 ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.gui.content_browser/folders/0=file:$S4_SCENE_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.gui.content_browser/folders/1=file:$S4_SCENE_ASSET_ROOT/Isaac/Props --/exts/isaacsim.gui.content_browser/folders/2=file:$S4_SCENE_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.gui.content_browser/timeout=1"
+S4_KIT_EXTENSION_ROOT="${S4_KIT_EXTENSION_ROOT:-$HOME/.local/share/ov/data/exts/v2}"
+required_kit_extensions=(
+    "omni.kit.pip_archive-d38fa9ecd1fb6df4"
+    "isaacsim.asset.importer.urdf-2.4.31+107.3.3.lx64.r.cp311"
+)
+kit_extension_cache_ready=1
+for kit_extension in "${required_kit_extensions[@]}"; do
+    if [[ ! -f "$S4_KIT_EXTENSION_ROOT/$kit_extension/config/extension.toml" ]]; then
+        kit_extension_cache_ready=0
+    fi
+done
+if [[ "$kit_extension_cache_ready" -eq 1 ]]; then
+    # Kit does not search its global download cache when registry sync is
+    # disabled. Register the persistent cache explicitly as an extension root.
+    # Use Kit's two-token form.  The equals form is documented by AppLauncher
+    # but Kit 107.3 does not register this external cache in all startup paths.
+    ISAAC_LOCAL_KIT_ARGS+=" --ext-folder $S4_KIT_EXTENSION_ROOT"
+elif [[ "${S4_KIT_OFFLINE:-0}" == "1" ]]; then
+    echo "[S4][KIT][FAIL] offline extension cache is incomplete: $S4_KIT_EXTENSION_ROOT" >&2
+    echo "[S4][KIT][FAIL] run: ./s4 setup-kit-extensions --accept-nvidia-license" >&2
+    exit 1
+fi
 if [[ "${S4_KIT_OFFLINE:-0}" == "1" ]]; then
     ISAAC_LOCAL_KIT_ARGS+=" --/app/extensions/registryEnabled=0"
 fi
@@ -308,7 +347,8 @@ case "${1:-help}" in
         ;;
     teleop-hardware)
         shift
-        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+        QI_SETUP="${HW_TELEOP_QI_INSTALL:-$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash}"
+        if [[ ! -f "$QI_SETUP" ]]; then
             echo "[HW-TELEOP] local qi ROS messages are missing; refusing to build during a robot run" >&2
             echo "[HW-TELEOP] run 'bash run.sh teleop-hardware-build' explicitly, then retry" >&2
             exit 1
@@ -320,7 +360,8 @@ case "${1:-help}" in
         ;;
     teleop-hardware-isaac)
         shift; print_context
-        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+        QI_SETUP="${HW_TELEOP_QI_INSTALL:-$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash}"
+        if [[ ! -f "$QI_SETUP" ]]; then
             echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
             bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
         fi
@@ -332,7 +373,8 @@ case "${1:-help}" in
         ;;
     teleop-hardware-doctor)
         shift
-        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+        QI_SETUP="${HW_TELEOP_QI_INSTALL:-$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash}"
+        if [[ ! -f "$QI_SETUP" ]]; then
             echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
             bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
         fi
@@ -365,7 +407,8 @@ EOF
         ;;
     real-collect)
         shift
-        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+        QI_SETUP="${HW_TELEOP_QI_INSTALL:-$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash}"
+        if [[ ! -f "$QI_SETUP" ]]; then
             echo "[REAL-VLA] local qi ROS messages are missing; run 'bash run.sh teleop-hardware-build'" >&2
             exit 1
         fi

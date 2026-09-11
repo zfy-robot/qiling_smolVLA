@@ -1,0 +1,14 @@
+av==15.1.0
+numpy==2.2.6
+pyarrow==25.0.0
+pandas==3.0.5
+transformers==5.5.4
+safetensors==0.8.0
+datasets==5.0.0
+accelerate==1.14.0
+num2words==0.5.14
+pyyaml==6.0.2
+opencv-python-headless==4.13.0.92
+msgpack==1.1.2
+pyzmq==27.0.2
+pytest==9.1.1

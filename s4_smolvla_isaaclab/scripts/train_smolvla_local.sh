@@ -16,6 +16,7 @@ STEPS_OVERRIDE=""
 BATCH_SIZE_OVERRIDE=""
 SAVE_FREQ_OVERRIDE=""
 NUM_WORKERS_OVERRIDE=""
+OUTPUT_DIR_OVERRIDE=""
 NUM_GPUS="1"
 GPU_IDS=""
 MASTER_PORT="29500"
@@ -31,6 +32,7 @@ Options:
   --steps N                   Target total optimizer steps
   --batch-size N              Per-process batch size (global batch = N × --num-gpus)
   --num-workers N             DataLoader workers per training process
+  --output-dir PATH           Override the configured output directory
   --save-freq N               Checkpoint interval in optimizer steps
   --num-gpus N                Use N local GPUs via Accelerate DDP (default: 1)
   --gpu-ids I,J,...           Visible-GPU-relative IDs for DDP; must contain --num-gpus IDs
@@ -65,6 +67,10 @@ EOF
             ;;
         --num-workers)
             NUM_WORKERS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR_OVERRIDE="$2"
             shift 2
             ;;
         --num-gpus)
@@ -116,6 +122,9 @@ TRAIN_EXPERT=$(cfg train_expert_only)
 TRAIN_STATE_PROJ=$(cfg train_state_proj)
 LOAD_VLM=$(cfg load_vlm_weights)
 LANGUAGE_CONTRACT_VERSION=$(cfg language_contract_version)
+if [ -n "$OUTPUT_DIR_OVERRIDE" ]; then
+    OUTPUT_DIR="$OUTPUT_DIR_OVERRIDE"
+fi
 if [ -n "$STEPS_OVERRIDE" ]; then
     STEPS="$STEPS_OVERRIDE"
 fi

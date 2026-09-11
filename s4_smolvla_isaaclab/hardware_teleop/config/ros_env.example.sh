@@ -25,7 +25,7 @@ fi
 # shellcheck disable=SC1091
 source "$HW_TELEOP_ROS_DISTRO/setup.bash"
 
-_HW_QI_INSTALL="$_HW_ROOT/ros_ws/install/setup.bash"
+_HW_QI_INSTALL="${HW_TELEOP_QI_INSTALL:-$_HW_ROOT/ros_ws/install/setup.bash}"
 if [[ ! -f "$_HW_QI_INSTALL" ]]; then
     echo "[HW-TELEOP][ENV] qi messages not built. Run: bash run.sh teleop-hardware-build" >&2
     return 1 2>/dev/null || exit 1

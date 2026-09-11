@@ -1,0 +1,21 @@
+S4 SmolVLA tutorial
+Copyright 2026 Qiling Robotics and project contributors
+
+This distribution includes or integrates with third-party components whose
+licenses remain in effect:
+
+- IsaacLab: BSD-3-Clause, copyright The Isaac Lab Project Developers.
+- LeRobot and SmolVLA: see the license and notices in the pinned LeRobot
+  submodule and original model card.
+- SmolVLM2-500M-Video-Instruct: Apache-2.0; retain its original model card.
+- LinkerHand O6 URDF and meshes: Apache-2.0; source:
+  https://github.com/linker-bot/linkerhand-urdf
+- Isaac Sim: NVIDIA software; users must accept NVIDIA's applicable license.
+
+NVIDIA-provided Isaac Sim 3D models, USD files, materials, and textures are
+not redistributed in the public artifact bundle. They must be obtained from
+NVIDIA and remain governed by NVIDIA's applicable license.
+
+Model weights, datasets, robot descriptions, CAD files, and simulation assets
+may carry their own license metadata. The repository Apache-2.0 license does
+not replace those terms.

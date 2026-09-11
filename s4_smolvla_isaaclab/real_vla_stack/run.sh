@@ -26,7 +26,8 @@ case "$COMMAND" in
     ;;
   rollout)
     if [[ "${1:-}" != "-h" && "${1:-}" != "--help" ]]; then
-      if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+      QI_SETUP="${HW_TELEOP_QI_INSTALL:-$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash}"
+      if [[ ! -f "$QI_SETUP" ]]; then
         echo "Local qi ROS messages are missing; run: bash run.sh teleop-hardware-build" >&2
         exit 2
       fi

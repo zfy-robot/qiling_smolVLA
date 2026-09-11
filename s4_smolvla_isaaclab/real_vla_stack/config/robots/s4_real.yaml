@@ -1,5 +1,5 @@
 network:
-  policy_server: 192.168.110.87
+  policy_server: ${S4_POLICY_SERVER_HOST}
   policy_port: 5555
   connect_timeout_ms: 1000
   # Transport may wait through one transient server/Wi-Fi stall. Responses are

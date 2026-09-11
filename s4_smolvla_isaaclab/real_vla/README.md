@@ -19,7 +19,7 @@
 先确认相机左右腕序列号（各拍一张）：
 
 ```bash
-cd /home/coral/qirobot_smolVLA/s4_smolvla_isaaclab
+cd "$(git rev-parse --show-toplevel)/s4_smolvla_isaaclab"
 bash run.sh real-collect-cameras
 ```
 
@@ -28,7 +28,7 @@ bash run.sh real-collect-cameras
 SDK 已在跑的前提下：
 
 ```bash
-cd /home/coral/qirobot_smolVLA/s4_smolvla_isaaclab
+cd "$(git rev-parse --show-toplevel)/s4_smolvla_isaaclab"
 sudo -E bash run.sh real-collect --arm-output
 ```
 
@@ -49,7 +49,8 @@ sudo -E bash run.sh real-collect --arm-output --with-leg-deploy
 `runtime.log`。需要完整 IK/bridge 滚屏日志时追加 `--input-debug`，旧调试输出
 保持不变。
 
-Quest 仍打开 `https://192.168.110.35:8443`。
+Quest 打开 `https://<机器人控制电脑局域网 IP>:8443`。该 IP 只写入本机 `.env` 或证书命令，
+不要提交到 Git。
 
 流程：自动 Home → READY 阶段可用双手 Grip/Trigger 调整双臂双手 → A 再次确认 Home 后开始采集 → 采集中只允许右手 Grip 遥操、Trigger 抓握 → 拉开抽屉 → 推回关闭 → 松手并撤开 → B 停止人工遥操 → 系统继续记录自动回 Home → 看 QUALITY → X 保存或 Y 长按丢弃。
 
@@ -57,12 +58,13 @@ Quest 仍打开 `https://192.168.110.35:8443`。
 
 每个 episode 同时保存采集配置快照、Git commit、dirty 标志、采集代码 SHA256，以及 `collection_phase`（`0=teleop`、`1=return_home`）。异常退出会在下次启动时跨 session 回收 pending episode。
 
-数据默认写到 `/home/coral/real_vla_data/session_*/episodes/`。
+数据默认写到 `${S4_RAW_ROOT}/session_*/episodes/`；Compose 默认将 `S4_RAW_ROOT` 映射为
+`/workspace/outputs/raw`，宿主文件保存在 `.s4/outputs/raw/`。
 
 批量检查所有已保存 episode（默认只读，不移动数据）：
 
 ```bash
-sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \
+sudo -E bash run.sh real-audit-dataset "${S4_RAW_ROOT}" \
   --report /tmp/real_vla_audit.json
 ```
 
@@ -74,7 +76,7 @@ sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \
 确认清单后，可恢复地隔离确定无效的数据和 pending 数据（不会删除）：
 
 ```bash
-sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \
+sudo -E bash run.sh real-audit-dataset "${S4_RAW_ROOT}" \
   --quarantine-invalid --yes --report /tmp/real_vla_quarantine.json
 ```
 

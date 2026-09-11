@@ -29,7 +29,7 @@ buttons:
   y_index: 5
   press_threshold: 0.5
 storage:
-  root: "/home/coral/real_vla_data"
+  root: "${S4_RAW_ROOT}"
   video_codec: "h264"
   video_container: "mkv"
   writer_queue_frames: 12

@@ -1,0 +1,10 @@
+name: env_isaaclab
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy=1.26
+  - pyyaml=6.0
+  - h5py=3.16
+  - pytest

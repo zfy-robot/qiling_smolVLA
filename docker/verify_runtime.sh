@@ -46,6 +46,7 @@ rollout_checkpoint="${S4_ROLLOUT_CHECKPOINT:-$project_root/outputs/train/smolvla
 vulkan_icd="${VK_ICD_FILENAMES:-/etc/vulkan/icd.d/nvidia_icd_headless.json}"
 isaac_env_helper="${S4_ISAAC_ENV_HELPER:-/usr/local/lib/s4/isaac_env.sh}"
 isaac_camera_verify="$project_root/scripts/verify_isaac_camera.py"
+release_sanitizer="${S4_RELEASE_SANITIZER:-/workspace/smolVLA/docker/sanitize_release_paths.py}"
 
 KIT_FAILURE_PATTERNS=(
     'ERROR_INCOMPATIBLE_DRIVER'
@@ -79,29 +80,45 @@ check_kit_log() {
 require_path "$project_root/run.sh"
 require_path "${LEROBOT_ROOT:-/workspace/smolVLA/lerobot}/src/lerobot"
 require_path "${SMOLVLA_MODEL_ROOT:-$project_root/models}/HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
-require_path "${S4_DATA_ROOT:-$project_root/datasets}/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire/meta/s4_contract.json"
+if [[ "$run_train" == true ]]; then
+    require_path "${S4_DATA_ROOT:-$project_root/datasets}/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire/meta/s4_contract.json"
+fi
 if [[ "$run_rollout" == true ]]; then
     require_path "$isaaclab_root/isaaclab.sh"
     require_path "${S4_SCENE_ASSET_ROOT:-$project_root/local_assets/isaac/5.1}/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+    require_path "${S4_ROBOT_ASSET_ROOT:-$project_root/assets/my_robot}/urdf/s4_40dof_merged.urdf"
+    require_path "${S4_PROJECT_SCENE_ASSET_ROOT:-$project_root/assets/scenes}/Pill_Bottle.usdz"
     require_path "$rollout_checkpoint/config.json"
     require_path "$vulkan_icd"
     require_path "$isaac_env_helper"
     require_path "$isaac_camera_verify"
 fi
+require_path "$release_sanitizer"
 
-/usr/local/bin/s4-sanitize-release-paths \
-    --project-root "$project_root" \
-    --lerobot-root "${LEROBOT_ROOT:-/workspace/smolVLA/lerobot}" \
-    --isaaclab-root "$isaaclab_root" \
-    --data-root "${S4_DATA_ROOT:-$project_root/datasets}" \
-    --model-root "${SMOLVLA_MODEL_ROOT:-$project_root/models}" \
-    --output-root "${S4_OUTPUT_ROOT:-$project_root/outputs}" \
+sanitizer_args=(
+    --project-root "$project_root"
+    --lerobot-root "${LEROBOT_ROOT:-/workspace/smolVLA/lerobot}"
+    --isaaclab-root "$isaaclab_root"
+    --data-root "${S4_DATA_ROOT:-$project_root/datasets}"
+    --model-root "${SMOLVLA_MODEL_ROOT:-$project_root/models}"
+    --output-root "${S4_OUTPUT_ROOT:-$project_root/outputs}"
     --check
+)
+if [[ "$profile" == "rollout" ]]; then
+    sanitizer_args+=(--artifact-root "$rollout_checkpoint")
+fi
+"$conda_root/envs/smolvla/bin/python" "$release_sanitizer" \
+    "${sanitizer_args[@]}"
 
 cd "$project_root"
 
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 0700 "$XDG_RUNTIME_DIR"
+fi
+
 # Level 1: CUDA
-"$conda_root/bin/conda" run -n smolvla python - <<'PY'
+"$conda_root/bin/conda" run --no-capture-output -n smolvla python - <<'PY'
 import torch
 
 assert torch.cuda.is_available(), "CUDA is not visible inside the container"
@@ -149,7 +166,7 @@ if [[ "$run_rollout" != true ]]; then
     exit 0
 fi
 
-"$conda_root/bin/conda" run -n env_isaaclab python - <<'PY'
+"$conda_root/bin/conda" run --no-capture-output -n env_isaaclab python - <<'PY'
 import importlib.metadata as metadata
 import isaaclab
 
@@ -157,8 +174,10 @@ assert metadata.version("isaacsim") == "5.1.0.0"
 print("[OK] env_isaaclab / Isaac Sim", metadata.version("isaacsim"))
 PY
 
-# Level 2: Vulkan
-if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
+# Level 2: Vulkan.  Do not pipe ldconfig into grep -q here: with pipefail,
+# grep's early exit can SIGPIPE ldconfig and turn a successful lookup into 141.
+ldconfig_cache="$(ldconfig -p 2>/dev/null)"
+if ! grep -q 'libvulkan\.so\.1' <<<"$ldconfig_cache"; then
     echo "[FAIL] libvulkan.so.1 is missing from the release image" >&2
     exit 1
 fi
@@ -185,11 +204,13 @@ if grep -qi 'llvmpipe' <<<"$vulkan_out"; then
 fi
 echo "[OK] NVIDIA Vulkan renderer"
 
-bash run.sh doctor --strict
+# Rollout artifacts are mounted independently and intentionally do not include
+# the training dataset/output tree required by the legacy strict doctor mode.
+bash run.sh doctor
 
 export S4_ROLLOUT_CHECKPOINT="$rollout_checkpoint"
 export SMOLVLA_MODEL_ROOT="${SMOLVLA_MODEL_ROOT:-$project_root/models}"
-"$conda_root/bin/conda" run -n smolvla python - <<'PY'
+"$conda_root/bin/conda" run --no-capture-output -n smolvla python - <<'PY'
 import os
 from pathlib import Path
 

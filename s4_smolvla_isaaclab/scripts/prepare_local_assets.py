@@ -14,7 +14,6 @@ import json
 import os
 import re
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
 from pxr import UsdUtils
@@ -214,7 +213,7 @@ def main() -> None:
         print("[ASSETS] packaged USD dependency closure verified")
     manifest = {
         "format": "s4-local-isaac-assets-v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "isaac_sim_asset_version": "5.1",
         "entry_assets": list(ENTRY_ASSETS),
         "auxiliary_files": list(AUXILIARY_FILES),
         "mdl_resource_files": [path.relative_to(source_root).as_posix() for path in mdl_resources],

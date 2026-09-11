@@ -153,7 +153,7 @@ RUN apt-get update \
 COPY docker/vulkan/nvidia_icd_headless.json \
     /etc/vulkan/icd.d/nvidia_icd_headless.json
 RUN test -r /etc/vulkan/icd.d/nvidia_icd_headless.json \
-    && ldconfig -p | grep -q 'libvulkan\.so\.1'
+    && test -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1
 
 ENV VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json
 ENV NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility

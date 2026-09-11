@@ -199,6 +199,19 @@ def test_contract_is_published_while_training_process_is_running(tmp_path: Path)
     assert json.loads((output_dir / "s4_dataset_contract.json").read_text()) == contract
 
 
+def test_output_dir_override_isolated_from_configured_training_run(tmp_path: Path):
+    smoke_output = tmp_path / "outputs" / "train" / "policy_smoke_test"
+    result, configured_output, contract = _run_fake_training(
+        tmp_path,
+        "success",
+        ("--output-dir", str(smoke_output)),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not configured_output.exists()
+    assert json.loads((smoke_output / "s4_dataset_contract.json").read_text()) == contract
+
+
 def test_ddp_launch_is_supervised_and_keeps_batch_per_process(tmp_path: Path):
     result, output_dir, contract = _run_fake_training(
         tmp_path,

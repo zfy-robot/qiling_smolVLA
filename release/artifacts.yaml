@@ -1,0 +1,111 @@
+schema_version: s4_artifacts_v1
+
+repository:
+  provider: modelscope
+  repo_type: dataset
+  repo_id: zfy2qiling/qiling_smolvla
+  revision: 3686874898fdf908431db487468f21a527507988
+
+artifacts:
+  smolvlm_runtime:
+    source: s4_smolvla_isaaclab/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+    destination: models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+    exclude:
+      - onnx
+      - .cache
+      - .ms_upload_cache
+
+  smolvla_base:
+    source: s4_smolvla_isaaclab/models/lerobot/smolvla_base
+    destination: models/lerobot/smolvla_base
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+  sim_dataset:
+    source: s4_smolvla_isaaclab/datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire
+    destination: datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+  sim_policy_350k:
+    source: s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/350000/pretrained_model
+    destination: policies/sim/drawer_insert_close_v4/350000/pretrained_model
+    contract_sha256: d81439c113ce6ed8b0f594d91d9823b6c7465c837bd8579901b9c7fbc91d6266
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+  real_dataset:
+    source_env: S4_REAL_DATASET_SOURCE
+    source_default: ../lerobot_datasets/s4_real_drawer_right_v1
+    destination: datasets/lerobot_data/s4_real_drawer_right_v1
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+  real_policy_300k:
+    source_env: S4_REAL_POLICY_SOURCE
+    source_default: ../real_outputs/right_drawer_open_close_v1_smolvla_base_ft_full/checkpoints/300000/pretrained_model
+    destination: policies/real/drawer_right_v1/300000/pretrained_model
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+  robot_assets:
+    source: s4_smolvla_isaaclab/assets/my_robot
+    destination: assets/my_robot
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+  project_scene_assets:
+    source: s4_smolvla_isaaclab/assets/scenes
+    destination: assets/scenes
+    exclude:
+      - .cache
+      - .ms_upload_cache
+
+download_sets:
+  project_assets:
+    - robot_assets
+    - project_scene_assets
+  robot_assets_only:
+    - robot_assets
+  sim_rollout:
+    - smolvlm_runtime
+    - sim_policy_350k
+    - artifact: sim_dataset
+      include:
+        - meta/**
+        - data/**
+    - robot_assets
+    - project_scene_assets
+  sim_training:
+    - smolvlm_runtime
+    - smolvla_base
+    - sim_dataset
+  real_rollout:
+    - smolvlm_runtime
+    - real_policy_300k
+    - robot_assets
+  real_training:
+    - smolvlm_runtime
+    - smolvla_base
+    - real_dataset
+  real_full:
+    - smolvlm_runtime
+    - smolvla_base
+    - real_dataset
+    - real_policy_300k
+    - robot_assets
+  tutorial_all:
+    - smolvlm_runtime
+    - smolvla_base
+    - sim_dataset
+    - sim_policy_350k
+    - real_dataset
+    - real_policy_300k
+    - robot_assets
+    - project_scene_assets

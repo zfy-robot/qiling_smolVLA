@@ -1,0 +1,27 @@
+# Public template. Copy to cameras.yaml or set the three S4_CAMERA_*_SERIAL
+# variables before using a physical RealSense device.
+backend: realsense
+warmup_s: 1.5
+writer_queue_frames: 12
+head:
+  enabled: true
+  serial: "${S4_CAMERA_HEAD_SERIAL}"
+  model: D435I
+  width: 640
+  height: 480
+  fps: 30
+wrist_left:
+  enabled: true
+  serial: "${S4_CAMERA_WRIST_LEFT_SERIAL}"
+  model: D405
+  width: 640
+  height: 480
+  fps: 30
+wrist_right:
+  enabled: true
+  serial: "${S4_CAMERA_WRIST_RIGHT_SERIAL}"
+  model: D405
+  width: 640
+  height: 480
+  fps: 30
+active_wrist: auto

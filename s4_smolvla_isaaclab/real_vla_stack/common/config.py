@@ -13,13 +13,37 @@ from .errors import ContractError
 
 STACK_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PIPELINE_CONFIG = STACK_ROOT / "config" / "pipeline.yaml"
+PROJECT_ROOT = STACK_ROOT.parent
+ENV_DEFAULTS = {
+    "S4_RAW_ROOT": str(PROJECT_ROOT / "outputs" / "raw"),
+    "S4_DATA_ROOT": str(PROJECT_ROOT / "datasets"),
+    "S4_OUTPUT_ROOT": str(PROJECT_ROOT / "outputs"),
+    "SMOLVLA_MODEL_ROOT": str(PROJECT_ROOT / "models"),
+    "S4_REAL_POLICY_CHECKPOINT": str(
+        PROJECT_ROOT / "outputs" / "real" / "drawer_right_v1" / "300000" / "pretrained_model"
+    ),
+    "S4_POLICY_SERVER_HOST": "127.0.0.1",
+}
+
+
+def _expand_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _expand_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_values(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    for name, default in ENV_DEFAULTS.items():
+        value = value.replace(f"${{{name}}}", os.environ.get(name, default))
+        value = value.replace(f"${name}", os.environ.get(name, default))
+    return os.path.expandvars(os.path.expanduser(value))
 
 
 def _yaml(path: Path) -> dict[str, Any]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise TypeError(f"{path} must contain a mapping")
-    return payload
+    return _expand_values(payload)
 
 
 def _path(value: str, base: Path) -> Path:

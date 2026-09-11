@@ -1,5 +1,6 @@
-# The complete image deliberately includes local_assets/, models/, datasets/ and
-# outputs/.  Exclude only source-control metadata and regenerable local caches.
+# Release images contain environments and source dependencies only. Runtime
+# assets, datasets, checkpoints and outputs are downloaded or generated on the
+# host and bind-mounted by Compose; never send them in a Docker build context.
 .git
 **/.git
 **/__pycache__
@@ -11,7 +12,15 @@
 **/.DS_Store
 **/*.swp
 **/*~
+.s4/
+release/staging/
 docker/runtime/
+docker/vendor/kit-exts/
+s4_smolvla_isaaclab/assets/
+s4_smolvla_isaaclab/local_assets/
+s4_smolvla_isaaclab/models/
+s4_smolvla_isaaclab/datasets/
+s4_smolvla_isaaclab/outputs/
 
 # Workstation-only path overrides must never replace container paths.
 .env

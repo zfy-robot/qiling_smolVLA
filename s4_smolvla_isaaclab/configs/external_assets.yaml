@@ -15,7 +15,7 @@ isaac_assets:
     - Isaac/Environments/Simple_Warehouse/Materials/OmniUe4Base.mdl
     - Isaac/Environments/Simple_Warehouse/Materials/OmniUe4Function.mdl
 robot:
-  root: ${S4_PROJECT_ROOT}/assets/my_robot
+  root: ${S4_ROBOT_ASSET_ROOT}
   required:
     - urdf/s4_40DOF_fullbody.urdf
 base_model:

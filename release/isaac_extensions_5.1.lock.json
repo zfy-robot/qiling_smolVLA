@@ -1,0 +1,29 @@
+{
+  "schema_version": "s4_isaac_extensions_v1",
+  "isaac_sim_version": "5.1.0",
+  "kit_sdk": "107.3",
+  "license_notice": "NVIDIA-provided binaries are downloaded from the NVIDIA Omniverse registry CDN and are not redistributed by this project.",
+  "extensions": [
+    {
+      "name": "omni.kit.pip_archive",
+      "directory": "omni.kit.pip_archive-d38fa9ecd1fb6df4",
+      "url": "https://d4i3qtqj3r0z5.cloudfront.net/omni.kit.pip_archive-d38fa9ecd1fb6df4.zip",
+      "archive": "omni.kit.pip_archive-d38fa9ecd1fb6df4.zip",
+      "size": 43517202,
+      "sha256": "3a0d0623be2349a2861f566dc8d5bdb5040c11b0977bb255c6d522b4be7bd682",
+      "extension_toml_sha256": "824447f8269824374116ec9ee8f12f8e83a5bca49f85b2a564b1f9678a6a541d",
+      "license_path": "PACKAGE-LICENSES/omni.kit.pip_archive-LICENSE.md"
+    },
+    {
+      "name": "isaacsim.asset.importer.urdf",
+      "version": "2.4.31+107.3.3",
+      "directory": "isaacsim.asset.importer.urdf-2.4.31+107.3.3.lx64.r.cp311",
+      "url": "https://d4i3qtqj3r0z5.cloudfront.net/isaacsim.asset.importer.urdf-2.4.31%2B107.3.3.lx64.r.cp311.zip",
+      "archive": "isaacsim.asset.importer.urdf-2.4.31+107.3.3.lx64.r.cp311.zip",
+      "size": 17480710,
+      "sha256": "665cc13d48842ac6d0c203359819c1d5c767a1d920fb8a00179e147ec2fb5201",
+      "extension_toml_sha256": "1984a4ecf3134745215638420e449c197083e97a3932901656479a7677f9a3fb",
+      "license_path": "PACKAGE-LICENSES/isaacsim.asset.importer.urdf-LICENSE.md"
+    }
+  ]
+}

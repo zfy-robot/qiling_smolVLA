@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${project_root}"
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+host_uid="${S4_HOST_UID:-$(id -u)}"
+host_gid="${S4_HOST_GID:-$(id -g)}"
+export S4_HOST_UID="${host_uid}"
+export S4_HOST_GID="${host_gid}"
+
+artifact_revision() {
+  python3 -c 'import yaml; print(yaml.safe_load(open("release/artifacts.yaml", encoding="utf-8"))["repository"]["revision"])'
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./s4 COMMAND [ARG]
+
+  preflight                 Check host OS, Docker, NVIDIA driver, GPU and RAM.
+  setup SET                 Download and verify a ModelScope artifact set.
+                            SET: project_assets, robot_assets_only,
+                            sim_rollout, sim_training, real_rollout,
+                            real_training, real_full, tutorial_all
+  setup-isaac-assets [DIR]  Download the required Isaac Sim 5.1 subset from
+                            NVIDIA, or extract it from a local official DIR.
+  setup-kit-extensions      Download and verify NVIDIA Kit extensions into
+                            the ignored persistent cache (requires license acceptance).
+  build SERVICE             Build artifacts, policy, robot or sim.
+  build all                 Build all four images.
+  verify sim                Verify CUDA, Vulkan, Isaac headless, camera and
+                            the mounted simulation rollout checkpoint.
+  verify policy             Verify CUDA, dependencies, local models and the
+                            complete simulation training dataset.
+  verify real-policy        Verify the released 8D real dataset and run one
+                            offline inference with the 300K checkpoint.
+  verify real-server        Start the 300K policy server locally and verify
+                            two robot-protocol requests including RTC state.
+  verify robot              Verify ROS, qi messages, Pink/QP, camera libraries,
+                            assets and configs without creating publishers.
+  rollout sim-smoke         Run 12 physics steps with one real policy inference.
+  rollout sim-smoke-offline Run the same smoke with container networking disabled.
+  rollout sim [ARGS...]     Run the normal deterministic simulation rollout.
+  rollout sim-offline       Run one full deterministic episode with networking disabled.
+  train policy-smoke        Run one isolated single-step GPU training smoke test.
+  shell SERVICE             Open a shell in policy, robot or sim.
+  compose ...               Pass remaining arguments to docker compose.
+EOF
+}
+
+case "${1:-}" in
+  preflight)
+    shift
+    exec docker/host_preflight.sh "$@"
+    ;;
+  setup)
+    set_name="${2:-tutorial_all}"
+    revision="${S4_MODELSCOPE_REVISION:-$(artifact_revision)}"
+    mkdir -p .s4/artifacts .s4/modelscope/download-home .s4/modelscope/cache
+    exec docker compose --profile setup run --rm \
+      --user "${host_uid}:${host_gid}" \
+      artifacts "${set_name}" --local-dir /artifacts --revision "${revision}"
+    ;;
+  setup-isaac-assets)
+    source_arg="${2:-${S4_ISAAC_ASSET_SOURCE_DIR:-}}"
+    assets_arg="${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}"
+    mkdir -p "${assets_arg}" .s4/outputs .s4/cache
+    assets_dir="$(cd "${assets_arg}" && pwd)"
+    export S4_ISAAC_ASSETS_DIR="${assets_dir}"
+    if [[ -z "${source_arg}" ]]; then
+      exec docker compose --profile setup run --rm \
+        --user "${host_uid}:${host_gid}" \
+        --entrypoint python3 artifacts \
+        scripts/release/download_isaac_assets.py \
+        --destination /isaac-assets/5.1
+    fi
+    if [[ ! -f "${source_arg}/Isaac/Environments/Simple_Warehouse/warehouse.usd" ]]; then
+      echo "Not an Isaac Sim 5.1 asset root: ${source_arg}" >&2
+      echo "Expected: ${source_arg}/Isaac/Environments/Simple_Warehouse/warehouse.usd" >&2
+      exit 2
+    fi
+    source_dir="$(cd "${source_arg}" && pwd)"
+    export S4_ISAAC_ASSET_SOURCE_DIR="${source_dir}"
+    exec docker compose --profile setup run --rm \
+      --user "${host_uid}:${host_gid}" \
+      isaac-assets
+    ;;
+  setup-kit-extensions)
+    shift
+    exec python3 scripts/release/setup_isaac_extensions.py "$@"
+    ;;
+  build)
+    target="${2:-}"
+    if [[ -z "${target}" ]]; then
+      echo "Missing build target." >&2
+      usage >&2
+      exit 2
+    fi
+    if [[ "${target}" == "all" || "${target}" == "sim" || "${target}" == "policy" ]]; then
+      docker/common/fetch_miniforge.sh
+    fi
+    if [[ "${target}" == "all" ]]; then
+      exec docker compose --profile setup --profile sim --profile train --profile real build
+    fi
+    case "${target}" in
+      artifacts|policy|robot|sim) exec docker compose build "${target}" ;;
+      *) echo "Unknown build target: ${target}" >&2; exit 2 ;;
+    esac
+    ;;
+  verify)
+    target="${2:-}"
+    case "${target}" in
+      sim)
+        mkdir -p .s4/cache/xdg-runtime
+        exec docker compose --profile sim run --rm --no-deps sim \
+          bash /workspace/smolVLA/docker/verify_runtime.sh --profile rollout
+        ;;
+      policy)
+        mkdir -p .s4/outputs .s4/cache/policy/home .s4/cache/policy/xdg \
+          .s4/cache/policy/xdg-runtime
+        exec docker compose --profile train run --rm --no-deps policy \
+          bash /workspace/smolVLA/docker/policy/verify_runtime.sh
+        ;;
+      real-policy)
+        mkdir -p .s4/outputs .s4/cache/policy/home .s4/cache/policy/xdg \
+          .s4/cache/policy/xdg-runtime
+        exec docker compose --profile train run --rm --no-deps policy \
+          bash /workspace/smolVLA/docker/policy/verify_real_runtime.sh
+        ;;
+      real-server)
+        mkdir -p .s4/outputs .s4/cache/policy/home .s4/cache/policy/xdg \
+          .s4/cache/policy/xdg-runtime
+        exec docker compose --profile train run --rm --no-deps policy \
+          python /workspace/smolVLA/s4_smolvla_isaaclab/scripts/verify_real_policy_server.py \
+          --checkpoint /artifacts/policies/real/drawer_right_v1/300000/pretrained_model
+        ;;
+      robot)
+        mkdir -p .s4/outputs .s4/cache
+        exec docker compose --profile real run --rm --no-deps robot \
+          bash /workspace/smolVLA/docker/robot/verify_runtime.sh
+        ;;
+      *) echo "Unknown verify target: ${target:-<missing>}" >&2; exit 2 ;;
+    esac
+    ;;
+  rollout)
+    target="${2:-}"
+    shift 2 || true
+    mkdir -p .s4/outputs .s4/cache
+    case "${target}" in
+      sim-smoke)
+        exec docker compose --profile sim run --rm --no-deps sim \
+          bash run.sh rollout --headless --deterministic --episodes 1 \
+          --steps "${S4_SIM_SMOKE_STEPS:-12}" \
+          --no-save-videos --no-save-diagnostics --disposable-process "$@"
+        ;;
+      sim-smoke-offline)
+        exec docker compose --profile sim-offline run --rm --no-deps sim-offline \
+          bash run.sh rollout --headless --deterministic --episodes 1 \
+          --steps "${S4_SIM_SMOKE_STEPS:-12}" \
+          --no-save-videos --no-save-diagnostics --disposable-process "$@"
+        ;;
+      sim)
+        exec docker compose --profile sim run --rm --no-deps sim \
+          bash run.sh rollout --headless --deterministic --episodes 1 "$@"
+        ;;
+      sim-offline)
+        exec docker compose --profile sim-offline run --rm --no-deps sim-offline \
+          bash run.sh rollout --headless --deterministic --episodes 1 \
+          --disposable-process "$@"
+        ;;
+      *) echo "Unknown rollout target: ${target:-<missing>}" >&2; exit 2 ;;
+    esac
+    ;;
+  train)
+    target="${2:-}"
+    shift 2 || true
+    case "${target}" in
+      policy-smoke)
+        run_stamp="$(date -u +%Y%m%dT%H%M%SZ)_$$"
+        output_name="policy_smoke_${run_stamp}"
+        container_output="/workspace/outputs/train/${output_name}"
+        monitor_dir=".s4/outputs/train-smoke-metrics"
+        gpu_log="${monitor_dir}/${output_name}_gpu.csv"
+        mkdir -p .s4/outputs/train "${monitor_dir}" .s4/cache/policy/home \
+          .s4/cache/policy/xdg .s4/cache/policy/xdg-runtime
+
+        monitor_pid=""
+        if command -v nvidia-smi >/dev/null 2>&1; then
+          nvidia-smi \
+            --query-gpu=timestamp,index,name,memory.used,memory.total,utilization.gpu \
+            --format=csv,noheader,nounits --loop-ms=1000 >"${gpu_log}" &
+          monitor_pid="$!"
+          echo "[S4][TRAIN] GPU samples: ${gpu_log}"
+        fi
+
+        set +e
+        docker compose --profile train run --rm --no-deps \
+          -e S4_TEST_SKIP_TRAIN_DATASET_CHECK=1 \
+          policy bash run.sh train \
+          --steps 1 --batch-size 1 --num-workers 0 --save-freq 1 \
+          --output-dir "${container_output}" "$@"
+        train_rc="$?"
+        set -e
+
+        if [[ -n "${monitor_pid}" ]]; then
+          kill "${monitor_pid}" 2>/dev/null || true
+          wait "${monitor_pid}" 2>/dev/null || true
+          awk -F',' '
+            { value=$4; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); if (value+0 > peak) peak=value+0 }
+            END { if (NR > 0) printf "[S4][TRAIN] peak sampled GPU memory: %.0f MiB (%d samples)\n", peak, NR }
+          ' "${gpu_log}"
+        fi
+        echo "[S4][TRAIN] output: .s4/outputs/train/${output_name}"
+        exit "${train_rc}"
+        ;;
+      *) echo "Unknown train target: ${target:-<missing>}" >&2; exit 2 ;;
+    esac
+    ;;
+  shell)
+    target="${2:-}"
+    case "${target}" in
+      sim) exec docker compose --profile sim run --rm sim bash ;;
+      policy) exec docker compose --profile train run --rm policy bash ;;
+      robot) exec docker compose --profile real run --rm robot bash ;;
+      *) echo "Unknown shell target: ${target:-<missing>}" >&2; exit 2 ;;
+    esac
+    ;;
+  compose)
+    shift
+    exec docker compose "$@"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

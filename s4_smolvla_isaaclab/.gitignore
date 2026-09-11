@@ -7,10 +7,13 @@ __pycache__/
 .env
 .local/
 local_assets/
+assets/
 hardware_teleop/ros_ws/build/
 hardware_teleop/ros_ws/install/
 hardware_teleop/ros_ws/log/
 hardware_teleop/config/ros_env.local.sh
+hardware_teleop/config/ros_env.sh
+real_vla/config/cameras.yaml
 
 *.log
 *.tmp

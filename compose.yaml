@@ -1,0 +1,262 @@
+name: s4-smolvla
+
+x-source-mounts: &source-mounts
+  - ./:/workspace/smolVLA:ro
+  - ./.s4/artifacts:/artifacts:ro
+  - ./.s4/outputs:/workspace/outputs
+  - ./.s4/cache:/workspace/cache
+
+x-runtime-environment: &runtime-environment
+  S4_PROJECT_ROOT: /workspace/smolVLA/s4_smolvla_isaaclab
+  ISAACLAB_ROOT: /workspace/smolVLA/IsaacLab
+  LEROBOT_ROOT: /workspace/smolVLA/lerobot
+  S4_ARTIFACT_ROOT: /artifacts
+  SMOLVLA_MODEL_ROOT: /artifacts/models
+  S4_DATA_ROOT: /artifacts/datasets
+  S4_PROJECT_ASSET_ROOT: /artifacts/assets
+  S4_ROBOT_ASSET_ROOT: /artifacts/assets/my_robot
+  S4_PROJECT_SCENE_ASSET_ROOT: /artifacts/assets/scenes
+  S4_OUTPUT_ROOT: /workspace/outputs
+  S4_CACHE_ROOT: /workspace/cache
+  S4_KIT_EXTENSION_ROOT: /workspace/cache/home/.local/share/ov/data/exts/v2
+  S4_RAW_ROOT: /workspace/outputs/raw
+  S4_REAL_POLICY_CHECKPOINT: /artifacts/policies/real/drawer_right_v1/300000/pretrained_model
+  S4_ROLLOUT_CONTRACT_SHA256: ${S4_ROLLOUT_CONTRACT_SHA256:-d81439c113ce6ed8b0f594d91d9823b6c7465c837bd8579901b9c7fbc91d6266}
+  XDG_RUNTIME_DIR: /workspace/cache/xdg-runtime
+
+services:
+  artifacts:
+    profiles: [setup]
+    build:
+      context: .
+      dockerfile: docker/artifacts/Dockerfile
+      network: ${S4_BUILD_NETWORK:-host}
+      args:
+        ARTIFACT_BASE_IMAGE: ${S4_ARTIFACT_BASE_IMAGE:-python:3.12-slim-bookworm}
+        PIP_INDEX_URL: ${S4_PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_DEFAULT_TIMEOUT: ${S4_PIP_DEFAULT_TIMEOUT:-300}
+        PIP_RETRIES: ${S4_PIP_RETRIES:-10}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: ${S4_ARTIFACT_IMAGE:-s4-smolvla-artifacts:dev}
+    network_mode: host
+    user: ${S4_HOST_UID:-1000}:${S4_HOST_GID:-1000}
+    environment:
+      HOME: /modelscope/home
+      XDG_CACHE_HOME: /modelscope/cache/xdg
+      MODELSCOPE_HOME: /modelscope/home
+      MODELSCOPE_CACHE: /modelscope/cache
+      MODELSCOPE_API_TIMEOUT: ${MODELSCOPE_API_TIMEOUT:-300}
+      MODELSCOPE_API_CONNECT_TIMEOUT: ${MODELSCOPE_API_CONNECT_TIMEOUT:-30}
+      MODELSCOPE_API_MAX_RETRIES: ${MODELSCOPE_API_MAX_RETRIES:-10}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+    volumes:
+      - ./:/workspace/smolVLA:ro
+      - ./.s4/artifacts:/artifacts
+      - ./.s4/modelscope/download-home:/modelscope/home
+      - ./.s4/modelscope/cache:/modelscope/cache
+      - ${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}:/isaac-assets
+    command: [tutorial_all, --local-dir, /artifacts, --revision, "${S4_MODELSCOPE_REVISION:-master}"]
+
+  isaac-assets:
+    profiles: [setup]
+    build:
+      context: .
+      dockerfile: docker/sim/Dockerfile
+      network: ${S4_BUILD_NETWORK:-host}
+      args:
+        CUDA_BASE_IMAGE: ${S4_CUDA_BASE_IMAGE:-nvidia/cuda:12.8.1-base-ubuntu22.04@sha256:001469ea0f3dec85a1ca929aeea3b58ae369d4c11228b10aec1f642bb6ca7a6f}
+        PIP_INDEX_URL: ${S4_PIP_INDEX_URL:-https://pypi.org/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: ${S4_SIM_IMAGE:-s4-smolvla-sim:dev}
+    user: ${S4_HOST_UID:-1000}:${S4_HOST_GID:-1000}
+    environment:
+      <<: *runtime-environment
+      ACCEPT_EULA: "Y"
+      OMNI_KIT_ACCEPT_EULA: "Y"
+      S4_SCENE_ASSET_ROOT: /workspace/isaac-assets/5.1
+      ISAAC_ASSET_ROOT: /workspace/isaac-assets/5.1
+      XDG_RUNTIME_DIR: /tmp/s4-xdg-runtime
+    volumes:
+      - ./:/workspace/smolVLA:ro
+      - ./.s4/outputs:/workspace/outputs
+      - ./.s4/cache:/workspace/cache
+      - ${S4_ISAAC_ASSET_SOURCE_DIR:-./s4_smolvla_isaaclab/local_assets/isaac/5.1}:/nvidia-assets/5.1:ro
+      - ${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}:/workspace/isaac-assets
+    command:
+      - bash
+      - run.sh
+      - prepare-assets
+      - --source-root
+      - /nvidia-assets/5.1
+      - --destination
+      - /workspace/isaac-assets/5.1
+      - --verify
+
+  sim:
+    profiles: [sim]
+    build:
+      context: .
+      dockerfile: docker/sim/Dockerfile
+      network: ${S4_BUILD_NETWORK:-host}
+      args:
+        CUDA_BASE_IMAGE: ${S4_CUDA_BASE_IMAGE:-nvidia/cuda:12.8.1-base-ubuntu22.04@sha256:001469ea0f3dec85a1ca929aeea3b58ae369d4c11228b10aec1f642bb6ca7a6f}
+        PIP_INDEX_URL: ${S4_PIP_INDEX_URL:-https://pypi.org/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: ${S4_SIM_IMAGE:-s4-smolvla-sim:dev}
+    gpus: all
+    ipc: host
+    shm_size: 64g
+    network_mode: host
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *runtime-environment
+      HOME: /workspace/cache/home
+      XDG_CACHE_HOME: /workspace/cache/xdg
+      ACCEPT_EULA: "Y"
+      OMNI_KIT_ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      S4_KIT_OFFLINE: ${S4_KIT_OFFLINE:-0}
+      NVIDIA_DRIVER_CAPABILITIES: graphics,compute,utility
+      XDG_RUNTIME_DIR: /tmp/s4-xdg-runtime
+      S4_SCENE_ASSET_ROOT: /workspace/isaac-assets/5.1
+      ISAAC_ASSET_ROOT: /workspace/isaac-assets/5.1
+      S4_ROLLOUT_CHECKPOINT: /artifacts/policies/sim/drawer_insert_close_v4/350000/pretrained_model
+    volumes:
+      - ./:/workspace/smolVLA:ro
+      - ./.s4/artifacts:/artifacts:ro
+      - ./.s4/outputs:/workspace/outputs
+      - ./.s4/cache:/workspace/cache
+      - ./.s4/artifacts/assets:/workspace/smolVLA/s4_smolvla_isaaclab/assets:ro
+      - ${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}:/workspace/isaac-assets:ro
+    command: bash
+
+  sim-offline:
+    extends:
+      service: sim
+    profiles: [sim-offline]
+    network_mode: none
+    environment:
+      S4_KIT_OFFLINE: "1"
+
+  policy:
+    profiles: [train]
+    build:
+      context: .
+      dockerfile: docker/policy/Dockerfile
+      network: ${S4_BUILD_NETWORK:-host}
+      args:
+        CUDA_BASE_IMAGE: ${S4_CUDA_BASE_IMAGE:-nvidia/cuda:12.8.1-base-ubuntu22.04@sha256:001469ea0f3dec85a1ca929aeea3b58ae369d4c11228b10aec1f642bb6ca7a6f}
+        PIP_INDEX_URL: ${S4_PIP_INDEX_URL:-https://pypi.org/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: ${S4_POLICY_IMAGE:-s4-smolvla-policy:dev}
+    user: ${S4_HOST_UID:-1000}:${S4_HOST_GID:-1000}
+    gpus: all
+    ipc: host
+    shm_size: 32g
+    network_mode: host
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *runtime-environment
+      S4_CACHE_ROOT: /workspace/cache/policy
+      HOME: /workspace/cache/policy/home
+      XDG_CACHE_HOME: /workspace/cache/policy/xdg
+      XDG_RUNTIME_DIR: /workspace/cache/policy/xdg-runtime
+      PATH: /opt/conda/envs/smolvla/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      CONDA_PREFIX: /opt/conda/envs/smolvla
+    volumes: *source-mounts
+    command: bash
+
+  policy-server:
+    profiles: [real]
+    build:
+      context: .
+      dockerfile: docker/policy/Dockerfile
+      network: ${S4_BUILD_NETWORK:-host}
+      args:
+        CUDA_BASE_IMAGE: ${S4_CUDA_BASE_IMAGE:-nvidia/cuda:12.8.1-base-ubuntu22.04@sha256:001469ea0f3dec85a1ca929aeea3b58ae369d4c11228b10aec1f642bb6ca7a6f}
+        PIP_INDEX_URL: ${S4_PIP_INDEX_URL:-https://pypi.org/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: ${S4_POLICY_IMAGE:-s4-smolvla-policy:dev}
+    user: ${S4_HOST_UID:-1000}:${S4_HOST_GID:-1000}
+    gpus: all
+    ipc: host
+    network_mode: host
+    environment:
+      <<: *runtime-environment
+      S4_CACHE_ROOT: /workspace/cache/policy
+      HOME: /workspace/cache/policy/home
+      XDG_CACHE_HOME: /workspace/cache/policy/xdg
+      XDG_RUNTIME_DIR: /workspace/cache/policy/xdg-runtime
+      PATH: /opt/conda/envs/smolvla/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      CONDA_PREFIX: /opt/conda/envs/smolvla
+    volumes: *source-mounts
+    command:
+      - bash
+      - real_vla_stack/run.sh
+      - serve
+      - --checkpoint
+      - /artifacts/policies/real/drawer_right_v1/300000/pretrained_model
+
+  robot:
+    profiles: [real]
+    build:
+      context: .
+      dockerfile: docker/robot/Dockerfile
+      network: ${S4_BUILD_NETWORK:-host}
+      args:
+        ROS_BASE_IMAGE: ${S4_ROS_BASE_IMAGE:-ros:humble-ros-base-jammy@sha256:1813d3c85d7f96ff7d3012d865204583255740182db5d0065f8f8cd029a83138}
+        PIP_INDEX_URL: ${S4_PIP_INDEX_URL:-https://pypi.org/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: ${S4_ROBOT_IMAGE:-s4-smolvla-robot:dev}
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *runtime-environment
+      S4_POLICY_SERVER_HOST: ${S4_POLICY_SERVER_HOST:-127.0.0.1}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-16}
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      HW_TELEOP_NETWORK_INTERFACE: ${HW_TELEOP_NETWORK_INTERFACE:-lo}
+      HW_TELEOP_QI_INSTALL: /opt/s4/qi_ws/install/setup.bash
+      S4_HW_TELEOP_RUNTIME: system
+      S4_HW_TELEOP_RUNTIME_RESOLVED: system
+      S4_HW_TELEOP_SYSTEM_PYTHON: /usr/bin/python3
+      S4_HW_TELEOP_SITE_PACKAGES: /opt/s4/hardware_python
+      S4_HW_TELEOP_ALLOW_USER_SITE: "0"
+      HW_TELEOP_EXPECT_PIN_PREFIX: /opt/ros/humble
+      HW_TELEOP_EXPECT_ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-16}
+      HW_TELEOP_EXPECT_DDS_INTERFACE: ${HW_TELEOP_NETWORK_INTERFACE:-lo}
+      S4_CAMERA_HEAD_SERIAL: ${S4_CAMERA_HEAD_SERIAL:-S4_HEAD_SERIAL_NOT_CONFIGURED}
+      S4_CAMERA_WRIST_LEFT_SERIAL: ${S4_CAMERA_WRIST_LEFT_SERIAL:-S4_WRIST_LEFT_SERIAL_NOT_CONFIGURED}
+      S4_CAMERA_WRIST_RIGHT_SERIAL: ${S4_CAMERA_WRIST_RIGHT_SERIAL:-S4_WRIST_RIGHT_SERIAL_NOT_CONFIGURED}
+    volumes:
+      - ./:/workspace/smolVLA:ro
+      - ./.s4/artifacts:/artifacts:ro
+      - ./.s4/outputs:/workspace/outputs
+      - ./.s4/cache:/workspace/cache
+      - ./.s4/artifacts/assets:/workspace/smolVLA/s4_smolvla_isaaclab/assets:ro
+      - /dev/bus/usb:/dev/bus/usb
+    command: bash

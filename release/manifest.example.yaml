@@ -1,0 +1,138 @@
+schema_version: s4_release_v1
+release: TODO_SEMVER
+
+source:
+  project:
+    repository: https://github.com/zfy-robot/qiling_smolVLA
+    commit: 589d5d3f38081eb6fb39375482b948d881176106
+  lerobot:
+    repository: https://github.com/huggingface/lerobot
+    commit: 3f2179f3b69708b6ad009b2e7685dd9d05269ee1
+  isaaclab:
+    repository: https://github.com/zfy-robot/IsaacLab
+    branch: s4/isaaclab-2.3.2-isaacsim-5.1
+    commit: f764c12a5ccf5cc6997de699653b4bb70e56a3f7
+    upstream_commit: 37ddf626871758333d6ed89cf64ad702aef127d0
+    repository_version: 2.3.2
+    python_package_version: 0.54.2
+    patches:
+      - file: patches/isaaclab/0001-guard-urdf-merge-fixed-ignore-inertia.patch
+        sha256: 1caeafe8effd7dea59586949a3524cb3be5c01a6c4dc47a081e3e19f621cd691
+
+platform:
+  os: ubuntu-22.04
+  architecture: x86_64
+  isaac_sim: 5.1.0.0
+  cuda_userspace: "12.8"
+  host_driver_policy:
+    linux_min_public_supported: 580.65.06
+    note: Host driver is injected at runtime and is never included in project images.
+  minimum_ram_gb: 32
+  recommended_ram_gb: 64
+  minimum_sim_vram_gb: 16
+  recommended_sim_vram_gb: 24
+  requires_rtx_rt_cores: true
+
+images:
+  sim:
+    ref: TODO_GHCR_SIM_IMAGE_WITH_DIGEST
+    dockerfile: docker/sim/Dockerfile
+  policy:
+    ref: TODO_GHCR_POLICY_IMAGE_WITH_DIGEST
+    dockerfile: docker/policy/Dockerfile
+  robot:
+    ref: TODO_GHCR_ROBOT_IMAGE_WITH_DIGEST
+    dockerfile: docker/robot/Dockerfile
+
+artifacts:
+  repository:
+    provider: modelscope
+    repo_type: dataset
+    repo_id: zfy2qiling/qiling_smolvla
+    revision: 3686874898fdf908431db487468f21a527507988
+    visibility: public
+    tree_hash_algorithm: sha256_of_sorted_sha256sum_lines_relative_to_artifact_root
+  vlm_runtime:
+    path: models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+    tree_sha256: 516913e4f4a5727716e9357d7564a91ce51c7b700b63c5c6cef7aa48f60f9c4c
+    mount: models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+  smolvla_base:
+    path: models/lerobot/smolvla_base
+    tree_sha256: 4501df6db4aad8c73b9836c3031a3cb7bdddb2e3cd0a057a40892efac8629132
+    mount: models/lerobot/smolvla_base
+  sim_dataset:
+    path: datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire
+    tree_sha256: 55dc2261f87572018662ccbe0c3258cd8eecbde592fc1c863b7674e325aa298b
+    contract_sha256: d81439c113ce6ed8b0f594d91d9823b6c7465c837bd8579901b9c7fbc91d6266
+    mount: datasets/sim/s4_drawer_insert_close_v4_12phase_serial_acquire
+  sim_policy:
+    path: policies/sim/drawer_insert_close_v4/350000/pretrained_model
+    tree_sha256: 9879851c097e38e1ebc947e2cc1e8a01a9301ab4e089cd55302eebe4bc1f4f63
+    contract_sha256: d81439c113ce6ed8b0f594d91d9823b6c7465c837bd8579901b9c7fbc91d6266
+    selected_step: 350000
+    mount: checkpoints/sim/drawer_insert_close_v4
+  real_dataset:
+    path: datasets/lerobot_data/s4_real_drawer_right_v1
+    tree_sha256: e6fa59382690ab2a707953247deec8030cb851707b5d5e70c6cdaf8d4d683b97
+    contract_sha256: 792de8a5373a1eb284febeaade03b9ae21adf880065ab13d8281d966bda90f68
+    visibility: public
+    mount: datasets/real/s4_real_drawer_right_v1
+  real_policy:
+    path: policies/real/drawer_right_v1/300000/pretrained_model
+    tree_sha256: 937d3c51249ff1306a49cc0a17265fa2b405acc3c79ff88e0b9b74093d5a38b1
+    contract_sha256: 792de8a5373a1eb284febeaade03b9ae21adf880065ab13d8281d966bda90f68
+    training_project_commit: eb930b2ca1ca62996c0e446d1733137f4954714f
+    selected_step: 300000
+    visibility: public
+    mount: checkpoints/real/right_drawer_open_close_v1
+  robot_assets:
+    path: assets/my_robot
+    tree_sha256: 0cf51d9f7bd9273efb1682569479c8db109b837baab710f97ccb6c2666321e78
+    visibility: public
+    mount: assets/my_robot
+  project_scene_assets:
+    path: assets/scenes
+    tree_sha256: 7b91e2cc116a94cd8b9fc5e7088bfa376ca2e7753eb8fd02a749c4b4124f0edc
+    visibility: public
+    mount: assets/scenes
+  isaac_assets:
+    provider: nvidia
+    version: 5.1.0
+    acquisition: direct_official_cdn_or_user_local_official_pack
+    lock_file: release/isaac_assets_5.1.lock.json
+    lock_sha256: 2344db528e3cbf0c22fa0545432ef122d1b3e40dfaa6417a1aa2b876637e8afb
+    file_count: 231
+    total_bytes: 523528659
+    local_manifest: s4_smolvla_isaaclab/local_assets/isaac/5.1/manifest.json
+    redistribution_approved: false
+    mount: assets/isaac/5.1
+
+contracts:
+  sim:
+    schema: s4_bimanual_v1
+    language: drawer_12phase_v4_serial_acquire
+    state_dim: 26
+    action_dim: 26
+    dataset_fps: 20
+    control_hz: 120
+  real:
+    schema: s4_real_vla_v2
+    policy_contract: s4_real_policy_v1
+    state_dim: 8
+    action_dim: 8
+    dataset_fps: 20
+    control_hz: 30
+
+release_gates:
+  require_clean_git: true
+  require_pip_check: true
+  forbid_user_site_packages: true
+  forbid_absolute_home_paths: true
+  require_artifact_hashes: true
+  require_dataset_checkpoint_contract_match: true
+  require_cuda_smoke: true
+  require_vulkan_nvidia_renderer: true
+  require_isaac_camera_smoke: true
+  require_fixed_seed_sim_rollout: true
+  require_robot_shadow_validation: true
+  automatic_live_robot_test: false

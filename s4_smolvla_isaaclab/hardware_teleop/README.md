@@ -176,7 +176,7 @@ hardware_teleop/
 
 ### 0. 真机系统 Python 局部依赖（无 Conda、无 venv）
 
-真机已检查为 Ubuntu 22.04 x86_64、Python 3.10、ROS Pinocchio 3.9.0。先查看计划，不写文件：
+发布镜像已检查为 Ubuntu 22.04 x86_64、Python 3.10、ROS Pinocchio 4.0.0。先查看计划，不写文件：
 
 ```bash
 bash run.sh teleop-hardware-system-prepare --check
@@ -188,7 +188,7 @@ bash run.sh teleop-hardware-system-prepare --check
 bash run.sh teleop-hardware-system-prepare --install
 ```
 
-固定安装 `scipy 1.15.2`、`aiohttp 3.14.3`、`qpsolvers 4.12.0`、`daqp 0.8.7`、`quadprog 0.1.13`。脚本刻意不安装 NumPy 和 Pinocchio，真机继续使用已有 NumPy 1.26.4 与 `/opt/ros/humble` 的 Pinocchio 3.9.0。
+固定安装 `scipy 1.15.2`、`aiohttp 3.14.3`、`qpsolvers 4.12.0`、`daqp 0.8.7`、`quadprog 0.1.13`。脚本刻意不安装 NumPy 和 Pinocchio；发布镜像使用 NumPy 1.26.4 与 `/opt/ros/humble` 的 Pinocchio 4.0.0。
 
 已检查的真机目前把上述五个包安装在 `~/.local`。机器人模板显式设置 `S4_HW_TELEOP_ALLOW_USER_SITE=1`，因此精确版本和 Pinocchio 来源检查通过后可以直接使用；项目局部目录仍是新安装时更隔离的首选。真机用户目录还存在 `pin/libpinocchio 4.1.0`，运行时必须看到 doctor 打印的实际 Pinocchio 路径位于 `/opt/ros/humble`。
 
@@ -196,10 +196,11 @@ bash run.sh teleop-hardware-system-prepare --install
 
 ### 真机 SDK 当前部署状态
 
-只读核查确认真机没有 `/usr/bin/sn_loco_server` 和 `/etc/qi-sdk`，所以源码树中的 `debian/start_sn_loco.sh` 当前不能直接使用。已经编译且包含 arm-only replay 处理器的 ELF 位于：
+`sn_loco_server` 的位置由机器人 SDK 安装方式决定。包含 arm-only replay 处理器的 ELF 可通过
+站点变量描述：
 
 ```text
-/home/coral/nanshan_south/qi_sdk_internal/install/qi_sdk/bin/sn_loco_server
+${QI_SDK_ROOT}/bin/sn_loco_server
 ```
 
 它的配置位于 `qi_sdk_internal/install/config/`，默认 `lo`、Domain 16，动态库检查无缺失。应继续使用机器人现有、已经验证的 SDK/站立控制启动流程；不要把 `debian/start_sn_loco.sh` 当成已安装服务。遥操和在线 doctor 会核查**实际运行进程**的二进制，不限定它必须安装在 `/usr/bin`。
@@ -232,7 +233,8 @@ cp hardware_teleop/config/ros_env.robot.example.sh \
    hardware_teleop/config/ros_env.local.sh
 ```
 
-该模板使用 `lo`、ROS Domain 16、CycloneDDS 和 `/usr/bin/python3`；Quest HTTPS 仍通过 `wlp44s0` 的 `192.168.110.35` 访问。
+该模板使用 `lo`、ROS Domain 16、CycloneDDS 和 `/usr/bin/python3`。Quest HTTPS 使用机器人
+控制电脑实际可达的局域网网卡和 IP，不把它们写入公共模板。
 
 验证：
 
@@ -248,7 +250,7 @@ source hardware_teleop/scripts/source_ros_env.sh
 证书 IP 必须是 Quest 能访问到的 **电脑局域网 IP**（不是 `127.0.0.1`）：
 
 ```bash
-bash run.sh teleop-cert --ip 192.168.110.63 --overwrite
+bash run.sh teleop-cert --ip <机器人控制电脑局域网IP> --overwrite
 ```
 
 证书路径：`.local/teleoperation/cert.pem` / `key.pem`
@@ -825,7 +827,7 @@ bash run.sh teleop-hardware-system-prepare --check
 bash run.sh teleop-hardware-system-prepare --install
 bash run.sh teleop-hardware-build
 cp hardware_teleop/config/ros_env.robot.example.sh hardware_teleop/config/ros_env.local.sh
-bash run.sh teleop-cert --ip 192.168.110.35 --overwrite
+bash run.sh teleop-cert --ip <机器人控制电脑局域网IP> --overwrite
 
 # 静态检查；SDK 启动后再加 --require-live-state
 bash run.sh teleop-hardware-doctor --robot-profile --require-daqp

@@ -28,6 +28,8 @@ def main() -> int:
     probe.add_argument("--max-episodes", type=int)
     serve = sub.add_parser("serve")
     serve.add_argument("--checkpoint", type=Path, required=True)
+    serve.add_argument("--bind")
+    serve.add_argument("--port", type=int)
     args = parser.parse_args()
     cfg = load_pipeline_config(args.config)
     if args.command == "raw-check":
@@ -45,10 +47,15 @@ def main() -> int:
         from real_vla_stack.host.dataset.lerobot_validator import validate_lerobot_dataset
 
         root = cfg.host_path_value("lerobot_root") / str(cfg.host["dataset"]["repo_id"])
+        raw_root = cfg.host_path_value("raw_root")
+        # A released LeRobot dataset is self-contained.  Source auditing is an
+        # additional maintainer check and must not make public consumers keep
+        # the workstation's raw capture tree.
+        source_audit_root = raw_root if raw_root.is_dir() else None
         print(
             json.dumps(
                 validate_lerobot_dataset(
-                    root, cfg.contract, raw_root=cfg.host_path_value("raw_root")
+                    root, cfg.contract, raw_root=source_audit_root
                 ),
                 indent=2,
             )
@@ -103,7 +110,11 @@ def main() -> int:
             rtc_execution_horizon=int(rtc.get("execution_horizon", 10)),
             rtc_max_guidance_weight=float(rtc.get("max_guidance_weight", 10.0)),
         )
-        serve_policy(runner, bind=str(server["bind"]), port=int(server["port"]))
+        serve_policy(
+            runner,
+            bind=str(args.bind or server["bind"]),
+            port=int(args.port or server["port"]),
+        )
         return 0
     raise AssertionError(args.command)
 

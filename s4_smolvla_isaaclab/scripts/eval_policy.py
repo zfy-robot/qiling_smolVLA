@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import hashlib
 import importlib
 import json
 import os
@@ -13,6 +14,7 @@ import select
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -151,6 +153,11 @@ parser.add_argument(
 parser.add_argument("--max-joint-step", type=float, default=0.050)
 parser.add_argument("--hand-max-joint-step", type=float, default=0.015)
 parser.add_argument("--reset-settle-s", type=float, default=2.0)
+parser.add_argument(
+    "--disposable-process",
+    action="store_true",
+    help="Exit immediately after flushed results; intended only for a disposable container smoke test.",
+)
 parser.add_argument("--gravity-compensation", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--gravity-comp-scale", type=float, default=1.0)
 AppLauncher.add_app_launcher_args(parser)
@@ -303,18 +310,41 @@ def validate_checkpoint_dataset_contract(checkpoint: Path, dataset_root: Path) -
         ),
         None,
     )
-    if checkpoint_contract_path is None:
-        raise ValueError(
-            f"Checkpoint has no dataset-language provenance: {checkpoint}. "
-            "Use a checkpoint trained by the active project training entrypoint."
-        )
     dataset_contract = json.loads(dataset_contract_path.read_text(encoding="utf-8"))
-    checkpoint_contract = json.loads(checkpoint_contract_path.read_text(encoding="utf-8"))
-    if checkpoint_contract != dataset_contract:
+    if checkpoint_contract_path is not None:
+        checkpoint_contract = json.loads(checkpoint_contract_path.read_text(encoding="utf-8"))
+        if checkpoint_contract != dataset_contract:
+            raise ValueError(
+                f"Checkpoint contract {checkpoint_contract_path} does not match dataset "
+                f"contract {dataset_contract_path}"
+            )
+        return
+
+    # Deployment-only checkpoints deliberately omit the training output tree.
+    # Bind the downloaded dataset to the release manifest's immutable contract
+    # digest, and also verify the dataset identity serialized by LeRobot.
+    expected_digest = os.environ.get("S4_ROLLOUT_CONTRACT_SHA256", "").strip().lower()
+    if not expected_digest:
         raise ValueError(
-            f"Checkpoint contract {checkpoint_contract_path} does not match dataset "
-            f"contract {dataset_contract_path}"
+            f"Checkpoint has no adjacent s4_dataset_contract.json: {checkpoint}. "
+            "Set the release-pinned S4_ROLLOUT_CONTRACT_SHA256."
         )
+    actual_digest = hashlib.sha256(dataset_contract_path.read_bytes()).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError(
+            f"Dataset contract SHA256 mismatch: expected={expected_digest} actual={actual_digest}"
+        )
+    train_config_path = checkpoint / "train_config.json"
+    train_config = json.loads(train_config_path.read_text(encoding="utf-8"))
+    trained_repo_id = str(train_config.get("dataset", {}).get("repo_id", ""))
+    if trained_repo_id.rsplit("/", 1)[-1] != dataset_root.name:
+        raise ValueError(
+            f"Checkpoint dataset repo_id={trained_repo_id!r} does not match {dataset_root.name!r}"
+        )
+    print(
+        f"[EVAL] deployment contract verified sha256={actual_digest} dataset={trained_repo_id}",
+        flush=True,
+    )
 
 
 def make_scene_cfg(project_cfg) -> SceneBuildCfg:
@@ -1355,5 +1385,16 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    finally:
+    except BaseException:
+        traceback.print_exc()
+        exit_code = 1
+    else:
+        exit_code = 0
+    if args_cli.disposable_process:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exit_code)
+    try:
         simulation_app.close()
+    finally:
+        raise SystemExit(exit_code)

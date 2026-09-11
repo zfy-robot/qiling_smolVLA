@@ -1,0 +1,26 @@
+From 589d5d3f38081eb6fb39375482b948d881176106 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] Guard optional URDF importer inertia API
+
+Isaac Sim URDF importer builds do not all expose
+set_merge_fixed_ignore_inertia. Preserve the configured behavior when the API
+exists and remain compatible when it does not.
+---
+ source/isaaclab/isaaclab/sim/converters/urdf_converter.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/source/isaaclab/isaaclab/sim/converters/urdf_converter.py b/source/isaaclab/isaaclab/sim/converters/urdf_converter.py
+index ba80f52035..ffbfe4474f 100644
+--- a/source/isaaclab/isaaclab/sim/converters/urdf_converter.py
++++ b/source/isaaclab/isaaclab/sim/converters/urdf_converter.py
+@@ -140,7 +140,8 @@ class UrdfConverter(AssetConverterBase):
+         import_config.set_collision_from_visuals(self.cfg.collision_from_visuals)
+         # consolidating links that are connected by fixed joints
+         import_config.set_merge_fixed_joints(self.cfg.merge_fixed_joints)
+-        import_config.set_merge_fixed_ignore_inertia(self.cfg.merge_fixed_joints)
++        if hasattr(import_config, "set_merge_fixed_ignore_inertia"):
++            import_config.set_merge_fixed_ignore_inertia(self.cfg.merge_fixed_joints)
+         # -- physics settings
+         # create fix joint for base link
+         import_config.set_fix_base(self.cfg.fix_base)
+-- 
+2.34.1

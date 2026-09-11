@@ -1,0 +1,12 @@
+.git
+**/.git
+**/__pycache__
+**/*.py[cod]
+**/.cache
+release/staging
+docker/runtime
+docker/vendor
+IsaacLab
+lerobot
+s4_smolvla_isaaclab
+**/.env

@@ -36,7 +36,10 @@ SCENE_ASSET_ISAAC_DIR = Path(
 ) / "Isaac"
 DEFAULT_SCENE_USD = SCENE_ASSET_ISAAC_DIR / "Environments" / "Simple_Warehouse" / "warehouse.usd"
 DEFAULT_TABLE_USD = SCENE_ASSET_ISAAC_DIR / "Props" / "PackingTable" / "packing_table.usd"
-PILL_BOTTLE_USDZ = PROJECT_ROOT / "assets" / "scenes" / "Pill_Bottle.usdz"
+PROJECT_SCENE_ASSET_ROOT = Path(
+    os.environ.get("S4_PROJECT_SCENE_ASSET_ROOT", PROJECT_ROOT / "assets" / "scenes")
+).expanduser()
+PILL_BOTTLE_USDZ = PROJECT_SCENE_ASSET_ROOT / "Pill_Bottle.usdz"
 
 BLOCK_CYLINDER_RADIUS = 0.035
 BLOCK_CYLINDER_HEIGHT = 0.12

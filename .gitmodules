@@ -1,3 +1,7 @@
 [submodule "lerobot"]
 	path = lerobot
 	url = https://github.com/huggingface/lerobot.git
+[submodule "IsaacLab"]
+	path = IsaacLab
+	url = https://github.com/zfy-robot/IsaacLab.git
+	branch = s4/isaaclab-2.3.2-isaacsim-5.1

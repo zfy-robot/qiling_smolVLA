@@ -91,6 +91,11 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--model-root", type=Path)
     parser.add_argument("--output-root", type=Path)
+    parser.add_argument(
+        "--artifact-root",
+        type=Path,
+        help="policy/evaluation tree to scan; defaults to --output-root",
+    )
     parser.add_argument("--check", action="store_true", help="verify only; do not rewrite")
     args = parser.parse_args()
 
@@ -103,16 +108,19 @@ def main() -> None:
         "model": (args.model_root or project_root / "models").resolve(),
         "output": (args.output_root or project_root / "outputs").resolve(),
     }
-    artifact_root = roots["output"]
+    artifact_root = (args.artifact_root or roots["output"]).resolve()
     # Only released policy metadata and completed evaluation summaries contain
     # resolved resource paths. Avoid touching live optimizer/scheduler state if
     # two containers intentionally share the same output volume.
     json_paths = []
     if artifact_root.is_dir():
-        json_paths = sorted(
-            set(artifact_root.glob("train/**/pretrained_model/*.json"))
-            | set(artifact_root.glob("eval/**/summary.json"))
-        )
+        if artifact_root.name == "pretrained_model":
+            json_paths = sorted(artifact_root.glob("*.json"))
+        else:
+            json_paths = sorted(
+                set(artifact_root.glob("train/**/pretrained_model/*.json"))
+                | set(artifact_root.glob("eval/**/summary.json"))
+            )
     rewritten_files = 0
     rewritten_values = 0
     unresolved: list[tuple[Path, str, str]] = []

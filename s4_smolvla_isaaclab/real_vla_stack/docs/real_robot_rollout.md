@@ -21,13 +21,13 @@
 | Robot execute horizon | 35 steps | ActionBuffer 最多保留 1.75 s |
 | Replan interval | 10 steps | 每 0.5 s 请求一次新计划 |
 | RTC horizon | 10 steps | RTC 的执行/overlap 窗口为 0.5 s |
-| Server endpoint | `192.168.110.87:5555` | ZeroMQ LAN policy server |
+| Server endpoint | `${S4_POLICY_SERVER_HOST}:5555` | ZeroMQ LAN policy server |
 
 ## 2. 系统架构
 
 ```mermaid
 flowchart LR
-    subgraph Robot[Robot 192.168.110.35]
+    subgraph Robot[Robot control computer]
         CAM[head + wrist_right cameras]
         STATE[Measured q7 + gripper state]
         OBS[Timestamped observation]
@@ -41,7 +41,7 @@ flowchart LR
         ARM --> STATE
     end
 
-    subgraph Host[Inference host 192.168.110.87]
+    subgraph Host[GPU inference host]
         SERVER[Policy server]
         PRE[Preprocessor]
         MODEL[SmolVLA checkpoint]
@@ -348,28 +348,29 @@ per-joint velocity / acceleration limits
 ### Host：检查并启动 server
 
 ```bash
-cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+cd "$(git rev-parse --show-toplevel)"
 
-bash real_vla_stack/run.sh checkpoint-check \
-  --checkpoint /home/zfy/real_outputs/right_drawer_open_close_v1_smolvla_base_ft_full/checkpoints/300000/pretrained_model
+./s4 verify real-policy
 
-bash real_vla_stack/run.sh serve \
-  --checkpoint /home/zfy/real_outputs/right_drawer_open_close_v1_smolvla_base_ft_full/checkpoints/300000/pretrained_model
+docker compose --profile real up policy-server
 ```
 
 ### Robot：预检、shadow、live
 
 ```bash
-cd /home/coral/qirobot_smolVLA/s4_smolvla_isaaclab
+cd "$(git rev-parse --show-toplevel)"
 
 # 不发布运动命令
-sudo -E bash real_vla_stack/run.sh rollout --live --preflight-only
+docker compose --profile real run --rm robot \
+  bash real_vla_stack/run.sh rollout --live --preflight-only
 
 # shadow：不带 --live，不创建硬件命令 publisher
-sudo -E bash real_vla_stack/run.sh rollout --max-runtime-s 30
+docker compose --profile real run --rm robot \
+  bash real_vla_stack/run.sh rollout --max-runtime-s 30
 
 # 首次 live：先 5 秒
-sudo -E bash real_vla_stack/run.sh rollout --live --max-runtime-s 5
+docker compose --profile real run --rm robot \
+  bash real_vla_stack/run.sh rollout --live --max-runtime-s 5
 ```
 
 Host response 中的 checkpoint 路径字符串必须与 robot 配置中的 `deployment.checkpoint` 完全一致。Robot 不需要保存模型文件，但不能把该配置改成 robot 本机路径。

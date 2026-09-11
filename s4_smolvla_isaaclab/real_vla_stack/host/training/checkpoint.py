@@ -22,6 +22,7 @@ def check_checkpoint(
     checkpoint: Path,
     *,
     run_inference: bool = False,
+    manifest_output: Path | None = None,
 ) -> dict[str, Any]:
     model = resolve_checkpoint(checkpoint)
     payload = json.loads((model / "config.json").read_text(encoding="utf-8"))
@@ -40,12 +41,26 @@ def check_checkpoint(
     missing = [name for name in required if not (model / name).is_file()]
     if missing:
         raise FileNotFoundError(f"checkpoint missing inference processors: {missing}")
-    provenance = next(
+    contract_provenance = next(
         (parent / "s4_dataset_contract.json" for parent in [model, *model.parents] if (parent / "s4_dataset_contract.json").is_file()),
         None,
     )
-    if provenance is None or PolicyContract.read(provenance).sha256 != config.contract.sha256:
-        raise ValueError("checkpoint dataset contract provenance is missing or mismatched")
+    provenance_kind = "dataset_contract"
+    if contract_provenance is not None:
+        if PolicyContract.read(contract_provenance).sha256 != config.contract.sha256:
+            raise ValueError("checkpoint dataset contract provenance is mismatched")
+    else:
+        # Deployment releases contain only pretrained_model/.  Their signed-off
+        # deployment manifest is therefore the self-contained provenance record.
+        deployment_manifest = model / "deployment_manifest.json"
+        if not deployment_manifest.is_file():
+            raise ValueError("checkpoint dataset contract provenance is missing")
+        deployed = json.loads(deployment_manifest.read_text(encoding="utf-8"))
+        if deployed.get("contract_sha256") != config.contract.sha256:
+            raise ValueError("checkpoint deployment contract provenance is mismatched")
+        if deployed.get("lerobot_commit") != config.contract.lerobot_commit:
+            raise ValueError("checkpoint deployment LeRobot provenance is mismatched")
+        provenance_kind = "deployment_manifest"
     repo_root = Path(__file__).resolve().parents[4]
     git_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo_root, capture_output=True, text=True, check=False
@@ -53,6 +68,7 @@ def check_checkpoint(
     manifest = {
         "checkpoint": str(model),
         "contract_sha256": config.contract.sha256,
+        "provenance": provenance_kind,
         "git_commit": git_commit,
         "lerobot_commit": config.contract.lerobot_commit,
         "state_dim": 8,
@@ -91,7 +107,8 @@ def check_checkpoint(
         if chunk.shape != expected or not np.isfinite(chunk).all():
             raise ValueError(f"offline inference output shape={chunk.shape}, expected={expected}")
         manifest["offline_inference"] = {"passed": True, "action_chunk_shape": list(chunk.shape)}
-    (model / "deployment_manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
+    if manifest_output is not None:
+        output = Path(manifest_output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest

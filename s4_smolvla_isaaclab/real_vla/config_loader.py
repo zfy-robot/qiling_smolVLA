@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,18 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise TypeError(f"{path} must contain a mapping")
+    raw_root = os.environ.get("S4_RAW_ROOT", str(PROJECT_ROOT / "outputs" / "raw"))
+
+    def expand(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: expand(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [expand(item) for item in value]
+        if isinstance(value, str):
+            return os.path.expandvars(value.replace("${S4_RAW_ROOT}", raw_root))
+        return value
+
+    payload = expand(payload)
     return payload
 
 
@@ -191,7 +204,10 @@ def load_collection_config(path: Path | None = None) -> CollectionConfig:
     if "head" in (raw.get("cameras") or {}):
         cameras_raw = raw["cameras"]
     else:
-        cameras_raw = _read_yaml(config_dir / cameras_rel)
+        cameras_path = config_dir / cameras_rel
+        if not cameras_path.is_file() and cameras_path.name == "cameras.yaml":
+            cameras_path = cameras_path.with_name("cameras.example.yaml")
+        cameras_raw = _read_yaml(cameras_path)
 
     active_arm = str(robot_raw.get("active_arm", "right"))
     if active_arm not in {"left", "right"}:

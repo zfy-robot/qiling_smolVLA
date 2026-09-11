@@ -11,12 +11,16 @@ S4 38DOF 全尺寸人形机器人配置 (新版 linkerhand_o6 手)
   固定关节 (×2):      lh_hand_mount, rh_hand_mount (wrist → hand_base_link)
 """
 
+import os
 from pathlib import Path
 
 # ----- 路径 -----
 PROJECT_ROOT = Path(__file__).parent.parent
-URDF_PATH = PROJECT_ROOT / "assets" / "my_robot" / "urdf" / "s4_40dof_merged.urdf"
-MESHES_DIR = PROJECT_ROOT / "assets" / "my_robot" / "meshes"
+ROBOT_ASSET_ROOT = Path(
+    os.environ.get("S4_ROBOT_ASSET_ROOT", PROJECT_ROOT / "assets" / "my_robot")
+).expanduser()
+URDF_PATH = ROBOT_ASSET_ROOT / "urdf" / "s4_40dof_merged.urdf"
+MESHES_DIR = ROBOT_ASSET_ROOT / "meshes"
 
 # ============================================================
 #  关节分组 & 名称

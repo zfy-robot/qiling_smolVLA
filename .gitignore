@@ -1,12 +1,18 @@
 __pycache__/
 *.py[cod]
+.env
 .cache/
 datasets/
 models/
 outputs/
-# External IsaacLab checkout copied locally only for the complete Docker release.
-# It is intentionally not tracked by this repository.
-/IsaacLab/
 /docker/release-manifest.env
 /docker/ISAACLAB_COMMIT
 /docker/vendor/
+/docker/runtime/
+
+# Local release resolution and downloaded runtime storage.  The example manifest
+# is tracked; the resolved manifest may contain private ModelScope revisions.
+/release/manifest.yaml
+/release/staging/
+!/release/staging/.gitkeep
+/.s4/
