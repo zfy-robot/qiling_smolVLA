@@ -153,7 +153,7 @@ if ! [[ "$MASTER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( MASTER_PORT > 65535 )); the
     exit 2
 fi
 if (( NUM_GPUS == 1 )) && [[ -n "$GPU_IDS" ]]; then
-    echo "--gpu-ids is only valid with --num-gpus greater than 1. In Docker, select the physical GPU with docker/run.sh --gpus N; it becomes cuda:0." >&2
+    echo "--gpu-ids is only valid with --num-gpus greater than 1. Docker GPU exposure is managed by the root compose.yaml; use CUDA_VISIBLE_DEVICES or a Compose override before ./s4 train." >&2
     exit 2
 fi
 if (( NUM_GPUS > 1 )); then

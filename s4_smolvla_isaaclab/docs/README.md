@@ -7,19 +7,20 @@
 | 文档 | 内容 | 适合读者 |
 |---|---|---|
 | [README.md](../README.md) | 项目介绍、从克隆到首次 Rollout | 第一次使用项目的人 |
-| [REPRODUCTION.md](REPRODUCTION.md) | 双 Conda 环境、版本导出、外部仓库、资产、模型、数据与 checkpoint 部署 | 负责安装、迁移和交付的人 |
+| [REPRODUCTION.md](REPRODUCTION.md) | 三镜像、GHCR/ModelScope、NVIDIA 资产、真机拓扑与分层验收 | 负责安装、迁移和交付的人 |
 | [PIPELINE.md](PIPELINE.md) | 采集、转换、检查、训练、Rollout、核心契约和故障定位 | 负责实验和成功率优化的人 |
 
 专项文档不重复上述工程契约：
 
 | 文档 | 内容 |
 |---|---|
-| [Docker README](../../docker/README.md) | 完整镜像构建、宿主 preflight、GPU 选择、迁移和分 profile 验证 |
+| [Docker README](../../docker/README.md) | 模块化镜像、挂载边界、宿主 preflight 和验证入口 |
 | [真机遥操 README](../hardware_teleop/README.md) | 无 Isaac 的 Pink/ROS2/Quest 真机链路与分级安全联调 |
 
-课程教程位于 [course/](course/index.md)，它不是命令手册，而是按“原理 → 实现 → 部署”讲解整个系统。
+课程教程位于 [course/](course/index.md)，按“统一理论 → 仿真/真机双链路 → 代码实现”讲解
+整个系统；命令事实仍由当前入口和配置决定。
 
-## 当前活动基线
+## 当前仿真活动基线
 
 | 项目 | 当前配置 |
 |---|---|
@@ -53,16 +54,22 @@ bash run.sh dataset-check --help
 bash run.sh train --help
 ```
 
-Docker 发布入口位于仓库顶层；以下命令应从顶层 `smolVLA/` 目录执行：
+Docker 发布入口位于仓库顶层；以下命令应从顶层目录执行：
 
 ```bash
-bash docker/host_preflight.sh --gpu 0
-S4_IMAGE=s4-smolvla:full-v4-r1 bash docker/run.sh --gpus 0 verify
+./s4 preflight
+./s4 pull sim
+./s4 verify sim
 ```
 
 `run.sh` 负责选择正确的 Python 环境。不要在同一解释器中同时导入 Isaac Sim 和当前 LeRobot/SmolVLA 依赖。
 
-当前在线 Rollout 也需要两个环境：`env_isaaclab` 运行仿真，`smolvla` 运行本机 Policy Server。它不是只安装 IsaacLab 就能运行的单环境入口。
+当前仿真 Rollout 的 sim 镜像包含两个隔离环境：`env_isaaclab` 运行仿真，`smolvla` 子进程运行
+policy。训练/真机推理使用独立 policy 镜像，真机控制使用 robot 镜像。
+
+真机当前基线为 `s4_real_vla_v2` raw、`s4_real_policy_v1` contract、右臂 7D + 逻辑夹爪
+1D、头部/右腕两相机、20 Hz policy 与 30 Hz 控制。详细链路见课程 6.2、6.3 和
+[`real_vla_stack`](../real_vla_stack/README.md)。
 
 当前离线 `preview` 入口存在一个已确认的路径限制：必须从项目根目录使用
 `PYTHONPATH="$PWD" bash run.sh preview ...`。其他统一入口不需要这个前缀；详情见

@@ -7,17 +7,17 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = PROJECT_ROOT.parent
-DOCKER_RUN = WORKSPACE_ROOT / "docker/run.sh"
+S4 = WORKSPACE_ROOT / "s4"
 DOCKER_VERIFY = WORKSPACE_ROOT / "docker/verify_runtime.sh"
 
 
-def test_docker_gpu_wrapper_builds_device_request_and_train_profile(tmp_path: Path) -> None:
+def test_release_pull_uses_manifest_digest_and_local_compose_tag(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     capture = tmp_path / "docker-args.txt"
     fake_docker = fake_bin / "docker"
     fake_docker.write_text(
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$DOCKER_ARGS_CAPTURE\"\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> \"$DOCKER_ARGS_CAPTURE\"\n",
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
@@ -26,11 +26,12 @@ def test_docker_gpu_wrapper_builds_device_request_and_train_profile(tmp_path: Pa
         {
             "PATH": f"{fake_bin}:{env['PATH']}",
             "DOCKER_ARGS_CAPTURE": str(capture),
+            "S4_SIM_IMAGE": "local/s4-sim:test",
         }
     )
 
     result = subprocess.run(
-        ["bash", str(DOCKER_RUN), "--gpus", "4,5", "verify-train"],
+        ["bash", str(S4), "pull", "sim"],
         cwd=WORKSPACE_ROOT,
         env=env,
         text=True,
@@ -39,85 +40,40 @@ def test_docker_gpu_wrapper_builds_device_request_and_train_profile(tmp_path: Pa
     )
 
     assert result.returncode == 0, result.stderr
-    args = capture.read_text(encoding="utf-8").splitlines()
-    gpu_flag = args.index("--gpus")
-    assert args[gpu_flag + 1] == "device=4,5"
-    assert "S4_DOCKER_SELECTED_GPU_COUNT=2" in args
-    assert args[-3:] == ["s4-verify-runtime", "--profile", "train"]
+    remote = (
+        "ghcr.io/zfy-robot/qiling-smolvla-sim@"
+        "sha256:e0fb24a132c27ef271e20fd234fa215d34cf2e331296010f3f92d0ee55288c44"
+    )
+    assert capture.read_text(encoding="utf-8").splitlines() == [
+        "image",
+        "pull",
+        remote,
+        "image",
+        "tag",
+        remote,
+        "local/s4-sim:test",
+    ]
+    assert f"[S4][PULL] ready: local/s4-sim:test <- {remote}" in result.stdout
 
 
-def test_docker_gpu_wrapper_rejects_invalid_selection_without_running_docker(
-    tmp_path: Path,
-) -> None:
+def test_release_pull_rejects_unknown_service_without_running_docker(tmp_path: Path) -> None:
     fake_docker = tmp_path / "docker"
     fake_docker.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
     fake_docker.chmod(0o755)
     env = os.environ.copy()
     env["PATH"] = f"{tmp_path}:/usr/bin:/bin"
+
     result = subprocess.run(
-        ["/bin/bash", str(DOCKER_RUN), "--gpus", "0,a", "verify"],
+        ["/bin/bash", str(S4), "pull", "unknown"],
         cwd=WORKSPACE_ROOT,
         env=env,
         text=True,
         capture_output=True,
         check=False,
     )
+
     assert result.returncode == 2
-    assert "Invalid GPU spec" in result.stderr
-
-
-def test_docker_compose_wrapper_forwards_image_and_selected_gpu_count(
-    tmp_path: Path,
-) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    capture = tmp_path / "docker-compose.txt"
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(
-        "#!/usr/bin/env bash\n"
-        "{\n"
-        "  printf 'S4_IMAGE_INTERNAL=%s\\n' \"${S4_IMAGE_INTERNAL:-}\"\n"
-        "  printf 'S4_GPUS_INTERNAL=%s\\n' \"${S4_GPUS_INTERNAL:-}\"\n"
-        "  printf 'S4_SELECTED_GPU_COUNT_INTERNAL=%s\\n' "
-        "\"${S4_SELECTED_GPU_COUNT_INTERNAL:-}\"\n"
-        "  printf 'ARG=%s\\n' \"$@\"\n"
-        "} > \"$DOCKER_ARGS_CAPTURE\"\n",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o755)
-    env = os.environ.copy()
-    env.update(
-        {
-            "PATH": f"{fake_bin}:{env['PATH']}",
-            "DOCKER_ARGS_CAPTURE": str(capture),
-        }
-    )
-
-    result = subprocess.run(
-        [
-            "bash",
-            str(DOCKER_RUN),
-            "--compose",
-            "--image",
-            "example/full-v4:test",
-            "--gpus",
-            "2,7",
-            "verify-train",
-        ],
-        cwd=WORKSPACE_ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    output = capture.read_text(encoding="utf-8")
-    assert "S4_IMAGE_INTERNAL=example/full-v4:test" in output
-    assert "S4_GPUS_INTERNAL=2,7" in output
-    assert "S4_SELECTED_GPU_COUNT_INTERNAL=2" in output
-    assert "ARG=--gpus\nARG=device=2,7" in output
-    assert "ARG=s4-verify-runtime\nARG=--profile\nARG=train" in output
+    assert "Unknown pull target" in result.stderr
 
 
 def test_rollout_verifier_runs_camera_check_as_a_script() -> None:

@@ -354,7 +354,7 @@ def main() -> int:
     )
     session_id = uuid.uuid4().hex
     run_root = (
-        Path.home()
+        cfg.host_path_value("output_root")
         / "real_rollouts"
         / f"rollout_{time.strftime('%Y%m%d_%H%M%S')}_{session_id[:8]}"
     )

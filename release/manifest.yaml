@@ -6,6 +6,8 @@ source:
   project:
     repository: https://github.com/zfy-robot/qiling_smolVLA
     commit: 86fab172e974c06d65828f228ac030bb1cee8c4f
+    commit_scope: environment_image_build_source
+    release_source: refs/tags/v0.1.0
   lerobot:
     repository: https://github.com/huggingface/lerobot
     commit: 3f2179f3b69708b6ad009b2e7685dd9d05269ee1
@@ -149,6 +151,9 @@ contracts:
     control_hz: 30
 
 validation:
+  scope: local_host_complete_validation
+  validated_on: 2026-09-11
+  cross_device_reproduction: deferred_due_schedule
   host:
     gpu: NVIDIA GeForce RTX 4090
     driver: 580.159.03
@@ -159,6 +164,7 @@ validation:
   real_policy_offline_inference: passed
   real_policy_zmq_protocol: passed
   robot_no_hardware: passed
+  robot_physical_validation_scope: deferred_not_claimed
   robot_physical_camera: deferred_until_hardware_connected
   robot_feedback_shadow: deferred_until_hardware_connected
   robot_live_motion: manual_gate_not_run

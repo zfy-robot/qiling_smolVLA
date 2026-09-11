@@ -1,581 +1,252 @@
-# 6.1 SmolVLA 原理与任务设计
+# 6.1 VLA 原理与统一契约
 
-::: info 本节要点
-本章从 VLA 与 SmolVLA 的模型原理出发，一层层搭起项目架构、核心数据契约与仿真任务设计的方法。读本章前不必先跑通项目；要紧处在于，把住后续实现为何采用三路视觉、26D 绝对关节动作、Action Chunk、分层随机化与独立 Policy Server 的那根主线——明白了"为什么"，实现里的每处选择才都显得顺理成章。
+::: info 本章定位
+本章只回答“为什么”。先建立模仿学习、SmolVLA、动作块、时间对齐和闭环安全的共同理论，
+再解释仿真与真机为什么可以采用相同学习范式，却必须使用不同的数据契约。
 :::
 
----
+## 6.1.1 从示范到闭环策略
 
-## 6.1.1 VLA 与 SmolVLA 的基本原理
+### 6.1.1.1 行为克隆与 VLA
 
-### 本节目标
-
-理解 VLA 在机器人系统中的位置，以及当前 LeRobot 实现中的 SmolVLA 如何把图像、语言和机器人状态转换成连续动作序列。
-
-### 6.1.1.1 从模块化机器人系统到学习策略
-
-传统机器人系统通常将任务拆成感知、状态估计、任务规划、运动规划和控制等模块。它的优势是约束明确、容易单独验证；缺点是每个模块需要建模，复杂视觉和接触任务中的误差会跨模块传播。
-
-模仿学习（Imitation Learning）通过专家示范学习策略。最直接的方法是行为克隆（Behavior Cloning, BC）：给定专家观测与动作对，训练模型预测专家动作。VLA 在此基础上增加了视觉和语言条件，让同一个策略接口可以同时处理场景信息、任务语义和机器人自身状态。
-
-```mermaid
-flowchart TB
-    subgraph Traditional[传统模块化系统]
-        T1[相机] --> T2[目标检测/位姿估计]
-        T2 --> T3[任务与运动规划]
-        T3 --> T4[IK/轨迹]
-        T4 --> T5[关节控制器]
-    end
-    subgraph VLA[VLA 系统]
-        V1[图像 + 语言 + 状态] --> V2[VLA 策略]
-        V2 --> V3[动作序列]
-        V3 --> V4[限幅/插值/关节控制器]
-    end
-```
-
-VLA 并没有消除底层系统。它改变的是“如何产生策略动作”，而动作是否安全、能否跟踪、是否发生碰撞，仍由机器人控制与物理系统决定。
-
-> 技术要点：VLA 输出动作，但真正执行动作的仍然是机器人控制系统。
-
-### 6.1.1.2 VLA 的输入与输出
-
-在时刻 (t)，可以把多模态观测写成：
+模仿学习把专家示范表示为一组时序样本：
 
 $$
-o_t=\{I_t^1,I_t^2,\ldots,I_t^K,s_t,\ell\}
+\mathcal{D}=\{(o_t,a_t)\}_{t=1}^{N},
 $$
 
-其中：
+其中观测 $o_t$ 包含视觉、语言和机器人状态，动作 $a_t$ 是专家在同一时刻希望执行的控制
+目标。行为克隆通过最小化预测动作与专家动作之间的差异学习策略 $\pi_\theta$。
 
-- (I_t^k) 是第 (k) 路相机图像；
-- (s_t) 是机器人当前状态；
-- (ell) 是自然语言任务；
-- (o_t) 是送入策略的完整条件。
+VLA（Vision-Language-Action）在普通行为克隆上增加视觉和语言条件：
 
-本项目的实际输入输出如下。
+$$
+\pi_\theta(I_t^1,\ldots,I_t^K,s_t,\ell)\rightarrow A_t.
+$$
 
-| 模态 | 当前字段 | 含义 |
-|---|---|---|
-| Vision | `chest_front_rgb` | 全局任务、双臂、抽屉和物体关系 |
-| Vision | `left_wrist_rgb` | 左手与把手、抽屉的局部关系 |
-| Vision | `right_wrist_rgb` | 右手与罐子的近距离关系 |
-| Language | task text | 当前阶段或任务动作描述 |
-| State | `observation.state` | 26D 双臂和灵巧手状态 |
-| Action | `action` | 26D 绝对关节目标 |
+- $I_t^k$：第 $k$ 路相机图像；
+- $s_t$：机器人状态；
+- $\ell$：任务或阶段语言；
+- $A_t$：从当前时刻开始的一段动作序列。
 
-VLA 与常见方法的边界是：
-
-| 方法 | 主要条件 | 主要输出 | 典型限制 |
-|---|---|---|---|
-| 传统视觉抓取 | 图像、标定、物体模型 | 抓取位姿 | 通常任务范围窄 |
-| 端到端 BC | 观测 | 动作 | 未必具有语言接口 |
-| 强化学习 | 状态、奖励 | 动作 | 奖励和交互成本高 |
-| LLM 任务规划 | 文本、符号状态 | 高层步骤 | 不直接产生高频连续动作 |
-| VLA | 图像、语言、机器人状态 | 连续动作或动作块 | 强依赖示范覆盖和闭环设计 |
-
-### 6.1.1.3 SmolVLA 的定位
-
-**官方资料**将 SmolVLA 定位为轻量级、约 450M 参数的 VLA。它由视觉语言模型（Vision-Language Model, VLM）和动作专家（Action Expert）组成，目标是在较低训练与推理成本下学习通用的视觉语言条件机器人策略。
-
-当前本地 LeRobot 实现使用 `SmolVLM2-500M-Video-Instruct` 作为 VLM 基座。图像 token、语言 token 和投影后的机器人状态组成条件前缀；带噪动作与扩散时间组成动作后缀；动作专家预测将噪声轨迹转向专家动作的速度场。
+VLA 替代的是“如何产生高层连续动作目标”，不是整个机器人系统。碰撞、关节限制、状态新鲜
+度、急停、执行器跟踪和最终成功判定仍属于控制与安全层。
 
 ```mermaid
 flowchart LR
-    C1[胸前 RGB] --> VE[视觉编码器]
-    C2[左腕 RGB] --> VE
-    C3[右腕 RGB] --> VE
-    L[任务语言] --> TE[语言嵌入]
-    S[26D 状态] --> SP[State Projection]
-    VE --> P[多模态条件前缀]
-    TE --> P
-    SP --> P
-    N[带噪 50×32 动作] --> E[Action Expert]
-    TIME[Flow 时间] --> E
-    P --> E
-    E --> V[速度场]
-    V --> A[50×26 动作块]
+    O[图像 + 语言 + 状态] --> P[VLA 策略]
+    P --> A[动作块]
+    A --> G[契约检查与安全限制]
+    G --> C[控制器/执行器]
+    C --> W[环境与机器人]
+    W --> O
 ```
 
-图中的 32 是模型动作 padding 上限，真正输出给本项目的是去除 padding 后的 26 维动作。
+### 6.1.1.2 为什么必须闭环
 
-### 6.1.1.4 Action Chunk
+训练数据来自专家分布，rollout 时模型会访问自己动作造成的新状态。一次小误差可能使下一帧
+观测偏离专家轨迹，随后继续累积，这就是行为克隆常见的分布偏移。
 
-SmolVLA 不是只预测一个动作，而是预测长度为 (H) 的动作块：
-
-$$
-A_t=[a_t,a_{t+1},\ldots,a_{t+H-1}]
-$$
-
-当前训练配置中 (H=50)。在 20 Hz 数据频率下，完整动作块覆盖 2.5 秒。但这不表示 Rollout 必须盲目执行 2.5 秒：当前在线控制默认每 30 个策略帧，即 1.5 秒，重新获取观测并预测新动作块。
+因此项目不是把模型生成的一整段动作盲目执行到底，而是周期性重新观测、推理和替换计划：
 
 ```text
-策略帧:      0---------19 20--------39 40--------
-Chunk A:     [=============== 50 frames ===============]
-Chunk B:                    [=============== 50 frames ===============]
-Chunk C:                                  [=============== 50 frames ===============]
-重规划:      ^            ^             ^
-             0 s          1 s           2 s
+观测 → 预测动作块 → 执行一部分 → 新观测 → 重规划 → ……
 ```
 
-Action Chunk 的收益是让模型学习运动的局部时间结构，并减少逐帧推理开销。代价是动作块越长、重规划越慢，模型越不容易根据新视觉状态纠偏。
+闭环频率越高，纠偏越及时，但推理、网络和计划边界造成的抖动也越明显；频率越低，动作更
+连贯，但对场景变化反应更慢。两条链路采用不同的重规划实现，理论目标相同。
 
-### 6.1.1.5 State/Action normalization
+## 6.1.2 SmolVLA 如何生成动作
 
-机器人不同关节的数值范围可能不同。直接使用原始数值会让大范围维度主导损失，因此 LeRobot 的 preprocessor 使用数据集统计量对状态和动作做 mean-std 标准化：
+### 6.1.2.1 多模态条件与动作专家
 
-$$
-\hat{x}=\frac{x-\mu}{\sigma+\epsilon}
-$$
-
-推理后，postprocessor 再恢复物理量：
-
-$$
-x=\hat{x}(\sigma+\epsilon)+\mu
-$$
-
-当前 SmolVLA processor 的顺序可以概括为：
+当前 LeRobot SmolVLA 使用本地 `SmolVLM2-500M-Video-Instruct` 作为视觉语言基座，并由动作
+专家产生连续机器人动作。图像、任务语言和投影后的状态构成条件；动作专家在这些条件下对
+带噪动作进行去噪式生成。
 
 ```mermaid
 flowchart LR
-    O[原始观测] --> R[字段匹配]
-    R --> B[增加 Batch 维]
-    B --> T[任务文本换行与分词]
-    T --> D[移动到设备]
-    D --> N[State/Action 标准化]
-    N --> M[SmolVLA]
-    M --> U[Action 反标准化]
-    U --> C[CPU 连续动作]
+    I[多路 RGB] --> V[VLM 视觉表示]
+    L[任务语言] --> V
+    S[机器人状态] --> SP[State projection]
+    V --> E[Action Expert]
+    SP --> E
+    N[带噪动作轨迹] --> E
+    T[Flow 时间] --> E
+    E --> A[物理维度动作块]
 ```
 
-图像使用 `IDENTITY` normalization，但仍进行模型侧的缩放、padding 和视觉编码。状态和动作使用 `MEAN_STD`。
+项目配置中的 `max_state_dim` 和 `max_action_dim` 是模型内部 padding 上限，不是机器人真实
+自由度。仿真最终截取 26D，真机最终截取 8D。
 
-### 6.1.1.6 Flow Matching 动作学习
+### 6.1.2.2 Flow Matching
 
-训练时，设专家动作块为 $A$，高斯噪声为 $\epsilon$，随机时间为
-$\tau\in(0,1]$。当前实现构造：
-
-$$
-x_\tau=\tau\epsilon+(1-\tau)A
-$$
-
-当 $\tau\rightarrow1$ 时，输入接近噪声；当 $\tau\rightarrow0$ 时，输入接近专家动作。
-目标速度为：
+设专家动作块为 $A$，高斯噪声为 $\epsilon$，随机时间为 $\tau\in(0,1]$。训练构造中间状态：
 
 $$
-u_\tau=\epsilon-A
+x_\tau=\tau\epsilon+(1-\tau)A,
 $$
 
-模型学习条件速度场：
+并让模型学习把噪声轨迹引向专家动作的速度场。推理时从噪声开始，经过若干数值积分步骤得到
+动作块。课程需要把握的重点不是积分器细节，而是：模型输出具有随机性，且相邻两次预测的
+重叠部分不必完全一致，所以 rollout 必须处理计划替换和连续性。
+
+### 6.1.2.3 Action Chunk
+
+本项目两条链路都配置 `chunk_size: 50`：
 
 $$
-\mathcal{L}=\mathbb{E}\left[
-\left\|v_\theta(x_\tau,\tau,o_t)-u_\tau\right\|_2^2
-\right]
+A_t=[a_t,a_{t+1},\ldots,a_{t+49}].
 $$
 
-其中 $v_\theta$ 是动作专家，$o_t$ 是图像、语言和状态条件。当前源码对每个动作时间步
-和动作维度计算 MSE，并屏蔽越过 episode 末尾的 padding 动作。
+在 20 Hz policy 时间轴上，一个完整 chunk 覆盖 2.5 秒。它的价值是学习局部运动结构并摊薄
+推理成本；风险是观测越旧，chunk 后半段越可能不再适合当前环境。
 
-推理从噪声出发，当前 LeRobot 默认用 10 个 Euler 步沿反向时间积分：
+仿真链路默认每 30 个 policy frame 重新推理，并对新旧 chunk 的前 5 帧交叉融合；真机链路
+默认每 10 个 policy step 请求新计划，使用 RTC 处理推理延迟和剩余轨迹，并按原观测时间轴
+采样。不要把这两个实现写成同一种算法。
 
-```python
-x = gaussian_noise(shape=(batch, chunk_size, max_action_dim))
-for step in range(num_steps):
-    t = 1.0 - step / num_steps
-    velocity = model(x, t, images, language, state)
-    x = x - velocity / num_steps
-return x[..., :real_action_dim]
-```
+### 6.1.2.4 标准化与完整 checkpoint
 
-这段伪代码表达算法关系，不是项目脚本的逐行复制。
+不同关节的数值范围不同。LeRobot processor 使用数据集统计量标准化状态和动作：
 
-```mermaid
-flowchart TB
-    subgraph Train[训练]
-        A1[专家动作 A] --> MIX[与噪声插值]
-        E1[高斯噪声 ε] --> MIX
-        MIX --> X[带噪动作 xτ]
-        X --> FM[条件速度场]
-        O1[图像/语言/状态] --> FM
-        FM --> LOSS[与 ε-A 做 MSE]
-    end
-    subgraph Infer[推理]
-        E2[高斯噪声] --> INT[10 步 Euler 积分]
-        O2[新观测] --> INT
-        INT --> A2[动作块]
-    end
-```
+$$
+\hat{x}=\frac{x-\mu}{\sigma+\epsilon},\qquad
+x=\hat{x}(\sigma+\epsilon)+\mu.
+$$
 
-### 6.1.1.7 能力边界
+因此 checkpoint 不只是 `model.safetensors`。可部署的 `pretrained_model/` 还要包含 policy
+配置、preprocessor、postprocessor 和数据归一化状态。数据集和 checkpoint 的字段、顺序或
+统计契约不匹配时，即使张量形状碰巧相同，也不应执行。
 
-SmolVLA 的主要优势是多模态条件、连续动作块和较低计算成本，但仍有以下限制：
+## 6.1.3 机器人学习中的四种量
 
-- **数据分布依赖**：训练中没覆盖的物体位置和视觉变化可能导致失败；
-- **闭环分布偏移**：小动作误差会让下一帧观测偏离专家轨迹；
-- **长时序误差累积**：前面阶段的误差会传到后续接触阶段；
-- **接触不稳定**：关节误差很小也可能改变手指与物体接触；
-- **无内建碰撞保证**：策略输出不自动满足避障和力学稳定性；
-- **动作多解性**：同一场景可能存在多条合理轨迹，简单平均会产生不自然动作。
+理解下面四种量，是分析 rollout 的基础：
 
-### 本节小结
-
-VLA 把图像、语言和机器人状态映射为动作。SmolVLA 使用 VLM 条件特征和 Flow Matching 动作专家生成动作块；标准化、动作 padding 和 Action Chunk 是训练接口的一部分。它是策略层，不替代 IK、控制器、碰撞、物理仿真和成功判定。
-
----
-
-## 6.1.2 项目整体架构与核心契约
-
-### 本节目标
-
-理解当前项目如何把 Isaac Sim、IsaacLab、LeRobot 和 SmolVLA 组成一个系统，以及哪些接口必须贯穿采集、转换、训练和 Rollout 保持一致。
-
-### 6.1.2.1 六层系统架构
-
-```mermaid
-flowchart TB
-    L1[在线推理层<br/>Policy Server / Action Chunk / Fusion]
-    L2[模型训练层<br/>LeRobot / SmolVLA / Checkpoint]
-    L3[数据层<br/>HDF5 / Conversion / Validation]
-    L4[任务层<br/>状态机 / 随机化 / 成功判定]
-    L5[机器人控制层<br/>IK / 关节目标 / 灵巧手映射 / 重力补偿]
-    L6[仿真层<br/>Isaac Sim / IsaacLab / USD / Camera / PhysX]
-    L6 --> L5 --> L4 --> L3 --> L2 --> L1
-    L1 -.动作.-> L5
-    L6 -.观测.-> L1
-```
-
-各层职责如下：
-
-| 层 | 负责 | 不负责 |
+| 量 | 含义 | 本项目例子 |
 |---|---|---|
-| 仿真 | 场景、物理、传感器、关节状态 | 学习专家策略 |
-| 控制 | IK、关节目标、动作映射、跟踪 | 判断模型泛化 |
-| 任务 | 阶段、随机化、门控、成功条件 | 训练神经网络 |
-| 数据 | 同步记录、格式转换、质量检查 | 自动修复坏示范 |
-| 训练 | 批次、标准化、优化、checkpoint | 保证闭环物理成功 |
-| 推理 | 观测编码、动作块、融合和执行 | 替代任务成功判定 |
+| Observation | 策略看到的事实 | RGB、实测关节、逻辑夹爪状态 |
+| Policy action | 模型原始输出 | 26D 或 8D 绝对目标动作块 |
+| Command | 门控、插值、限速后实际下发的目标 | 仿真 actuator target；真机 ROS command |
+| Measured state | 物理系统反馈 | 仿真关节位置；真机 `LowState` |
 
-### 6.1.2.2 Isaac Sim、IsaacLab、LeRobot 与 SmolVLA
+动作语义为 `absolute_joint_target`：每个动作表示目标关节位置，不是相对增量，也不是速度。
+安全层可以减慢或拒绝动作，但不能静默改变关节顺序。
 
-- **Isaac Sim** 提供 USD 场景、RTX 相机、PhysX 和关节仿真。
-- **IsaacLab** 提供仿真应用启动、资产封装、机器人 articulation、传感器和控制接口。
-- **LeRobot** 提供统一数据集、processor、训练器、checkpoint 和策略接口。
-- **SmolVLA** 是 LeRobot 中的策略模型，消费多模态观测并预测动作块。
-- **本项目代码** 将四者连接，定义 S4 机器人契约、抽屉任务和完整流水线。
-
-`run.sh` 是统一入口，但它不是业务逻辑本身。它负责选择环境、解析顶层命令并调用相应脚本。
-
-### 6.1.2.3 双 Python 环境和 Policy Server
-
-IsaacLab 当前运行在 Python 3.11 环境，当前 LeRobot 版本面向 Python 3.12+。把两者强行装入同一环境容易造成 PyTorch、CUDA、Transformers 和 Isaac 扩展冲突。因此在线 Rollout 使用两个进程。
-
-```mermaid
-flowchart LR
-    subgraph P311[env_isaaclab / Python 3.11]
-        SIM[IsaacLab 仿真]
-        CAM[三路相机]
-        CTRL[120 Hz 控制]
-    end
-    subgraph P312[smolvla / Python 3.12]
-        SERVER[Policy Server]
-        PRE[LeRobot Preprocessor]
-        POLICY[SmolVLA]
-        POST[Postprocessor]
-    end
-    CAM -->|RGB + 26D state + task<br/>JSON Lines/Base64| SERVER
-    SERVER --> PRE --> POLICY --> POST
-    POST -->|50×26 Action Chunk| SIM
-    SIM --> CTRL
-```
-
-启动握手中，Policy Server 返回 image keys、图像 shape、state/action 维度、设备和从数据集恢复的阶段计划。任何 visual feature 缺失、多余或尺寸不符都会报错。
-
-```mermaid
-sequenceDiagram
-    participant Sim as IsaacLab 进程
-    participant Server as Policy Server
-    participant Model as SmolVLA
-    Sim->>Server: 启动(checkpoint, dataset, device)
-    Server->>Model: from_pretrained + processors
-    Server-->>Sim: ready + feature contract + phase schedule
-    loop 每次重规划
-        Sim->>Server: state + 3 RGB + task
-        Server->>Model: preprocess + predict_action_chunk
-        Model-->>Server: normalized action chunk
-        Server-->>Sim: postprocessed 50×26 chunk
-        Sim->>Sim: 融合、限幅、120 Hz 插值执行
-    end
-```
-
-### 6.1.2.4 当前核心数据契约
-
-当前任务配置定义：
-
-| 项目 | 当前值 |
-|---|---|
-| Task ID | `drawer_insert_close` |
-| Schema | `s4_bimanual_v1` |
-| Control mode | `bimanual` |
-| Action semantics | `absolute_joint_target` |
-| State | 26D `float32` |
-| Action | 26D `float32` |
-| Dataset FPS | 20 Hz |
-| Control FPS | 120 Hz |
-| 图像 | 3 路 680×480 RGB |
-| Dataset ID | `local/s4_drawer_insert_close_v4_12phase_serial_acquire` |
-
-策略张量通常采用 CHW，因此模型配置中的图像 shape 为 `[3,480,680]`；HDF5 和视频帧采用 HWC，即 `[480,680,3]`。二者是同一图像的不同内存布局。
-
-#### 26D state/action
-
-| 切片 | 内容 | 维度 |
-|---|---|---:|
-| `[0:7]` | 左臂 7 个关节 | 7 |
-| `[7:13]` | 左手 6 个策略控制 | 6 |
-| `[13:20]` | 右臂 7 个关节 | 7 |
-| `[20:26]` | 右手 6 个策略控制 | 6 |
-
-每只手的 6 个策略控制是：拇指 yaw、拇指 pitch、食指、中指、无名指和小指。真实 URDF 还有 mimic joints；`s4_robot/control_mapping.py` 将 6D 策略动作扩展到实际驱动关节。模型不应直接学习一套与仿真执行不同的关节顺序。
-
-```text
-26D action
-├── Left Arm  [7]
-├── Left Hand [6] ── mimic expansion ──> hand drive joints
-├── Right Arm [7]
-└── Right Hand[6] ── mimic expansion ──> hand drive joints
-```
-
-### 6.1.2.5 绝对动作、命令和实际状态
-
-本项目动作语义是绝对关节目标：
+跟踪误差可写为：
 
 $$
-a_t=q^{target}_t
+e_t=q_t^{command}-q_t^{measured}.
 $$
 
-它不是关节增量 (q_t-q_{t-1})，也不是力矩。在线系统中还要区分：
+如果 policy action 正常而 command 被大量限制，应检查动作动态与安全参数；如果 command 正常
+但 measured state 跟不上，应检查执行器、接触或反馈；如果 policy action 本身就错误，应回到
+数据、语言和 checkpoint。只看最终视频很难区分这三类问题。
 
-| 名称 | 含义 |
-|---|---|
-| Policy action | 模型反标准化后的 26D 绝对目标 |
-| Fused action | 多个动作块及阶段边界融合后的目标 |
-| Command | 经过裁剪、限速后交给插值器的 endpoint |
-| Actual state | 执行一个控制区间后从仿真读取的真实关节位置 |
+## 6.1.4 时间与因果对齐
 
-若训练时记录的是绝对目标，Rollout 却把它当增量相加，机器人会立即偏离数据分布。因此 action semantics 必须写入数据契约，并在转换和 checkpoint 检查中保留。
+### 6.1.4.1 多频率系统
 
-### 6.1.2.6 资产与可移植路径
+当前系统不是所有模块共用一个频率：
 
-`.env.example` 通过以下根目录表达外部依赖：
+| 链路 | 物理/控制 | 数据与 policy |
+|---|---:|---:|
+| 仿真 | 120 Hz | 20 Hz，即每 6 个仿真步记录/执行一个 policy frame |
+| 真机 | 30 Hz | 20 Hz，控制侧在相邻 arm target 间插值，夹爪保持阶跃 |
 
-```bash
-ISAACLAB_ROOT=/path/to/IsaacLab
-ISAAC_ASSET_ROOT=/path/to/isaacsim_assets/Assets/Isaac/5.1
-S4_SCENE_ASSET_ROOT=/path/to/s4_smolvla_isaaclab/local_assets/isaac/5.1
-LEROBOT_ROOT=/path/to/lerobot
-SMOLVLA_MODEL_ROOT=/path/to/s4_smolvla_isaaclab/models
-```
+降低采样率不是简单丢行。每个样本必须保持“这张图、这个状态、这个动作在时间上对应什么”的
+语义，否则模型会学习到提前或滞后的控制关系。
 
-配置文件使用变量拼接相对资产结构，避免把某个用户的 `/home/...` 写进任务定义。课程中的命令也以项目根目录为当前目录，不写死本机路径。
+### 6.1.4.2 因果相机对齐
 
-### 本节小结
+真机相机线程和 30 Hz 控制线程异步运行。转换采用 `latest_before`：对一个控制时间戳，只选择
+不晚于它的最新相机帧，并检查最大相机年龄和跨相机偏差。这样不会把未来画面泄漏给当前动作。
 
-当前项目由仿真、控制、任务、数据、训练和推理六层组成。双 Python 环境通过 Policy Server 隔离。26D 顺序、三路相机、20 Hz 数据频率和绝对关节动作是贯穿完整链路的核心契约。
+仿真由同一进程驱动物理和传感器，时间关系更可控，但仍要严格保持 `record_every_n=6`，才能
+满足 120 Hz 到 20 Hz 的数据契约。
 
----
+### 6.1.4.3 推理延迟
 
-## 6.1.3 VLA 仿真任务设计与随机化
+真机观测通过 LAN 发送到 GPU server，响应到达时原观测已经变旧。真机 ActionBuffer 因此以
+`observation timestamp` 而不是 `response arrival time` 作为 chunk 零点，跳过已经过去的动作。
+过旧响应、chunk 或反馈会触发 hold、重新规划或 abort，不能无限重复最后一段轨迹。
 
-### 本节目标
+## 6.1.5 两条链路的契约
 
-理解如何把双臂抽屉任务设计成既能稳定生成专家数据，又包含足够视觉与初始状态变化的 VLA 学习问题。
+### 6.1.5.1 仿真契约
 
-### 6.1.3.1 任务定义
+仿真任务由 `configs/tasks/drawer_insert_close.dataset.json` 定义：
 
-`drawer_insert_close` 要求：左手拉开抽屉，右手抓取番茄汤罐，将罐子放入抽屉，右手退出，左手关闭抽屉，最后双臂返回 Home。
+- schema：`s4_bimanual_v1`；
+- state/action：左臂 7 + 左手 6 + 右臂 7 + 右手 6，共 26D；
+- 图像：`chest_front_rgb`、`left_wrist_rgb`、`right_wrist_rgb`；
+- 图像大小：480×680 RGB；
+- action：26D 绝对关节目标；
+- 数据 20 Hz，控制 120 Hz。
 
-```mermaid
-flowchart LR
-    A[重置场景] --> B[左手抓把手]
-    B --> C[打开抽屉]
-    C --> D[右手抓罐]
-    D --> E[抬升并放入]
-    E --> F[松手并退出]
-    F --> G[左手关闭抽屉]
-    G --> H[双臂 Home]
-    H --> I{最终成功?}
-    I -- 是 --> J[写入 episode]
-    I -- 否 --> K[记录失败并重试]
-```
+脚本专家内部有 27 个细控制阶段，数据语言契约将它们归并为 12 个宏阶段。控制阶段用于稳定
+完成接触任务，语言阶段用于给模型提供稳定语义；两者不是一一对应。
 
-这个任务比单臂 pick-place 更适合作为高级案例，因为它包含：
+### 6.1.5.2 真机契约
 
-- 双臂分工和并发动作；
-- 灵巧手接触与抓握；
-- 可动抽屉与物体之间的物理交互；
-- 27 个专家控制阶段、12 个模型语言宏阶段构成的长时序；
-- 多个局部成功条件和一个最终成功条件。
+真机策略由 `real_vla_stack/config/tasks/drawer_right.yaml` 定义：
 
-### 6.1.3.2 场景与三路视觉
+- raw schema：`s4_real_vla_v2`；policy contract：`s4_real_policy_v1`；
+- state：实测右臂 7D + 逻辑夹爪 1D；
+- action：右臂绝对目标 7D + 逻辑夹爪 1D；
+- 图像：`observation.images.head`、`observation.images.wrist_right`；
+- 数据/policy 20 Hz，机器人控制 30 Hz；
+- 对齐：`latest_before`，相机年龄最多 100 ms，跨相机 skew 最多 60 ms。
 
-场景包含 S4 双臂机器人、主抽屉柜、第二柜体、番茄汤主抓取罐和仓库背景。三个
-柜面 YCB 干扰物由 `randomization.distractor_cans.enabled` 控制；**当前默认为关闭**，
-采集与匹配的 rollout 默认不生成它们。
+逻辑夹爪不是实测手指角度。采集时 trigger 经阈值映射为 0/1，执行时再由 gripper adapter
+展开为真机 6D `HandsCmd`。这个语义必须随数据和 checkpoint 一起保存。
 
-| 相机 | 主要信息 | 可能盲区 |
+### 6.1.5.3 为什么不能合并 checkpoint
+
+| 维度 | 仿真 | 真机 |
 |---|---|---|
-| 胸前相机 | 全局任务布局、双臂和抽屉状态 | 近距离手指接触细节不足 |
-| 左腕相机 | 把手、左手和抽屉局部状态 | 难以观察右侧抓取 |
-| 右腕相机 | 右手、主罐、放置局部状态 | 全局关系和左手状态不足 |
+| 机器人动作空间 | 双臂双手 26D | 右臂+逻辑夹爪 8D |
+| 视觉 | 三相机 | 两相机 |
+| 任务语言 | 放物入抽屉并关门 | 拉开、推回、松手撤离 |
+| 控制动态 | PhysX actuator | 实体执行器、ROS/SDK、接触延迟 |
 
-多视角不是简单增加图像数量。相机顺序和 feature key 是训练契约；训练和 Rollout 若交换左右腕图像，即使尺寸相同，语义也会错位。
+它们可以共享 VLM 基座和训练方法，不能共享最终 policy contract。项目使用
+`meta/s4_contract.json` 的 SHA256，把数据集、checkpoint、server 和 robot request 绑定在同一
+契约上；真机链路还固定 LeRobot commit 和协议版本。
 
-### 6.1.3.3 固定条件与随机条件
+## 6.1.6 仿真、真机与 Sim-to-Real
 
-当前项目聚焦仿真 VLA，并希望画面稳定、自然，因此光照不做域随机化。随机化集中在与任务泛化直接相关、且可受控的状态上。
+本项目目前是两条独立的数据闭环，不是把仿真 26D checkpoint 直接部署到真机。真机训练仍在
+GPU `policy` 环境执行，但训练输入是已转换的真机数据；“训练运行在服务器上”不等于“使用
+仿真数据训练”。
 
-| 固定项 | 随机项（当前默认） |
-|---|---|
-| 机器人基座和柜体布局 | 主罐 XY 位置（`can_xy.enabled=true`） |
-| 相机内外参 | |
-| 抽屉初始开度（`drawer.initial_open_m=0.00`） | |
-| 工作室光照 | |
-| 不生成三个干扰物（`distractor_cans.enabled=false`） | |
-| 抓取后固定抬升偏移、专家控制逻辑 | |
+仿真可以低成本产生大量带精确状态和成功标签的数据，真机能够反映真实相机、摩擦、时延和
+执行器动态。未来若做联合训练或迁移，至少要先解决动作空间统一、相机语义统一、任务语言、
+归一化统计和真实动态差异，不能简单拼接两个数据目录。
 
-当前 YAML 已启用主罐 5×5 分层格内连续随机；干扰物区域仍作为可选配方保留，
-默认不生成。采集可用 `--no-can-xy-randomization` 临时关闭主罐随机，也可用
-`--distractor-cans` 临时打开干扰物。
+## 6.1.7 安全与可复现理论
 
-固定光照减少了不必要的视觉分布宽度，有利于先解决操作策略。
+### 6.1.7.1 模型不是安全控制器
 
-### 6.1.3.4 主罐连续随机区域（当前启用）
+真机执行采用纵深防御：有限值和形状检查、目标跳变、速度/加速度、跟踪误差、响应新鲜度、
+相机/反馈健康、publisher 冲突、SDK 身份、shadow 与人工急停门禁。任何一层失败都应阻止或
+释放输出，而不是靠模型“自己学会安全”。
 
-主罐名义位置约为：
+### 6.1.7.2 可复现对象必须分层
 
-$$
-p_0=(0.54,-0.13,1.16)\ \mathrm{m}
-$$
+可复现不等于把整台电脑复制成一个大镜像。本项目固定四类身份：
 
-当 `can_xy.enabled=true` 时，配置给出的偏移为：
+- Git commit/tag：代码、配置、教程；
+- OCI digest：sim、policy、robot 用户态环境；
+- ModelScope revision + SHA256：模型、数据、checkpoint、项目资产；
+- NVIDIA lock + 宿主 preflight：官方资产、driver 和硬件条件。
 
-$$
-\Delta x\in[-0.025,-0.005],\qquad
-\Delta y\in[-0.16,0.00]
-$$
+驱动属于宿主内核边界，不能可靠地 bake 到镜像。容器固定用户态依赖，NVIDIA Container
+Toolkit 在运行时注入设备和驱动实现。
 
-因此当前世界坐标范围为：
+## 6.1.8 本章小结
 
-$$
-x\in[0.515,0.535],\qquad
-y\in[-0.290,-0.130]
-$$
-
-面积约为：
-
-$$
-2\ \mathrm{cm}\times16\ \mathrm{cm}=32\ \mathrm{cm}^2
-$$
-
-这个区域不是 10 cm×10 cm 正方形，而是沿右臂更容易覆盖的方向形成窄长矩形。配置注释记录了设计依据：靠近桌面物理边缘的旧位置存在掉落风险，而更远的角落会进入较差的 IK 条件带。
-
-> 当前配置可以证明区域定义；“区域内所有物理抓取必然成功”尚未被本次写作重新验证。
-
-### 6.1.3.5 5×5 分层网格内随机（当前启用）
-
-当 `can_xy.enabled=true` 时，矩形被划分为 5×5 个格子。每轮 25 个格子使用 RNG 生成随机排列，每个格子内部再均匀连续采样。
-
-```text
-y=-0.130  ┌────┬────┬────┬────┬────┐
-          │ ·  │  · │ ·  │   ·│ ·  │  每个 · 都是格内随机点
-          ├────┼────┼────┼────┼────┤
-          │  · │ ·  │  · │ ·  │  · │
-          ├────┼────┼────┼────┼────┤
-          │ ·  │   ·│ ·  │  · │ ·  │
-          ├────┼────┼────┼────┼────┤
-          │  · │ ·  │   ·│ ·  │ ·  │
-          ├────┼────┼────┼────┼────┤
-y=-0.290  │ ·  │  · │ ·  │ ·  │   ·│
-          └────┴────┴────┴────┴────┘
-          x=.515                    x=.535
-```
-
-三种采样方式的差别如下：
-
-| 方法 | 空间覆盖 | 重复性 | 当前项目 |
-|---|---|---|---|
-| 25 个固定点 | 均匀但离散 | 高 | 否 |
-| 全区域均匀随机 | 可能短期聚集 | 中 | 否 |
-| 分层格内随机 | 保证格子覆盖且点连续 | 可由 seed 复现 | 是 |
-
-采样器保存 `order`、`cursor` 和 `cycle`，因此断点续采可以延续网格遍历，而不是从第一格重新开始。
-
-### 6.1.3.6 失败后的采样策略
-
-当前逻辑与早期“一个格子三个点都失败就跳过”不同：
-
-```mermaid
-flowchart TD
-    S[在当前格子采样精确点] --> A[执行 episode]
-    A -->|成功| N[接受 episode 并进入下一格]
-    A -->|抓取相关失败| R{同一点额外重试<3?}
-    R -->|是| SAME[重置同一随机场景] --> A
-    R -->|否| RESAMPLE[在同一格内重新采样] --> A
-    A -->|非抓取阶段失败| RESAMPLE
-```
-
-`max_grasp_retries_same_position: 3` 表示初始尝试之外再重试 3 次，即同一个精确位置最多尝试 4 次。重试耗尽后仍停留在当前格子，只替换格内精确点。格子只有接受成功 episode 后才推进。
-
-这样做的含义是：数据集不会因为困难格子被跳过而产生空间空洞，但若某个格子系统性不可执行，采集可能持续失败。因此正式采集前仍需要工作空间验证和小规模可视化试跑。
-
-### 6.1.3.7 其他场景变量
-
-抽屉初始开度已从随机变量中移除，采集和 rollout 都固定为：
-
-$$
-q_{drawer}^{init}=0.00\ \mathrm{m}
-$$
-
-三个干扰物（当前默认 **`distractor_cans.enabled=false`，不生成**）配方为以下 YCB
-资产，并在三个互相分离的柜面区域放置：
-
-- `002_master_chef_can.usd`
-- `006_mustard_bottle.usd`
-- `021_bleach_cleanser.usd`
-
-启用时最小中心距离为 0.16 m，主抓取罐附近不放干扰物。抓取后的抬升随机化当前关闭，采用固定目标偏移，以减少接触成功后的轨迹方差。
-
-### 6.1.3.8 可达不等于可抓
-
-随机点需要通过逐层筛选：
-
-```mermaid
-flowchart LR
-    A[桌面边界合法] --> B[IK 有解]
-    B --> C[关节裕量足够]
-    C --> D[条件数/奇异性可接受]
-    D --> E[路径无碰撞]
-    E --> F[开手不碰倒物体]
-    F --> G[闭手形成稳定接触]
-    G --> H[抬升时物体跟随]
-```
-
-离线 IK 检查通常只能覆盖 B～D。小拇指是否碰桌面、手指是否先蹭到罐子、摩擦是否足以抬升，需要物理仿真验证。重力补偿也属于执行期因素：它能减小手臂下垂，却不能把错误抓取几何变成正确抓取。
-
-### 6.1.3.9 阶段完成与最终成功
-
-阶段门控用于判断“是否可以进入下一阶段”，最终成功用于判断“是否把 episode 写入数据集”。当前最终成功条件是：
-
-$$
-0.28\leq x_{can}\leq0.52,\qquad
-0.00\leq y_{can}\leq0.30,\qquad
-0.96\leq z_{can}\leq1.10\ \mathrm{m}
-$$
-
-即主罐根坐标必须位于宽松的抽屉世界坐标三维区域内。该范围排除初始柜顶区域和地面掉落区域，同时允许已放入抽屉后的正常物理沉降。最终抽屉开度会记录到日志和 Rollout 结果中，但不参与成功判定；抽屉开度仍作为 `left_pull_drawer` 的阶段物理失败条件。
-
-### 本节小结
-
-当前任务以固定光照、三路相机、已启用的主罐分层格内随机，加上可选的远离抓取区干扰物，共同构造数据变化。抽屉固定自关闭状态起始，当前默认启用主罐 XY 随机、关闭干扰物；而运动学"够得到"只是必要条件，物理上的"抓得稳"，仍需在仿真里一一验证。
-
----
+SmolVLA 用图像、语言和状态生成动作块，Action Chunk 降低推理频率但引入计划过时和边界连续
+性问题。可靠系统必须区分观测、模型动作、下发命令和实测状态，并处理多频率、因果对齐、
+推理延迟和安全门控。仿真与真机共享学习原理，但分别受 26D/三相机和 8D/两相机契约约束；
+契约一致性是进入下一章两条端到端链路的前提。

@@ -273,7 +273,8 @@ flowchart LR
 
 ## 8. 日志阅读指南
 
-每次 rollout 写入 `~/real_rollouts/rollout_*/events.jsonl`。优先关注下列事件。
+每次容器 rollout 写入 `/workspace/outputs/real_rollouts/rollout_*/events.jsonl`，对应机器人宿主
+`.s4/outputs/real_rollouts/rollout_*/events.jsonl`。优先关注下列事件。
 
 | 事件 | 说明 | 正常表现 / 需要调查 |
 | --- | --- | --- |

@@ -14,23 +14,34 @@ The hard boundary is intentional:
 
 ## Workflow
 
-```bash
-bash real_vla_stack/run.sh raw-check
-bash real_vla_stack/run.sh convert
-bash real_vla_stack/run.sh dataset-check
-bash real_vla_stack/run.sh analyze-dynamics
-bash real_vla_stack/run.sh train --profile smoke
-bash real_vla_stack/run.sh checkpoint-check --checkpoint /absolute/path/to/checkpoint
-bash real_vla_stack/run.sh behavior-probe --checkpoint /absolute/path/to/checkpoint --samples 10
-bash real_vla_stack/run.sh serve --checkpoint /absolute/path/to/checkpoint
+Run these release commands from the repository root. New converted datasets use the
+writable output mount; published datasets and checkpoints remain read-only under
+`/artifacts`.
 
-# On the robot (shadow is the default; run.sh sources the ROS environment):
-bash real_vla_stack/run.sh rollout
+```bash
+./s4 setup real_full
+./s4 pull policy
+./s4 pull robot
+./s4 verify real-policy
+./s4 verify real-server
+./s4 verify robot
+
+# GPU host
+docker compose --profile real up policy-server
+
+# Robot host: shadow is the default and creates no command publisher
+./s4 compose --profile real run --rm robot \
+  bash real_vla_stack/run.sh rollout --max-runtime-s 30
 ```
 
 After shadow logs confirm joint order, RGB images, normalization, gripper semantics,
 network latency and action scale, set `rollout.mode: live` in the robot-specific YAML
-and explicitly run `bash real_vla_stack/run.sh rollout --live`.
+and explicitly pass `--live`. Follow the staged preflight-only, 5-second, and 10-second
+gates in the rollout manual; do not jump directly from `verify robot` to live motion.
+
+For conversion or training development, enter the policy service and invoke
+`real_vla_stack/run.sh`. Set `S4_DATA_ROOT=/workspace/outputs/datasets` when creating a
+dataset; `/artifacts` is a published read-only input.
 
 The dataset contract is written to `meta/s4_contract.json`; its SHA256 is copied into
 training provenance and the deployment manifest. The LAN server and robot reject a
@@ -93,10 +104,13 @@ python scripts/compare_rollout_logs.py /path/to/rollout_A /path/to/rollout_B
 
 ## Runtime environments and command route
 
-The host process uses `environment/smolvla.yml`. The robot process uses
-`hardware_teleop/environment.yml` plus ROS2 Humble and the locally built `qi`
-messages. Recreate or update those Conda environments from the corresponding
-YAML files; do not rely on packages from the user's Python site directory.
+The released deployment uses the root `compose.yaml`: the GPU host process runs
+in the `policy` image, while the robot process runs in the ROS 2 Humble `robot`
+image. Source checkouts and artifacts are mounted read-only; generated data,
+logs, and checkpoints go through `/workspace/outputs`. The environment YAML files
+remain dependency inputs for image maintainers, not an instruction for release
+users to recreate ad-hoc host Conda environments. Do not rely on packages from
+the user's Python site directory.
 
 The live rollout does **not** publish directly to the standing-controller topic
 `/lowcmd`. It constructs `qi/msg/LowCmd` frames and publishes them to the reviewed
@@ -164,30 +178,36 @@ network, inference and action-contract checks, before Home or policy commands.
 
 ## Commissioning sequence
 
-1. Build messages and validate the robot runtime:
+1. Pull and validate the released robot runtime. The image already contains the pinned
+   `qi` messages; do not rebuild them in the read-only source mount:
 
    ```bash
-   bash run.sh teleop-hardware-build
-   bash run.sh teleop-hardware-system-prepare --check
-   source hardware_teleop/scripts/source_ros_env.sh
-   ros2 topic hz lowstate
+   ./s4 pull robot
+   ./s4 verify robot
+   ./s4 shell robot
+   # Inside the robot container, with hardware connected:
+   ros2 topic hz /lowstate
    ros2 topic info /lowcmd_replay --verbose
    ```
 
 2. On the inference host, validate and serve one explicit checkpoint:
 
    ```bash
-   bash real_vla_stack/run.sh checkpoint-check --checkpoint /absolute/path/to/checkpoint
-   bash real_vla_stack/run.sh serve --checkpoint /absolute/path/to/checkpoint
+   ./s4 setup real_full
+   ./s4 pull policy
+   ./s4 verify real-policy
+   ./s4 verify real-server
+   docker compose --profile real up policy-server
    ```
 
 3. Run without `--live` for an RTC shadow pass (no motion is published):
 
    ```bash
-   bash real_vla_stack/run.sh rollout --max-runtime-s 30
+   ./s4 compose --profile real run --rm robot \
+     bash real_vla_stack/run.sh rollout --max-runtime-s 30
    ```
 
-   Inspect `~/real_rollouts/rollout_*/events.jsonl` and the saved
+   Inspect `.s4/outputs/real_rollouts/rollout_*/events.jsonl` on the robot host and the saved
    `observations/*.jpg`. There must be no `abort` or `policy_error`, camera order
    and color must be correct, and candidate joint/gripper values must be plausible.
    The host and robot must use the same checkout because RTC diagnostics use
@@ -197,7 +217,8 @@ network, inference and action-contract checks, before Home or policy commands.
    `rollout.mode: live`, and start with a five-second trial:
 
    ```bash
-   bash real_vla_stack/run.sh rollout --live --max-runtime-s 5
+   ./s4 compose --profile real run --rm robot \
+     bash real_vla_stack/run.sh rollout --live --max-runtime-s 5
    ```
 
    Increase to 10 seconds and then the configured episode duration only after the

@@ -3,154 +3,81 @@ prev:
   text: '5.3 视觉抓取与放置'
   link: '/05-vision-control/03-visual-pick-place'
 next:
-  text: '5.1 SmolVLA 原理与任务设计'
+  text: '6.1 VLA 原理与统一契约'
   link: '/06-smolVLA/01-principles'
 ---
-# SmolVLA 高级技术教程：从 IsaacLab 仿真数据到 VLA 闭环控制
+# SmolVLA 教程：从仿真与真机数据到闭环控制
 
-> 文档状态：本页是课程总索引。原单文件教程已按“原理 → 实现 → 部署”拆分为三个递进章节；工程事实以当前代码和配置为准。
+本课程以 S4 双臂机器人项目的当前代码为依据，讲清两条可以独立运行、又共享学习策略思想的
+链路：Isaac Sim/IsaacLab 仿真链路，以及 Quest 遥操、ROS 2 和 RealSense 组成的真机链路。
 
-:::: info 本章导读
-这是菜单上的**第一道招牌菜——佛跳墙**。
+## 课程结构
 
-为什么是佛跳墙？只因它**复杂、慢炖、食材丰富**：把图像、语言、关节状态、动作历史悉数倒进同一只"智能料理机"，小火慢炖出一锅端到端 VLA——不讲究哪一味料单管什么用，只要配方齐、火候到，"出来就是好的"。这道菜，你且不必时时盯着锅里的翻涌，只管把食材备齐、把锅坐稳，它自会替你一气呵成。
+章节编号和文件名是外部课程框架的稳定接口，不随项目内部目录调整：
 
-以双臂灵巧手任务 drawer_insert_close 为贯穿案例，本章讲解如何把 Isaac Sim / IsaacLab 里的机器人操作任务，转化为可供 VLA 模型学习的多模态时序数据——脚本化专家控制、HDF5 采集、LeRobotDataset 转换、SmolVLA 训练、离线评估与在线闭环 Rollout，全链路一一打通。三条主线贯穿始终：**原理线**（模型为何这般设计）、**实现线**（任务→专家→数据→模型，怎样靠稳定的契约牢牢咬合成一环）、**部署线**（双环境、资产、配置，如何做到可复现）。当前项目只研究仿真 VLA，不展开仿真与真机联合数据训练。仓库另有独立的无 Isaac 真机 Quest/Pink 遥操链路，操作与安全说明见 `hardware_teleop/README.md`；不要把它与本课程的 Isaac Rollout 控制进程混为一体。
-::::
+| 章节 | 定位 | 回答的问题 |
+|---|---|---|
+| [6.1 VLA 原理与统一契约](01-principles.md) | 理论 | VLA 学什么；Action Chunk、时间对齐和闭环控制为什么重要；仿真与真机如何共享契约 |
+| [6.2 仿真与真机端到端链路](02-implementation.md) | 链路 | 两类数据怎样采集、转换、训练并进入 rollout；每一道质量门在哪里 |
+| [6.3 两条链路的代码实现](03-deployment.md) | 实现 | 入口、配置、模块、进程、容器和数据目录怎样对应到代码 |
 
-## 适用读者与前置知识
-
-本文面向已经掌握以下内容的读者：
-
-- 机器人关节、连杆、自由度和执行器；
-- 正运动学、逆运动学和坐标变换；
-- 机械臂与灵巧手的基础控制；
-- Python、Linux、Conda 和深度学习训练的基本使用。
-
-教程仅在 TCP、IK、关节目标、重力补偿与执行器跟踪处做必要的衔接，不重新推导基础机器人学。
+```mermaid
+flowchart LR
+    A[6.1 理论与契约] --> B[6.2 两条端到端链路]
+    B --> C[6.3 代码与部署实现]
+    C --> D[能够复现、检查和扩展项目]
+```
 
 ## 学习目标
 
 完成三章后，读者应能够：
 
-- 解释 VLA 和 SmolVLA 的输入、输出、Action Chunk 与 Flow Matching；
-- 说明 Isaac Sim、IsaacLab、LeRobot 和 SmolVLA 的职责边界；
-- 设计一个可采集、可学习、可自动评估的仿真操作任务；
-- 理解脚本专家、随机化和数据质量之间的关系；
-- 理解 HDF5 与 LeRobotDataset 的字段映射；
-- 检查训练、离线评估和在线 Rollout 的接口是否一致；
-- 在另一台工作站上配置项目路径、环境、资产和模型；
-- 根据动作日志、任务阶段和物理状态定位成功率问题。
+- 解释 SmolVLA 如何从图像、语言和机器人状态生成动作块；
+- 区分 observation、policy action、安全处理后的 command 和 measured state；
+- 说明仿真 26D/三相机链路与真机 8D/两相机链路为什么不能混用数据或 checkpoint；
+- 沿代码找到仿真专家采集、HDF5 转换、训练和离线 rollout；
+- 沿代码找到真机遥操采集、因果对齐、训练、LAN policy server 和安全 client；
+- 理解 Git、GHCR、ModelScope、NVIDIA 官方资产和本机输出各自的管理边界；
+- 用契约、日志和分层验收定位问题，而不是只看训练 loss 或容器是否启动。
 
-## 三章目录
+## 当前教学案例
 
-| 顺序 | 章节 | 核心问题 | 建议读者 |
-|---|---|---|---|
-| 1 | [6.1 SmolVLA 原理与任务设计](01-principles.md) | SmolVLA 为什么能从图像、语言和状态预测动作？什么样的仿真任务适合学习？ | 第一次接触 VLA 或需要理解系统设计者 |
-| 2 | [6.2 项目实现与端到端闭环](02-implementation.md) | 当前项目怎样完成专家控制、采集、转换、训练和 Rollout？ | 准备读代码、采集数据或优化成功率者 |
-| 3 | [6.3 项目环境与完整部署](03-deployment.md) | 如何准备仓库、双环境、资产、模型、数据目录并完成部署验收？ | 需要复现、迁移或交付项目者 |
-
-```mermaid
-flowchart LR
-    A[6.1<br/>原理与任务设计] --> B[6.2<br/>项目实现与闭环]
-    B --> C[6.3<br/>环境与部署]
-    C --> D[仿真任务]
-    D --> E[专家数据]
-    E --> F[LeRobotDataset]
-    F --> G[SmolVLA 训练]
-    G --> H[在线 Rollout]
-    H --> I[成功率诊断]
-    I -.优化反馈.-> D
-```
-
-## 推荐阅读路线
-
-### 路线 A：系统学习
-
-按 6.1、6.2、6.3 顺序阅读。该路线先建立模型与数据契约，再理解实现，最后部署。
-
-### 路线 B：准备采集和训练
-
-先阅读 6.2 中的“专家策略”“数据采集”“转换与检查”，再阅读 6.3 的环境验收和标准运行顺序；遇到 Action Chunk、Flow Matching 或归一化问题时回查 6.1。
-
-### 路线 C：迁移到新工作站
-
-先完成 6.3 的仓库、环境、资产和模型准备，再按部署验收顺序执行。环境通过后，阅读 6.2 确认当前数据和 checkpoint 契约。
-
-### 路线 D：优化 Rollout 成功率
-
-直接阅读 6.2 的在线 Rollout、Raw/Fused/Command/Actual 和失败诊断，再回到 6.1 理解“可达不等于可抓”以及随机化覆盖原则。
-
-## 当前技术基线
-
-| 组件 | 当前记录 | 证据来源 |
+| 项目 | 仿真链路 | 真机链路 |
 |---|---|---|
-| Isaac Sim | 5.1.0.0 | `environment/versions.md` |
-| IsaacLab | 0.54.2，外部 checkout | `environment/versions.md` |
-| LeRobot | 0.6.1，外部 submodule/check-out | 本地 LeRobot 源码与 `environment/versions.md` |
-| 仿真环境 | Python 3.11，环境名 `env_isaaclab` | `environment/isaaclab.yml`、`run.sh` |
-| 模型环境 | Python 3.12，环境名 `smolvla` | `environment/smolvla.yml`、`run.sh` |
-| VLM 基座 | `SmolVLM2-500M-Video-Instruct` 本地目录 | 当前任务训练配置 |
-| 活跃案例 | `drawer_insert_close` | `configs/tasks/` |
-| Docker release | `full-v4-r1` 已完成 8×RTX 4090 服务器全链路验证 | 顶层 `docker/README.md`、`environment/versions.md` |
+| 任务 | 打开抽屉、放入物体、关闭抽屉 | 右臂抓把手、拉开、推回、松手撤离 |
+| 数据 schema | `s4_bimanual_v1` | `s4_real_vla_v2` |
+| state/action | 26D / 26D | 8D / 8D |
+| 相机 | 胸前、左腕、右腕 | 头部、右腕 |
+| 数据/控制频率 | 20 Hz / 120 Hz | 20 Hz / 30 Hz |
+| 发布 checkpoint | 350K | 300K |
+| rollout | sim 容器内本地 policy 子进程 | GPU policy server + robot client |
 
-> 版本说明：`environment/versions.md` 是已验证的工作站快照，不代表任意补丁版本都可以互换。部署时应如实记录实际 commit、Python、CUDA、驱动与包版本。
+两条链路共享 SmolVLA、LeRobotDataset、绝对关节目标和 Action Chunk，但它们的任务、维度、
+相机键、语言和控制频率不同。`meta/s4_contract.json` 及其 SHA256 是数据和 checkpoint 能否配对
+的依据，不能只凭文件名判断兼容。
 
-## 证据标记
+## 证据约定
 
-三节统一使用以下表述区分证据强度：
+课程中的事实按以下优先级理解：
 
-- **当前代码/配置**：可由当前实现直接证明；
-- **测试契约**：测试代码定义了预期行为，但不代表本次已经执行；
-- **官方资料**：来自 SmolVLA 论文、Hugging Face/LeRobot 或 NVIDIA 官方资料；
-- **历史结果**：README 或旧实验留下的结果，只说明当时条件；
-- **尚未验证**：有设计或实现依据，但缺少当前版本实验结果。
+1. 当前代码与配置；
+2. `release/manifest.yaml` 中固定的版本和验收记录；
+3. 自动化测试定义的行为；
+4. 项目历史实验记录；
+5. 外部论文或官方文档。
 
-> 技术要点：IK 可达，不等于物理抓取成功；离线误差低，不等于在线闭环顺利；而训练完成，更不等于数据、模型与 Rollout 之间的契约一定锲合。评估时，务必把这三层"不等于"记在心里。
+教程命令默认从仓库根目录执行。涉及真实机器人输出的命令只用于解释实现，必须完成现场安全
+门禁后才能运行。v0.1.0 已在当前 RTX 4090 工作站完成仿真、训练、真机策略协议和 robot
+无硬件验证；异机复现与物理机器人动作验证尚未完成。
 
-## 当前接口速照
+## 版本基线
 
-下表用于防止阅读历史日志或旧文档时混淆当前实现。具体解释见 6.1 和 6.2。
+- Isaac Sim 5.1.0.0；
+- IsaacLab fork：2.3.2 兼容分支，Python package 0.54.2；
+- LeRobot 0.6.1 对应的固定 submodule commit；
+- sim：Python 3.11；policy：Python 3.12；robot：Python 3.10 + ROS 2 Humble；
+- 正式不可变身份见仓库根目录 `release/manifest.yaml`。
 
-| 项目 | 当前实现 |
-|---|---|
-| 专家状态机 / 模型语言 | 27 个控制阶段 / 12 个语言宏阶段 |
-| 主罐随机 | 默认启用，5×5 分层格内连续随机 |
-| 抓取相关物体位移门控 | 20 mm |
-| 同一位置重试 | 初始尝试之外额外重试 3 次 |
-| 重试耗尽 | 留在同一格内重新采样，不跳过该格 |
-| state/action | 26D，绝对关节目标 |
-| 数据/控制频率 | 20 Hz / 120 Hz |
-| Action Chunk | 50 个策略帧 |
-| 在线重规划 | 默认每 30 个策略帧 |
-| 训练保存频率 | 当前任务 YAML 默认 50000 steps |
-| Headless | 隐藏 GUI，但三路相机仍需渲染 |
-| 离线 preview | 当前只传入第一路视觉 feature |
-| 最终成功条件 | 主罐根坐标位于宽松的抽屉世界坐标 X/Y/Z 区域内；抽屉开度仅作遥测 |
-
-## 课程文件
-
-```text
-docs/course/
-├── index.md                  # 本索引（课程定位、路线、技术基线）
-├── 01-principles.md           # 原理、架构、任务设计
-├── 02-implementation.md       # 专家、数据、训练、Rollout
-└── 03-deployment.md           # 环境、资产、配置、部署验收
-```
-
-## 官方参考资料
-
-1. Mustafa Shukor et al. [SmolVLA: A Vision-Language-Action Model for Affordable and Efficient Robotics](https://arxiv.org/abs/2506.01844), 2025.
-2. Hugging Face LeRobot. [SmolVLA 官方文档](https://huggingface.co/docs/lerobot/smolvla).
-3. Hugging Face LeRobot. [SmolVLA 官方实现](https://github.com/huggingface/lerobot/tree/main/src/lerobot/policies/smolvla).
-4. Hugging Face LeRobot. [LeRobotDataset v3.0](https://huggingface.co/docs/lerobot/lerobot-dataset-v3).
-5. NVIDIA. [Isaac Lab Documentation](https://isaac-sim.github.io/IsaacLab/).
-6. NVIDIA. [Isaac Sim Documentation](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/).
-
-## 项目内部参考
-
-- `README.md`、`run.sh`、`.env.example`：项目入口和路径配置；
-- `configs/tasks/`：数据、专家和训练的真实配置；
-- `docs/README.md`：精简后的工程文档索引；
-- `docs/REPRODUCTION.md`：双环境、资产、模型与部署；
-- `docs/PIPELINE.md`：采集、转换、训练、Rollout、契约与诊断。
+扩展阅读：工程快速开始见根目录 `README.md`，简明复现步骤见
+`s4_smolvla_isaaclab/docs/REPRODUCTION.md`，真机 rollout 安全细节见
+`s4_smolvla_isaaclab/real_vla_stack/docs/real_robot_rollout.md`。

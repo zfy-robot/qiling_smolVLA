@@ -13,6 +13,12 @@
    `images.publication_status` 改为正式状态，再创建 release commit/tag；
 6. 本地 `.env` 只决定挂载位置，不能覆盖 artifact 身份和版本。
 
+`v0.1.0` 的验收范围是当前 RTX 4090 工作站上的完整本机验证。异机干净 clone 与物理机器人
+动作验收因工期延期，并明确记录在 manifest 和 Release Notes 中，不应被表述为已通过。
+
+旧的单体大镜像已退役。发布和使用只允许根目录 `./s4`、`compose.yaml` 以及
+`docker/{sim,policy,robot,artifacts}/Dockerfile`，CI 会拒绝旧入口重新进入 Git。
+
 发布 GHCR 镜像前使用 classic PAT 的 `write:packages` 权限登录。先推最小 robot 镜像验证权限：
 
 ```bash

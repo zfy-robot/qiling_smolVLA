@@ -1,6 +1,23 @@
 # 完整流水线、契约与诊断
 
-本文档是当前 `drawer_insert_close` 任务的实验手册，覆盖专家采集、HDF5 检查、LeRobotDataset 转换、训练、checkpoint 检查和在线 Rollout。安装和资源部署见 [复现与部署](REPRODUCTION.md)。
+本文档是当前仿真 `drawer_insert_close` 任务的实验手册，覆盖专家采集、HDF5 检查、
+LeRobotDataset 转换、训练、checkpoint 检查和在线 Rollout。安装和资源部署见
+[复现与部署](REPRODUCTION.md)。真机的采集、转换、训练和分布式 rollout 不复用本手册的
+26D/三相机命令，见 [课程 6.2](course/02-implementation.md) 与
+[`real_vla_stack`](../real_vla_stack/README.md)。
+
+本文中的 `bash run.sh ...` 是**容器内业务命令**，不是要求在宿主重建 Conda 环境。开始仿真
+采集或 rollout 前，从仓库根目录进入带可写数据根的 sim 容器：
+
+```bash
+./s4 compose --profile sim run --rm --no-deps \
+  -e S4_DATA_ROOT=/workspace/outputs/datasets \
+  sim bash
+```
+
+转换与训练章节改用同样参数进入 `policy` 服务。源码挂载只读，发布制品位于只读
+`/artifacts`；本文创建的 HDF5、LeRobotDataset、checkpoint 和评估结果必须写入
+`/workspace/outputs`，对应宿主 `.s4/outputs`。
 
 ## 1. 端到端关系
 
@@ -82,16 +99,20 @@ flowchart LR
 ## 3. 采集前检查
 
 ```bash
-cd /path/to/smolVLA/s4_smolvla_isaaclab
 bash run.sh doctor
-bash run.sh activate-task drawer_insert_close
 ```
 
-先运行有界面场景：
+默认任务已经由 `configs/active_task.default` 固定为 `drawer_insert_close`。如需改变任务，在宿主
+修改被忽略的本地 override 后重新进入容器；不要尝试从只读源码挂载内写配置。
+
+先退出交互 sim shell，从宿主完成发布环境的 headless 图形与相机门禁：
 
 ```bash
-bash run.sh sim
+./s4 verify sim
 ```
+
+通过后再按本文开头命令进入 sim 容器。带窗口的 `bash run.sh sim` 只适用于维护者已经额外
+配置 X11/Wayland、`DISPLAY` 和访问权限的工作站，不是 v0.1.0 的标准 Compose 接口。
 
 确认：
 
@@ -105,7 +126,7 @@ bash run.sh sim
 
 ```bash
 bash run.sh record \
-  --output datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/smoke_5_seed42.hdf5 \
+  --output /workspace/outputs/datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/smoke_5_seed42.hdf5 \
   --episodes 5 \
   --random-seed 42 \
   --episode-timeout-s 300 \
@@ -121,16 +142,14 @@ bash run.sh record \
 先定义本轮唯一输出路径：
 
 ```bash
-cd /path/to/smolVLA/s4_smolvla_isaaclab
-
 EPISODES=200
 MAX_FAILURES=20
 DATASET_NAME=s4_drawer_insert_close_v4_12phase_serial_acquire
-RUN_DIR="datasets/staging/${DATASET_NAME}/production_200_seed42"
+RUN_DIR="/workspace/outputs/datasets/staging/${DATASET_NAME}/production_200_seed42"
 HDF5_FILE="${RUN_DIR}/drawer_insert_close_scripted.hdf5"
 FAILURE_LOG="${RUN_DIR}/drawer_insert_close_scripted_failures.jsonl"
 FAILURE_SUMMARY="${RUN_DIR}/drawer_insert_close_scripted_failure_summary.json"
-LEROBOT_DIR="datasets/lerobot_data/${DATASET_NAME}"
+LEROBOT_DIR="/workspace/outputs/datasets/lerobot_data/${DATASET_NAME}"
 
 mkdir -p "${RUN_DIR}"
 ```
@@ -202,6 +221,16 @@ bash run.sh dataset-check \
 
 ## 6. 转换为 LeRobotDataset
 
+退出 sim 容器后，从仓库根目录进入 policy 容器，并重新定义上一节的变量：
+
+```bash
+./s4 compose --profile train run --rm --no-deps \
+  -e S4_DATA_ROOT=/workspace/outputs/datasets \
+  policy bash
+```
+
+`HDF5_FILE`、`LEROBOT_DIR` 和 `EPISODES` 应使用第 4 节给出的绝对容器路径和值。
+
 第一次转换：
 
 ```bash
@@ -235,23 +264,29 @@ bash run.sh dataset-check \
 
 ### 7.1 一体化采集转换
 
-确认冒烟测试通过后，也可以使用：
+确认冒烟测试通过后，也可以从宿主用 sim 服务一次完成采集和转换；该镜像为了本地仿真
+rollout 同时包含隔离的 Isaac 与 SmolVLA 环境：
 
 ```bash
-bash run.sh collect-convert \
+./s4 compose --profile sim run --rm --no-deps \
+  -e S4_DATA_ROOT=/workspace/outputs/datasets \
+  sim bash run.sh collect-convert \
   --episodes 200 \
   --random-seed 42 \
   --episode-timeout-s 300 \
   --reset-settle-s 2.0 \
   --record-every-n 6 \
   --max-failed-attempts 20 \
-  --hdf5-file datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/production_200_seed42/drawer_insert_close_scripted.hdf5 \
+  --hdf5-file /workspace/outputs/datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/production_200_seed42/drawer_insert_close_scripted.hdf5 \
   --headless
 ```
 
 该入口执行“采集 → HDF5 检查 → 转换 → LeRobotDataset 检查”，绝不会自动训练。断点续采时额外传 `--resume`；只有目标 LeRobotDataset 已存在且确认替换时才传 `--overwrite`。
 
 ## 8. 训练
+
+训练必须回到 policy 服务。若上一节运行了一体化 sim 命令，请重新进入第 6 节给出的 policy
+容器；不要在 robot 或宿主 Python 中训练。
 
 当前默认训练配置：
 
@@ -327,7 +362,7 @@ world size，但更改后只能保证继续训练，不保证逐 rank 的样本�
 ## 9. checkpoint 检查
 
 ```bash
-CHECKPOINT="outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/500000/pretrained_model"
+CHECKPOINT="/workspace/outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/500000/pretrained_model"
 
 bash run.sh dataset-check \
   "${LEROBOT_DIR}" \
@@ -342,7 +377,7 @@ bash run.sh dataset-check \
 ```bash
 PYTHONPATH="$PWD" bash run.sh preview \
   --checkpoint "${CHECKPOINT}" \
-  --dataset-root datasets/lerobot_data \
+  --dataset-root /workspace/outputs/datasets/lerobot_data \
   --repo-id "${DATASET_NAME}" \
   --num-frames 20 \
   --device cuda
@@ -354,6 +389,9 @@ PYTHONPATH="$PWD" bash run.sh preview \
 `record`、`train` 或 `rollout`。
 
 ## 11. 在线 Rollout
+
+退出 policy 容器，再按本文开头的命令进入 sim 容器；`CHECKPOINT` 和 `LEROBOT_DIR` 均位于
+共享的 `/workspace/outputs` 挂载中。
 
 Rollout 使用两个进程：
 
@@ -407,13 +445,13 @@ bash run.sh rollout \
 输出默认位于：
 
 ```text
-outputs/eval/rollout_<timestamp>_<det|randN>_ckpt<step>/
+/workspace/outputs/eval/rollout_<timestamp>_<det|randN>_ckpt<step>/
 ```
 
 包含视频、动作 CSV、诊断图和 `summary.json`。诊断单轮动作：
 
 ```bash
-bash run.sh diagnose outputs/eval/<run>/ep001_actions.csv
+bash run.sh diagnose /workspace/outputs/eval/<run>/ep001_actions.csv
 ```
 
 动作层级：

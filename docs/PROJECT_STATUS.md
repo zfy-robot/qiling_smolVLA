@@ -1,7 +1,17 @@
 # 项目模块化状态与后续执行顺序
 
 > 唯一进度账本。每完成或发现一个步骤，都更新本文件；不要仅依赖聊天记录。
-> 最近更新：2026-09-10（Asia/Shanghai）。
+> 最近更新：2026-09-11（Asia/Shanghai）。
+
+## 本版本结束标志
+
+本次以 **v0.1.0 本机完整验证版** 收口。完成条件是：模块化源码与制品发布完成；三个环境
+镜像公开且 digest 固定；旧单体大镜像的构建、启动和 Compose 入口从仓库移除；所有用户文档
+只描述根目录 `./s4` 与 `compose.yaml`；本机静态及动态验收通过；最终提交的 CI 通过；创建
+`v0.1.0` tag 和 GitHub Release。
+
+异机干净 clone、双 GPU DDP 和物理机器人相机/feedback/shadow/live motion 因工期明确延期，
+必须在文档中如实标注，但不阻塞本版本发布。延期不等于这些能力已经验收。
 
 ## 最终目标
 
@@ -19,13 +29,13 @@
 
 - [x] 主项目按 Apache-2.0 公开发布，已准备 `LICENSE` 和 `NOTICE`；
 - [x] IsaacLab submodule：`zfy-robot/IsaacLab@f764c12a5ccf5cc6997de699653b4bb70e56a3f7`；
-- [x] LeRobot submodule：`3f2179...`（正式 manifest 中仍需写完整 commit）；
+- [x] LeRobot submodule：`3f2179f3b69708b6ad009b2e7685dd9d05269ee1`；
 - [x] ModelScope public dataset repo：`zfy2qiling/qiling_smolvla`；
 - [x] 固定 ModelScope revision：`3686874898fdf908431db487468f21a527507988`；
 - [x] 165 个发布文件上传成功，失败数为 0；
 - [x] `sim_rollout` 下载成功：112 个远端文件，111 个内容文件通过 SHA256；
 - [x] 仿真采用 350K policy，真机采用 300K policy，不发布 `training_state/`；
-- [x] Git 当前版本已暂存移除 84 个 `assets/` 文件，运行时从 ModelScope 只读挂载；
+- [x] Git 当前版本已移除 84 个 `assets/` 文件，运行时从 ModelScope 只读挂载；
 - [x] NVIDIA Isaac 5.1 最小闭包：231 个文件、523,528,659 bytes，lock 中 SHA256 已验证；
 - [x] Miniforge installer 已固定版本和 SHA256，并支持宿主缓存/断点下载；
 - [x] Docker build context 已排除 models、datasets、outputs、assets、local assets、旧 Kit exts。
@@ -161,8 +171,7 @@
   - request 0/1 均返回有限 `(50, 8)` chunk，推理时间分别约 322.5ms / 113.2ms；
   - RTC reset、`rtc_source_request_id=0` 与 `leftover_start_index=1` 均通过；
   - 最终标记 `[OK] real policy ZMQ protocol`，服务在测试后自动关闭。
-- [x] 记录当前最终 policy image digest（见本节已记录的 OCI manifest/list/config）；正式发布到
-  GHCR 后再补远端镜像引用。
+- [x] 记录并发布最终 policy image digest；远端不可变引用见 `release/manifest.yaml`。
 
 ### 3. 构建并验收 robot 环境
 
@@ -180,7 +189,7 @@
   - 当前 OCI manifest：`sha256:3a1d24024211af313fc938853235519f3b27555c859eaf8b731844ec2c1dce7b`；
   - 当前 OCI manifest list：`sha256:64bbcd1a6d89c6ee8cfe946c7b2e9c339b346a41db6b41c0d45cc6af68e3b411`；
   - 当前 image config：`sha256:c944625fa0cc11a2cfb41ec45ed4f75a407abf911150e17d5090b1aff0b83235`；
-  - 最终源码和 verifier 收口后仍需一次缓存式重建，届时替换为正式 digest。
+  - 完成入口和 verifier 修复后已缓存式重建，并由下方正式 GHCR digest 取代早期本地 digest。
 - [x] 无硬件模式验证 ROS、消息包、相机 SDK、USB 枚举、配置解析和网络协议；
   - 首次运行在镜像入口加载 ROS 时触发 `AMENT_TRACE_SETUP_FILES: unbound variable`；根因是
     ROS Humble 官方 setup 脚本不兼容 shell nounset，并非 ROS/依赖缺失；
@@ -251,20 +260,31 @@
 - [x] 完成根 README 的最短教程、部署拓扑、安全门禁、制品边界和网络故障排查；
 - [x] 增加 CI：shell/Python/Compose 静态检查、lock、submodule、敏感信息和无大文件检查；
   取消跟踪后，本地完整门禁已通过：494 个 tracked paths；
-- [ ] 在干净 clone 上执行一次教程级复现；
+- [ ] **延期（不阻塞 v0.1.0）**：在另一台设备的干净 clone 上执行教程级复现；
 - [x] 创建主项目模块化源码快照 commit；IsaacLab fork commit 已存在远端；
-- [x] 正常 fast-forward 推送主项目 `main` 至 release commit `5f3e72c`；公开远端 HEAD 核对一致；
+- [x] 正常 fast-forward 推送主项目 `main` 至许可证修复 commit `39f19fc`；公开远端 HEAD 核对一致；
 - [x] GitHub Actions `static-release-checks`（run `34567064694`）完成且结论为 `success`；
-- [ ] 合入干净 clone 前发现的许可证参数文档修复，重新推送 main；
+- [x] 合入 NVIDIA 许可证显式接受参数文档修复并推送 main；
+- [x] 从仓库删除旧单体大镜像的 Dockerfile、Compose、构建、初始化和启动入口；
+- [x] 重写部署、复现、课程、模块和 Docker 文档，仅保留模块化链路；
+  - 课程编号保持 6.1/6.2/6.3，内容重组为“VLA 理论与统一契约 → 仿真/真机两条完整链路 →
+    两条链路的代码、进程和容器实现”；
+  - 仿真事实已对照 26D、三相机、20/120Hz、27/12 phases、350K 和本地 policy 子进程；
+  - 真机事实已对照 8D、两相机、20/30Hz、因果对齐、ZMQ v4、RTC、双 live 门和 300K；
+  - 修复真机 rollout 日志仍写一次性容器 HOME 的实现：现在统一写入
+    `${S4_OUTPUT_ROOT}/real_rollouts`，Compose 下持久化到 `.s4/outputs/real_rollouts`；
+  - 其余 README、复现、pipeline、真机手册、资产/项目清单和 release 文档已交叉审计；
+  - 文档收口后的模拟全暂存静态门禁通过（489 个 tracked paths），Compose/shell/Python 检查
+    通过；宿主无 Torch/msgpack 的纯逻辑测试 44 项通过，正式 policy 容器中的协议、配置与
+    import-boundary 测试 5/5 通过；本地 Markdown 相对链接检查 29 份文档通过。
+- [ ] 提交并推送本次旧链路退役与文档收口变更，确认对应 CI 通过；
 - [ ] 创建版本 tag 和 GitHub Release。
 
 ## 项目所有者下一步只需执行
 
-三个镜像均已成功上传、公开并通过匿名 digest 验证。下一步由项目所有者在临时目录执行干净
-clone 教程复现门；维护者核对结果后创建最终 release commit，再由所有者推送 main 和 tag。
-
-干净 clone 验收通过前不创建 `v0.1.0` tag；如果发现教程问题，先补修并更新 release commit，
-重新通过静态检查与干净 clone 后再打 tag，避免移动已公开版本标签。
+三个镜像均已上传、公开并通过匿名 digest 验证。当前只剩：提交本次收口变更、推送 main、
+等待该提交 CI 通过、创建并推送 annotated tag、创建 GitHub Release。异机和物理机器人验证已
+移入后续版本，不再作为本次标签的前置门槛。具体命令由维护者在本地门禁通过后逐条提供。
 
 ## 变更与长任务协作规则
 

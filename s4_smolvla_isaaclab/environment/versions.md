@@ -43,21 +43,6 @@ System `ffmpeg` was not on `PATH` during the audit. LeRobot conversion used
 PyAV and the SVT-AV1 codec available to that Python environment. The provided
 SmolVLA environment adds `ffmpeg` for explicit command-line inspection.
 
-## Docker full-v4-r1 deployment validation
-
-Validated on 2026-09-01 on Ubuntu 22.04 with NVIDIA driver 570.190 and an
-8×RTX 4090 server. The release containers reported Python 3.11.16 in
-`env_isaaclab`, Python 3.12.14 in `smolvla`, PyTorch 2.7.0+cu128 and CUDA
-userspace 12.8. The `smolvla` environment includes Accelerate 1.14.0 as a
-required dependency for both single- and multi-GPU training. The following runtime capabilities passed: NVIDIA EGL Vulkan,
-Isaac Sim 5.1 headless renderer, a real `(1, 128, 128, 3)` RGB camera frame,
-SmolVLA rollout, single-GPU resume, and two-rank Accelerate/NCCL training with
-real forward/backward steps.
-
-This Docker record is intentionally separate from the workstation snapshot
-above. Host NVIDIA driver libraries are injected by NVIDIA Container Toolkit
-and are not baked into the image.
-
 ## Real-robot LAN rollout dependencies
 
 Validated on 2026-09-07 with user-site packages disabled:

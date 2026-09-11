@@ -20,6 +20,13 @@ GITLINKS = {
 }
 FORBIDDEN_EXACT = {
     ".env",
+    "docker/Dockerfile",
+    "docker/build_full.sh",
+    "docker/compose.yaml",
+    "docker/entrypoint.sh",
+    "docker/prepare_kit_extensions.sh",
+    "docker/prepare_workspace.sh",
+    "docker/run.sh",
     "s4_smolvla_isaaclab/hardware_teleop/config/ros_env.sh",
     "s4_smolvla_isaaclab/real_vla/config/cameras.yaml",
 }
