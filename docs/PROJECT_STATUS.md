@@ -309,14 +309,13 @@ GitHub Release 均公开。
 - [x] 提交并推送本次旧链路退役与文档收口变更：
   `6e95541b6cda2975f90fccfa59285363e552ff6f`；GitHub Actions run `34571153032` 的
   `validate` job 于 2026-09-11 完成，结论为 `success`；
-- [ ] 创建版本 tag 和 GitHub Release。
+- [x] v0.1.0 tag 已创建并用于独立 clone；v0.1.1 tag/GitHub Release 待最终 release commit 后创建。
 
 ## 项目所有者下一步只需执行
 
-三个镜像均已上传、公开并通过匿名 digest 验证，最终文档/旧链路收口提交及其 CI 也已通过。
-当前只剩：提交这次状态账本更新、确认最后一次 CI、创建并推送 annotated tag、创建 GitHub
-Release。异机和物理机器人验证已移入后续版本，不再作为本次标签的前置门槛。具体命令由
-维护者在本地门禁通过后逐条提供。
+三个 `v0.1.1` 镜像标签均已公开并于 2026-09-19 通过匿名 digest 验证，内容与 v0.1.0 固定
+digest 相同。当前只剩：推送最终 release commit、确认 CI、创建并推送 annotated `v0.1.1`
+tag、创建 GitHub Release。异机和物理机器人验证不作为补丁版本前置门槛。
 
 ## 变更与长任务协作规则
 

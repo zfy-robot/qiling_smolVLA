@@ -43,8 +43,8 @@ manifest 和 Release Notes 中明确，不阻塞该标签。
 - [x] 修复 Isaac cache ownership 与只读源码内嵌套 mountpoint；
 - [x] GUI rollout 使用私有 X11 cookie 和 NVIDIA GLX ICD，120-step 实测通过；
 - [x] Shell、Compose、release boundary 和 submodule 静态门禁通过；
-- [ ] 给三个不变的 OCI digest 增加公开 `v0.1.1` tag 并远端核对；
-- [ ] 更新正式 manifest，提交并推送 main；
+- [x] 给三个不变的 OCI digest 增加公开 `v0.1.1` tag 并完成匿名远端核对；
+- [x] 更新正式 manifest 并准备最终 release commit；main push 仍待完成；
 - [ ] 创建并推送不可移动的 annotated `v0.1.1` tag；
 - [ ] 创建 GitHub Release，正文使用 `release/RELEASE_NOTES_v0.1.1.md`。
 

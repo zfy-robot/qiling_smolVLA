@@ -87,7 +87,7 @@ docker/
   policy/Dockerfile
   robot/Dockerfile
 release/
-  manifest.yaml                    # v0.1.0 唯一映射
+  manifest.yaml                    # v0.1.1 唯一映射
   artifacts.yaml                   # ModelScope 下载集合
   isaac_assets_5.1.lock.json
   isaac_extensions_5.1.lock.json
@@ -104,7 +104,7 @@ lerobot/                            # submodule
 - `.s4/outputs/`：采集、转换、训练和评估输出；
 - `.s4/cache/`：Kit、XDG、模型和运行缓存；
 - `.s4/isaac-assets/5.1/`：用户从 NVIDIA 官方取得的资产，不再分发；
-- `training_state/`：仅用于内部续训，不属于 v0.1.0 教程发布；
+- `training_state/`：仅用于内部续训，不属于 v0.1.1 教程发布；
 - `.env`、`ros_env.sh`、`cameras.yaml`：部署机器专用，不进 Git。
 
 所有 runtime 数据使用 bind mount；不再用 Docker named volume 初始化或隐藏数据。
@@ -119,11 +119,11 @@ Toolkit。主机驱动不会进入镜像。
 16GB VRAM、32GB RAM；已在 RTX 4090 24GB、driver 580.159.03 验证。其他设备尚未验收，不能
 从本机成功推断为自动兼容。
 
-## v0.1.0 验证边界
+## v0.1.1 验证边界
 
 本机已完成三个镜像的构建、CUDA/Vulkan/Isaac RGB、严格离线仿真 episode、policy 单步训练、
 真机 300K 离线/ZMQ 协议，以及 robot 无硬件 ROS/Pink/QP 检查。三个 GHCR 镜像均公开并通过
 匿名 digest 验证。
 
 暂缓项：其他物理设备复现，以及连接实体机器人后的相机、feedback、shadow、5 秒低风险动作。
-这些结果将进入后续兼容性矩阵，不伪装成 v0.1.0 已完成项。
+这些结果将进入后续兼容性矩阵，不伪装成 v0.1.1 已完成项。

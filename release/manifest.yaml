@@ -1,5 +1,5 @@
 schema_version: s4_release_v1
-release: 0.1.0
+release: 0.1.1
 release_status: released
 
 source:
@@ -7,7 +7,8 @@ source:
     repository: https://github.com/zfy-robot/qiling_smolVLA
     commit: 86fab172e974c06d65828f228ac030bb1cee8c4f
     commit_scope: environment_image_build_source
-    release_source: refs/tags/v0.1.0
+    runtime_patch_commit: e0fef19d7654bed16f4057d1c72d5d2de5a0902c
+    release_source: refs/tags/v0.1.1
   lerobot:
     repository: https://github.com/huggingface/lerobot
     commit: 3f2179f3b69708b6ad009b2e7685dd9d05269ee1
@@ -41,31 +42,31 @@ images:
   publication_status: public
   registry: ghcr.io/zfy-robot
   sim:
-    tag: ghcr.io/zfy-robot/qiling-smolvla-sim:v0.1.0
+    tag: ghcr.io/zfy-robot/qiling-smolvla-sim:v0.1.1
     ref: ghcr.io/zfy-robot/qiling-smolvla-sim@sha256:e0fb24a132c27ef271e20fd234fa215d34cf2e331296010f3f92d0ee55288c44
     publication_status: public
-    remote_digest_verified: 2026-09-11
-    anonymous_pull_verified: 2026-09-11
+    remote_digest_verified: 2026-09-19
+    anonymous_pull_verified: 2026-09-19
     oci_manifest_sha256: 954140a9d6748fecc9b9b6f80e84fcd60171629e017ec5a96cf6d142e305b84f
     image_config_sha256: 47dbe4c85fa75f90dee009c63e8198a80707f026cfc46b35625af014dac653c5
     unpacked_size_bytes: 22576256457
     dockerfile: docker/sim/Dockerfile
   policy:
-    tag: ghcr.io/zfy-robot/qiling-smolvla-policy:v0.1.0
+    tag: ghcr.io/zfy-robot/qiling-smolvla-policy:v0.1.1
     ref: ghcr.io/zfy-robot/qiling-smolvla-policy@sha256:9f2bced045e647c1ca210bc37a217f9ac43f3c8ad15e7764224af36fa266fedb
     publication_status: public
-    remote_digest_verified: 2026-09-11
-    anonymous_pull_verified: 2026-09-11
+    remote_digest_verified: 2026-09-19
+    anonymous_pull_verified: 2026-09-19
     oci_manifest_sha256: 757f6643bc5f840f008628e0b8c1e12a5394776a7b5d4ef9a0e65150b9f53b75
     image_config_sha256: f0842bf040ce0f00ab78ec49212fdb96e800e46da45cb5174fe17212a88923e4
     unpacked_size_bytes: 8590742583
     dockerfile: docker/policy/Dockerfile
   robot:
-    tag: ghcr.io/zfy-robot/qiling-smolvla-robot:v0.1.0
+    tag: ghcr.io/zfy-robot/qiling-smolvla-robot:v0.1.1
     ref: ghcr.io/zfy-robot/qiling-smolvla-robot@sha256:6a36352a87939ec296a663343a8949c9685ef8fc0af0d3e2f63a599bf1d0b1b5
     publication_status: public
-    remote_digest_verified: 2026-09-11
-    anonymous_pull_verified: 2026-09-11
+    remote_digest_verified: 2026-09-19
+    anonymous_pull_verified: 2026-09-19
     oci_manifest_sha256: 47d4ed39b263ca9c17d80dc6177fa841cda767beaa6256c55a62a7711c140e8a
     image_config_sha256: e16e43e5f2d55729709b2d61591f9e152bc2b9c54d15a4f3143897e412169c20
     unpacked_size_bytes: 588151015
@@ -151,15 +152,17 @@ contracts:
     control_hz: 30
 
 validation:
-  scope: local_host_complete_validation
-  validated_on: 2026-09-11
-  cross_device_reproduction: deferred_due_schedule
+  scope: local_host_clean_clone_and_gui_validation
+  validated_on: 2026-09-19
+  clean_clone_same_host: passed
+  cross_device_reproduction: deferred_other_physical_host
   host:
     gpu: NVIDIA GeForce RTX 4090
     driver: 580.159.03
     sim_policy_peak_training_memory_mib: 4994
   sim_runtime: passed
-  sim_offline_full_episode: passed_environment_policy_unsuccessful
+  sim_offline_full_episode: passed_runtime_policy_unsuccessful_gate_variant
+  sim_gui_rollout_smoke: passed
   policy_training_smoke: passed
   real_policy_offline_inference: passed
   real_policy_zmq_protocol: passed
