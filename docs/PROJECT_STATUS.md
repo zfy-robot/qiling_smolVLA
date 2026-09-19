@@ -1,7 +1,7 @@
 # 项目模块化状态与后续执行顺序
 
 > 唯一进度账本。每完成或发现一个步骤，都更新本文件；不要仅依赖聊天记录。
-> 最近更新：2026-09-11（Asia/Shanghai）。
+> 最近更新：2026-09-19（Asia/Shanghai）。
 
 ## 本版本结束标志
 
@@ -12,6 +12,14 @@
 
 异机干净 clone、双 GPU DDP 和物理机器人相机/feedback/shadow/live motion 因工期明确延期，
 必须在文档中如实标注，但不阻塞本版本发布。延期不等于这些能力已经验收。
+
+## v0.1.1 补丁发布
+
+`v0.1.0` tag 保持不可移动。`v0.1.1` 只修改宿主编排脚本、Compose 默认值、运行时 fallback
+与文档，不改变 sim/policy/robot 镜像内环境，因此复用三个已验证 OCI digest，并给相同内容
+增加 `v0.1.1` tag。发布门为：干净 clone 问题已修复；GUI 短 rollout 在本地 X11 桌面显示
+完整场景并退出码 0；静态门禁通过；GHCR 新标签远端 digest 与 v0.1.0 相同；main、tag 与
+GitHub Release 均公开。
 
 ## 最终目标
 
@@ -260,7 +268,28 @@
 - [x] 完成根 README 的最短教程、部署拓扑、安全门禁、制品边界和网络故障排查；
 - [x] 增加 CI：shell/Python/Compose 静态检查、lock、submodule、敏感信息和无大文件检查；
   取消跟踪后，本地完整门禁已通过：494 个 tracked paths；
-- [ ] **延期（不阻塞 v0.1.0）**：在另一台设备的干净 clone 上执行教程级复现；
+- [ ] **仍延期**：在另一台物理设备执行教程级复现；
+- [x] 在当前工作站使用独立的 `v0.1.0` 干净 clone 完成公开消费路径复验：固定 digest 的三个
+  GHCR 镜像、165 个 ModelScope 条目、231 个 Isaac 资产、3344 个 Kit extension 文件、sim
+  runtime、禁网 rollout、policy verify/单步训练、真机 300K 离线推理/ZMQ 协议和 robot
+  无硬件验证均可运行；
+  - 首次复验发现 `setup tutorial_all` 可让 Docker daemon 把尚不存在的 Isaac bind source
+    创建为 `nobody:nogroup`，普通用户随后无法写入；默认缓存已迁移到用户拥有的
+    `.s4/isaac-assets`，`./s4` 在 Compose 前创建并检查所有目录；
+  - 首次 `verify sim` 发现被 ModelScope 资产覆盖的嵌套目标
+    `s4_smolvla_isaaclab/assets` 在干净 clone 中不存在，Docker 又无法在只读源码挂载内创建；
+    `./s4` 现在预建该忽略目录，并对不可写/非目录情况给出明确错误；
+  - 干净复验的完整禁网 rollout 在第 4 阶段因抽屉只打开 0.035m、未达到 0.080m gate 而
+    正常提前结束，`complete=false/success=false`、进程退出码 0；这属于 350K policy 结果，
+    不改写先前发布基线，也不能表述为策略成功；
+  - 新增 `./s4 rollout sim-gui`，通过私有 X11 cookie 和宿主 X11 socket 显示 Isaac Sim，
+    headless/offline 入口保持默认且不使用宽泛的 `xhost +`；首次 GUI smoke 暴露全局固定的
+    headless EGL Vulkan ICD 会导致 GUI experience 在启动时段错误，GUI 入口现显式切换到由
+    NVIDIA Container Toolkit 注入的 `/etc/vulkan/icd.d/nvidia_icd.json`（GLX）；第二次测试
+    已成功创建窗口和 Vulkan renderer，随后发现主仓库仍只有旧位置的资产缓存，新入口现会在
+    新默认目录尚无完整资产时自动复用完整的 legacy cache，不复制也不重新下载。
+  - [x] 第三次 GUI smoke 加载完整资产后显示窗口与任务场景，执行 120 个物理步并以
+    `GUI_RC=0` 结束（2026-09-19）。
 - [x] 创建主项目模块化源码快照 commit；IsaacLab fork commit 已存在远端；
 - [x] 正常 fast-forward 推送主项目 `main` 至许可证修复 commit `39f19fc`；公开远端 HEAD 核对一致；
 - [x] GitHub Actions `static-release-checks`（run `34567064694`）完成且结论为 `success`；

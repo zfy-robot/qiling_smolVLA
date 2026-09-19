@@ -59,7 +59,7 @@ services:
       - ./.s4/artifacts:/artifacts
       - ./.s4/modelscope/download-home:/modelscope/home
       - ./.s4/modelscope/cache:/modelscope/cache
-      - ${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}:/isaac-assets
+      - ${S4_ISAAC_ASSETS_DIR:-./.s4/isaac-assets}:/isaac-assets
     command: [tutorial_all, --local-dir, /artifacts, --revision, "${S4_MODELSCOPE_REVISION:-master}"]
 
   isaac-assets:
@@ -88,8 +88,8 @@ services:
       - ./:/workspace/smolVLA:ro
       - ./.s4/outputs:/workspace/outputs
       - ./.s4/cache:/workspace/cache
-      - ${S4_ISAAC_ASSET_SOURCE_DIR:-./s4_smolvla_isaaclab/local_assets/isaac/5.1}:/nvidia-assets/5.1:ro
-      - ${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}:/workspace/isaac-assets
+      - ${S4_ISAAC_ASSET_SOURCE_DIR:-./.s4/isaac-assets/5.1}:/nvidia-assets/5.1:ro
+      - ${S4_ISAAC_ASSETS_DIR:-./.s4/isaac-assets}:/workspace/isaac-assets
     command:
       - bash
       - run.sh
@@ -139,7 +139,7 @@ services:
       - ./.s4/outputs:/workspace/outputs
       - ./.s4/cache:/workspace/cache
       - ./.s4/artifacts/assets:/workspace/smolVLA/s4_smolvla_isaaclab/assets:ro
-      - ${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}:/workspace/isaac-assets:ro
+      - ${S4_ISAAC_ASSETS_DIR:-./.s4/isaac-assets}:/workspace/isaac-assets:ro
     command: bash
 
   sim-offline:

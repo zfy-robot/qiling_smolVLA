@@ -30,13 +30,13 @@ fi
 export S4_PROJECT_ROOT="${S4_PROJECT_ROOT:-$PROJECT_ROOT}"
 export ISAACLAB_ROOT="${ISAACLAB_ROOT:-$HOME/IsaacLab}"
 export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-$HOME/isaacsim_assets/Assets/Isaac/5.1}"
-PROJECT_SCENE_ASSET_ROOT="$PROJECT_ROOT/local_assets/isaac/5.1"
+PROJECT_SCENE_ASSET_ROOT="$(dirname "$PROJECT_ROOT")/.s4/isaac-assets/5.1"
 if [[ -z "${S4_SCENE_ASSET_ROOT:-}" ]]; then
     if [[ -f "$PROJECT_SCENE_ASSET_ROOT/Isaac/Environments/Simple_Warehouse/warehouse.usd" ]]; then
         export S4_SCENE_ASSET_ROOT="$PROJECT_SCENE_ASSET_ROOT"
     else
-        # Compatibility fallback for existing workstations. Fresh clones should
-        # unpack the separately distributed local_assets bundle instead.
+        # Compatibility fallback for workstations with a separately installed
+        # official Isaac Sim asset tree.
         export S4_SCENE_ASSET_ROOT="$ISAAC_ASSET_ROOT"
     fi
 fi

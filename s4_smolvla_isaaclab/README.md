@@ -87,7 +87,7 @@ cp .env.example .env
 - `.s4/artifacts/`：ModelScope 发布制品，只读挂载；
 - `.s4/outputs/`：采集、转换、训练和评估输出；
 - `.s4/cache/`：运行与 Kit 缓存；
-- `local_assets/isaac/5.1/`：用户从 NVIDIA 官方取得的资产；
+- `.s4/isaac-assets/5.1/`：用户从 NVIDIA 官方取得的资产；
 - `.env`、`hardware_teleop/config/ros_env.sh`、`real_vla/config/cameras.yaml`：本机配置。
 
 上述本地数据均不进入 Git。正式发布只包含选定 checkpoint 的 `pretrained_model/`，不包含

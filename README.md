@@ -4,9 +4,10 @@ S4 双臂机器人从仿真/真机数据采集、LeRobot 数据转换、SmolVLA 
 项目把发布物拆成四层：GitHub 源码、三个职责独立的 OCI 环境镜像、ModelScope 大文件，以及
 宿主机上的私有运行数据。镜像不包含项目源码、数据集、模型、NVIDIA 驱动或主机专用配置。
 
-`v0.1.0` 是在当前 RTX 4090 工作站完成的本机完整验证版。跨设备复现与物理机器人动作验证
-因工期延期，未宣称已经通过。旧的源码、数据和环境一体化单体大镜像链路已经退役，不再提供
-兼容入口；本项目唯一用户入口是根目录 `./s4` 和 `compose.yaml`。
+`v0.1.1` 是针对公开复现路径的补丁版：在 `v0.1.0` 环境基线上修复干净 clone 的 bind mount
+权限/目标目录问题，并增加经过实机桌面验证的 Isaac Sim GUI rollout。另一台物理设备复现与
+物理机器人动作验证仍未宣称通过。旧的源码、数据和环境一体化单体大镜像链路已经退役，不再
+提供兼容入口；本项目唯一用户入口是根目录 `./s4` 和 `compose.yaml`。
 
 ## 架构
 
@@ -19,6 +20,9 @@ S4 双臂机器人从仿真/真机数据采集、LeRobot 数据转换、SmolVLA 
 
 源码在运行时只读挂载，ModelScope 制品挂载到 `/artifacts`，输出和缓存写入 `.s4/`。宿主机
 NVIDIA 驱动由 NVIDIA Container Toolkit 在容器启动时注入，Dockerfile 不安装内核驱动。
+`./s4` 会在 Compose 启动前以当前用户创建并检查全部 bind mount 目录，避免 Docker daemon
+在干净 clone 中把目录创建为 `root` 或 `nobody`。新安装使用 `.s4/isaac-assets`；升级时若只
+存在旧的 `s4_smolvla_isaaclab/local_assets/isaac` 完整缓存，入口会自动复用而不重复下载。
 
 真机推荐使用两台机器：机器人电脑运行 `robot` 容器；GPU 服务器运行 `policy-server`，两者
 通过可信局域网 TCP 5555 通信。同机部署时 `S4_POLICY_SERVER_HOST=127.0.0.1`。
@@ -88,6 +92,19 @@ ModelScope 或项目镜像。
 ./s4 rollout sim-offline
 ```
 
+在有本地图形桌面的 Linux 主机上，可用同一个 sim 镜像打开 Isaac Sim 窗口：
+
+```bash
+sudo apt install xauth       # 宿主缺少 xauth 时只需安装一次
+./s4 rollout sim-gui
+```
+
+该入口不传 `--headless`，并使用当前桌面的 X11 cookie 挂载 `/tmp/.X11-unix`；不使用
+`xhost +`。Ubuntu Wayland 会话通常由 XWayland 提供兼容。命令必须从拥有 `DISPLAY` 和 X11
+cookie 的本地桌面终端运行；纯 SSH、无桌面服务器和 macOS/Windows Docker 不属于此入口的
+支持范围。GUI 入口会从用于无窗口渲染的 EGL Vulkan ICD 切换到 NVIDIA GLX Vulkan ICD；
+模型、场景、输出和其余 GPU 环境仍与 headless rollout 相同。
+
 如果已有官方 Isaac Sim 5.1 Local Assets Pack，可避免逐文件下载：
 
 ```bash
@@ -98,7 +115,9 @@ ModelScope 或项目镜像。
 脚本不会代替用户接受条款，缺少该参数时会拒绝下载。
 
 输出写入 `.s4/outputs/eval/`。发布的仿真 checkpoint 是 350K；环境验收通过不代表该策略必然
-成功完成任务，成功率应以 rollout 的 `summary.json` 为准。
+成功完成任务，成功率应以 rollout 的 `summary.json` 为准。策略 gate 失败时评估器会正常写出
+结果并返回 0，此时 `complete=false`/`success=false` 是策略结果，不是容器成功标志；环境验收
+以 `verify sim` 和断网 smoke 为准。
 
 ## 训练环境
 
@@ -161,7 +180,7 @@ GPU 服务器 TCP 5555，禁止暴露到公网。
   S4 机器人和项目场景资产；消费端固定不可变 revision；
 - `.s4/artifacts/`：下载后的本地制品，不进 Git；
 - `.s4/outputs/`：采集、训练、评估输出，不进 Git；
-- `s4_smolvla_isaaclab/local_assets/`：NVIDIA 官方资产缓存，不进 Git/ModelScope；
+- `.s4/isaac-assets/`：NVIDIA 官方资产缓存，不进 Git/ModelScope；
 - `.env`、`ros_env.sh`、`cameras.yaml`：机器专用配置，不进 Git；
 - `training_state/`：不随教程发布；如需续训，单独使用私有归档。
 

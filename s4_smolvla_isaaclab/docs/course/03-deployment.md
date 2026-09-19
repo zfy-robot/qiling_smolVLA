@@ -85,7 +85,7 @@ flowchart TB
 | `s4_robot/arm_control.py` | 目标、平滑和关节控制辅助 |
 
 项目机器人和任务物体来自 ModelScope，只读覆盖挂载到源码的 `assets/`；NVIDIA warehouse、
-drawer 和纹理由官方资产 lock 准备到本地 `local_assets/isaac/5.1`。代码只引用容器路径，不
+drawer 和纹理由官方资产 lock 准备到本地 `.s4/isaac-assets/5.1`。代码只引用容器路径，不
 记录维护者 home 路径。
 
 ### 6.3.3.2 专家控制器
@@ -288,7 +288,7 @@ Live 是双钥匙设计：robot YAML 中 `mode: live` 和 CLI `--live` 必须同
 | `.s4/artifacts` | `/artifacts` | 只读发布制品 |
 | `.s4/outputs` | `/workspace/outputs` | 可写实验、采集、训练 |
 | `.s4/cache` | `/workspace/cache` | 可写 Kit/XDG/Hub cache |
-| local Isaac assets | `/workspace/isaac-assets` | sim 只读 |
+| `.s4/isaac-assets` | `/workspace/isaac-assets` | NVIDIA 官方资产，sim 只读 |
 | `/dev/bus/usb` | 同路径 | robot RealSense |
 
 因此已有发布数据使用 `S4_DATA_ROOT=/artifacts/datasets`；创建新数据时必须显式改为

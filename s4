@@ -15,6 +15,106 @@ host_gid="${S4_HOST_GID:-$(id -g)}"
 export S4_HOST_UID="${host_uid}"
 export S4_HOST_GID="${host_gid}"
 
+require_writable_dir() {
+  local label="$1"
+  local path="$2"
+  if [[ -e "${path}" && ! -d "${path}" ]]; then
+    echo "[S4][MOUNT][FAIL] ${label} is not a directory: ${path}" >&2
+    return 1
+  fi
+  mkdir -p "${path}"
+  if [[ ! -w "${path}" ]]; then
+    cat >&2 <<EOF
+[S4][MOUNT][FAIL] ${label} is not writable by uid=${host_uid}: ${path}
+This is usually a bind directory previously created by the Docker daemon.
+Repair this directory's ownership or choose a user-owned path, then retry.
+For the Isaac cache, the recommended .env setting is:
+  S4_ISAAC_ASSETS_DIR=./.s4/isaac-assets
+EOF
+    return 1
+  fi
+}
+
+require_dir() {
+  local label="$1"
+  local path="$2"
+  if [[ -e "${path}" && ! -d "${path}" ]]; then
+    echo "[S4][MOUNT][FAIL] ${label} is not a directory: ${path}" >&2
+    return 1
+  fi
+  mkdir -p "${path}"
+}
+
+select_isaac_asset_root() {
+  if [[ -n "${S4_ISAAC_ASSETS_DIR:-}" ]]; then
+    return
+  fi
+  local preferred="./.s4/isaac-assets"
+  local legacy="./s4_smolvla_isaaclab/local_assets/isaac"
+  local marker="5.1/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+  if [[ ! -f "${preferred}/${marker}" && -f "${legacy}/${marker}" ]]; then
+    export S4_ISAAC_ASSETS_DIR="${legacy}"
+    echo "[S4][MOUNT] reusing legacy Isaac asset cache: ${legacy}"
+  else
+    export S4_ISAAC_ASSETS_DIR="${preferred}"
+  fi
+}
+
+prepare_runtime_mounts() {
+  select_isaac_asset_root
+  local isaac_assets="${S4_ISAAC_ASSETS_DIR}"
+  # Runtime services consume artifacts and Isaac assets read-only.  Existing
+  # caches may intentionally be owned by the UID used by an earlier container.
+  require_dir "artifact root" .s4/artifacts
+  require_dir "artifact asset source" .s4/artifacts/assets
+  require_writable_dir "output root" .s4/outputs
+  require_writable_dir "runtime cache" .s4/cache
+  require_dir "Isaac asset root" "${isaac_assets}"
+  # ModelScope assets are mounted over this ignored directory.  Docker cannot
+  # create the nested target after the repository itself is mounted read-only.
+  require_dir "project asset mountpoint" s4_smolvla_isaaclab/assets
+}
+
+prepare_modelscope_mounts() {
+  prepare_runtime_mounts
+  require_writable_dir "artifact root" .s4/artifacts
+  require_writable_dir "artifact asset source" .s4/artifacts/assets
+  require_writable_dir "Isaac asset root" "${S4_ISAAC_ASSETS_DIR}"
+  require_writable_dir "ModelScope home" .s4/modelscope/download-home
+  require_writable_dir "ModelScope cache" .s4/modelscope/cache
+}
+
+prepare_x11_authority() {
+  if [[ -z "${DISPLAY:-}" ]]; then
+    echo "[S4][GUI][FAIL] DISPLAY is unset. Run sim-gui from a local graphical session." >&2
+    return 1
+  fi
+  if [[ ! -S /tmp/.X11-unix/X${DISPLAY##*:} && ! -d /tmp/.X11-unix ]]; then
+    echo "[S4][GUI][FAIL] host X11 socket is unavailable: /tmp/.X11-unix" >&2
+    return 1
+  fi
+  if ! command -v xauth >/dev/null 2>&1; then
+    echo "[S4][GUI][FAIL] xauth is required on the host (Ubuntu: sudo apt install xauth)." >&2
+    return 1
+  fi
+
+  local records authority_file
+  # GDM commonly exposes a readable but deliberately non-writable authority
+  # file.  `-i` permits the read-only lookup without trying to lock it.
+  records="$(xauth -i nlist "${DISPLAY}" 2>/dev/null || true)"
+  if [[ -z "${records}" ]]; then
+    echo "[S4][GUI][FAIL] no X11 authorization cookie found for DISPLAY=${DISPLAY}." >&2
+    echo "Run this command inside the logged-in desktop session, not a plain remote shell." >&2
+    return 1
+  fi
+  require_writable_dir "GUI cache" .s4/cache/gui
+  authority_file="$(pwd)/.s4/cache/gui/xauthority-${host_uid}"
+  install -m 600 /dev/null "${authority_file}"
+  printf '%s\n' "${records}" | sed -e 's/^..../ffff/' | xauth -f "${authority_file}" nmerge -
+  export S4_GUI_XAUTHORITY="${authority_file}"
+  echo "[S4][GUI] DISPLAY=${DISPLAY} using private X11 cookie ${authority_file}"
+}
+
 artifact_revision() {
   python3 - <<'PY'
 from pathlib import Path
@@ -99,6 +199,7 @@ Usage: ./s4 COMMAND [ARG]
   rollout sim-smoke-offline Run the same smoke with container networking disabled.
   rollout sim [ARGS...]     Run the normal deterministic simulation rollout.
   rollout sim-offline       Run one full deterministic episode with networking disabled.
+  rollout sim-gui [ARGS...] Run a deterministic rollout in an Isaac Sim X11 window.
   train policy-smoke        Run one isolated single-step GPU training smoke test.
   shell SERVICE             Open a shell in policy, robot or sim.
   compose ...               Pass remaining arguments to docker compose.
@@ -113,15 +214,15 @@ case "${1:-}" in
   setup)
     set_name="${2:-tutorial_all}"
     revision="${S4_MODELSCOPE_REVISION:-$(artifact_revision)}"
-    mkdir -p .s4/artifacts .s4/modelscope/download-home .s4/modelscope/cache
+    prepare_modelscope_mounts
     exec docker compose --profile setup run --rm \
       --user "${host_uid}:${host_gid}" \
       artifacts "${set_name}" --local-dir /artifacts --revision "${revision}"
     ;;
   setup-isaac-assets)
     source_arg="${2:-${S4_ISAAC_ASSET_SOURCE_DIR:-}}"
-    assets_arg="${S4_ISAAC_ASSETS_DIR:-./s4_smolvla_isaaclab/local_assets/isaac}"
-    mkdir -p "${assets_arg}" .s4/outputs .s4/cache
+    prepare_modelscope_mounts
+    assets_arg="${S4_ISAAC_ASSETS_DIR}"
     assets_dir="$(cd "${assets_arg}" && pwd)"
     export S4_ISAAC_ASSETS_DIR="${assets_dir}"
     if [[ -z "${source_arg}" ]]; then
@@ -180,6 +281,7 @@ case "${1:-}" in
     ;;
   verify)
     target="${2:-}"
+    prepare_runtime_mounts
     case "${target}" in
       sim)
         mkdir -p .s4/cache/xdg-runtime
@@ -216,7 +318,7 @@ case "${1:-}" in
   rollout)
     target="${2:-}"
     shift 2 || true
-    mkdir -p .s4/outputs .s4/cache
+    prepare_runtime_mounts
     case "${target}" in
       sim-smoke)
         exec docker compose --profile sim run --rm --no-deps sim \
@@ -239,12 +341,25 @@ case "${1:-}" in
           bash run.sh rollout --headless --deterministic --episodes 1 \
           --disposable-process "$@"
         ;;
+      sim-gui)
+        prepare_x11_authority
+        exec docker compose --profile sim run --rm --no-deps \
+          -e DISPLAY="${DISPLAY}" \
+          -e XAUTHORITY=/tmp/s4-xauthority \
+          -e QT_X11_NO_MITSHM=1 \
+          -e VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json \
+          -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+          -v "${S4_GUI_XAUTHORITY}:/tmp/s4-xauthority:ro" \
+          sim bash run.sh rollout --deterministic --episodes 1 \
+          --disposable-process "$@"
+        ;;
       *) echo "Unknown rollout target: ${target:-<missing>}" >&2; exit 2 ;;
     esac
     ;;
   train)
     target="${2:-}"
     shift 2 || true
+    prepare_runtime_mounts
     case "${target}" in
       policy-smoke)
         run_stamp="$(date -u +%Y%m%dT%H%M%SZ)_$$"
@@ -289,6 +404,7 @@ case "${1:-}" in
     ;;
   shell)
     target="${2:-}"
+    prepare_runtime_mounts
     case "${target}" in
       sim) exec docker compose --profile sim run --rm sim bash ;;
       policy) exec docker compose --profile train run --rm policy bash ;;

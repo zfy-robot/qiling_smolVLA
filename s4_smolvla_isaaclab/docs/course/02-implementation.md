@@ -139,8 +139,10 @@ sequenceDiagram
 - `success` 表示最终物体满足任务空间判定；
 - 二者可以不同。
 
-v0.1.0 的完整环境 episode 为 `complete=true`、`success=false`。这证明链路可运行，但不证明
-350K policy 已成功完成任务。
+发布验收中的完整环境 episode 为 `complete=true`、`success=false`。在后续干净 clone 复验中，
+同一 checkpoint 也出现过抽屉 gate timeout，结果为 `complete=false`、`success=false`，但评估器
+正常返回并保存 summary。GPU 物理仿真和策略结果不能由进程退出码替代：`verify sim` 与断网
+smoke 判断环境是否可运行，`complete` 判断计划是否走完，`success` 判断任务是否完成。
 
 ### 6.2.2.7 仿真操作顺序
 
@@ -157,6 +159,17 @@ v0.1.0 的完整环境 episode 为 `complete=true`、`success=false`。这证明
 ./s4 rollout sim-smoke-offline
 ./s4 rollout sim-offline
 ```
+
+本地桌面需要观察场景时运行：
+
+```bash
+./s4 rollout sim-gui
+```
+
+`sim-gui` 使用与 headless 相同的镜像、资产、checkpoint 和输出目录，不传 `--headless`，并
+把 Vulkan ICD 从 headless EGL 切换为 NVIDIA GLX。入口通过私有 X11 cookie 授权容器访问宿主
+窗口，不需要执行不安全的 `xhost +`。宿主必须具有
+本地 X11/XWayland 会话、已设置的 `DISPLAY` 和 `xauth`；远程无桌面服务器继续使用 headless。
 
 复现已发布数据的一步训练：
 

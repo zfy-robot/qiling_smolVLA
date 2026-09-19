@@ -1,6 +1,6 @@
 # S4 SmolVLA 项目清单与职责边界
 
-本文描述 v0.1.0 当前实现，不是迁移计划。不可变版本、digest 和验证结果以
+本文描述 v0.1.1 当前实现，不是迁移计划。不可变版本、digest 和验证结果以
 `release/manifest.yaml` 为准，持续进度以 `PROJECT_STATUS.md` 为准。
 
 ## 发布物
@@ -103,7 +103,7 @@ lerobot/                            # submodule
 - `.s4/artifacts/`：从 ModelScope 下载，只读挂载给运行容器；
 - `.s4/outputs/`：采集、转换、训练和评估输出；
 - `.s4/cache/`：Kit、XDG、模型和运行缓存；
-- `local_assets/isaac/5.1/`：用户从 NVIDIA 官方取得的资产，不再分发；
+- `.s4/isaac-assets/5.1/`：用户从 NVIDIA 官方取得的资产，不再分发；
 - `training_state/`：仅用于内部续训，不属于 v0.1.0 教程发布；
 - `.env`、`ros_env.sh`、`cameras.yaml`：部署机器专用，不进 Git。
 

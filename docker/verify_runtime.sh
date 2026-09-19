@@ -85,7 +85,7 @@ if [[ "$run_train" == true ]]; then
 fi
 if [[ "$run_rollout" == true ]]; then
     require_path "$isaaclab_root/isaaclab.sh"
-    require_path "${S4_SCENE_ASSET_ROOT:-$project_root/local_assets/isaac/5.1}/Isaac/Environments/Simple_Warehouse/warehouse.usd"
+    require_path "${S4_SCENE_ASSET_ROOT:-$(dirname "$project_root")/.s4/isaac-assets/5.1}/Isaac/Environments/Simple_Warehouse/warehouse.usd"
     require_path "${S4_ROBOT_ASSET_ROOT:-$project_root/assets/my_robot}/urdf/s4_40dof_merged.urdf"
     require_path "${S4_PROJECT_SCENE_ASSET_ROOT:-$project_root/assets/scenes}/Pill_Bottle.usdz"
     require_path "$rollout_checkpoint/config.json"

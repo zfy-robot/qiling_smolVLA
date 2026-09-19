@@ -5,7 +5,7 @@
 | 类别 | 本地位置 | 正式来源 | 发布方式 |
 |---|---|---|---|
 | S4 机器人、LinkerHand O6、项目场景 | `assets/` | ModelScope `assets/` | 按 revision 下载并只读挂载 |
-| NVIDIA Isaac Sim 5.1 USD/材质/纹理 | `local_assets/isaac/` | NVIDIA 官方资产包/CDN | 用户从 NVIDIA 获取，本地生成最小闭包 |
+| NVIDIA Isaac Sim 5.1 USD/材质/纹理 | `.s4/isaac-assets/` | NVIDIA 官方资产包/CDN | 用户从 NVIDIA 获取，本地生成最小闭包 |
 
 ## 项目资产
 
@@ -33,7 +33,7 @@ LinkerHand O6 来源是 Apache-2.0 的
 
 ## NVIDIA Isaac 资产
 
-`local_assets/` 不进入 Git、ModelScope 或 Docker image。NVIDIA 说明 Isaac Sim 的 3D 模型和
+`.s4/isaac-assets/` 不进入 Git、ModelScope 或 Docker image。NVIDIA 说明 Isaac Sim 的 3D 模型和
 纹理属于额外许可组件，并非随 Isaac Sim 源码一起采用 Apache-2.0。项目因此不二次分发。
 
 默认只从 NVIDIA 官方 CDN 下载项目锁定的 231 个文件（约 501 MiB），逐文件校验 SHA256：
@@ -51,9 +51,9 @@ LinkerHand O6 来源是 Apache-2.0 的
 ```
 
 `prepare_local_assets.py` 按项目依赖闭包复制所需 USD、MDL 和纹理，并生成包含逐文件大小与
-SHA256 的 `local_assets/isaac/5.1/manifest.json`。生成服务仅在这一步给目标目录写权限；
+SHA256 的 `.s4/isaac-assets/5.1/manifest.json`。生成服务仅在这一步给目标目录写权限；
 正常的 `sim` 服务通过 `S4_ISAAC_ASSETS_DIR` 将它只读挂载。官方完整资产包可保存在项目外，
 闭包生成并校验完成后不再参与运行，也不应提交到本项目。
 
-已有正确的 `local_assets/isaac/5.1` 时不需要重新生成。本项目当前闭包约 501 MiB；它只在
+已有正确的 `.s4/isaac-assets/5.1` 时不需要重新生成。本项目当前闭包约 501 MiB；它只在
 每台机器首次准备，Docker 重建不会复制或重新下载它。

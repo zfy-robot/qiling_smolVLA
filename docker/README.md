@@ -29,8 +29,7 @@
 - ModelScope 制品下载到宿主 `.s4/artifacts/`，只读挂载到 `/artifacts`；
 - 评估、训练和采集输出写到宿主 `.s4/outputs/`；
 - 缓存写到宿主 `.s4/cache/`；
-- NVIDIA Isaac 资产从官方来源取得，位于被忽略的
-  `s4_smolvla_isaaclab/local_assets/isaac/5.1/`；
+- NVIDIA Isaac 资产从官方来源取得，位于 `.s4/isaac-assets/5.1/`；
 - `.env`、相机序列号、ROS/DDS 网卡和现场配置只保留在部署机器。
 
 不再使用 Docker named volume 隐藏数据，也不从镜像初始化数据集/checkpoint。删除容器不会删除
@@ -77,6 +76,7 @@ ModelScope/GHCR 中：
 ./s4 verify sim
 ./s4 rollout sim-smoke-offline
 ./s4 rollout sim-offline
+# 本地 X11/XWayland 桌面可选：./s4 rollout sim-gui
 
 ./s4 verify policy
 ./s4 train policy-smoke

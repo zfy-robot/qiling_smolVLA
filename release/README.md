@@ -13,8 +13,9 @@
    `images.publication_status` 改为正式状态，再创建 release commit/tag；
 6. 本地 `.env` 只决定挂载位置，不能覆盖 artifact 身份和版本。
 
-`v0.1.0` 的验收范围是当前 RTX 4090 工作站上的完整本机验证。异机干净 clone 与物理机器人
-动作验收因工期延期，并明确记录在 manifest 和 Release Notes 中，不应被表述为已通过。
+`v0.1.1` 在 `v0.1.0` 当前 RTX 4090 工作站完整验证基线上，又于 2026-09-19 在同一工作站的
+独立目录完成 tag 干净 clone 消费复验，并验证本地 X11 GUI rollout；这不等于另一台物理设备
+的兼容性验证。异机复现与物理机器人动作验收仍明确延期，不应被表述为已通过。
 
 旧的单体大镜像已退役。发布和使用只允许根目录 `./s4`、`compose.yaml` 以及
 `docker/{sim,policy,robot,artifacts}/Dockerfile`，CI 会拒绝旧入口重新进入 Git。
@@ -23,7 +24,7 @@
 
 ```bash
 docker login ghcr.io -u <PAT所属的个人GitHub用户名>
-scripts/release/publish_ghcr_images.sh 0.1.0 robot
+scripts/release/publish_ghcr_images.sh 0.1.1 robot
 ```
 
 GHCR 当前要求 classic PAT；fine-grained PAT 不适用于这个登录流程。登录用户名必须是创建 PAT
@@ -32,8 +33,8 @@ GHCR 当前要求 classic PAT；fine-grained PAT 不适用于这个登录流程�
 确认 package 属于 `zfy-robot`、关联到代码仓库并设为 public 后，再推其余两个：
 
 ```bash
-scripts/release/publish_ghcr_images.sh 0.1.0 policy
-scripts/release/publish_ghcr_images.sh 0.1.0 sim
+scripts/release/publish_ghcr_images.sh 0.1.1 policy
+scripts/release/publish_ghcr_images.sh 0.1.1 sim
 ```
 
 发布脚本默认最多重试三次；网络中断后会复用 registry 中已存在的内容寻址 layer。可用

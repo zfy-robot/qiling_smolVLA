@@ -1,6 +1,6 @@
 # 复现与部署
 
-本文说明 v0.1.0 模块化发布方式。旧单体 Docker 镜像已经退役，不再支持从镜像内复制数据、
+本文说明 v0.1.1 模块化发布方式。旧单体 Docker 镜像已经退役，不再支持从镜像内复制数据、
 named volume 初始化或 `docker/run.sh` 启动。
 
 ## 1. 可复现对象
@@ -34,7 +34,7 @@ named volume 初始化或 `docker/run.sh` 启动。
 ```bash
 git clone --recurse-submodules https://github.com/zfy-robot/qiling_smolVLA.git
 cd qiling_smolVLA
-git checkout v0.1.0
+git checkout v0.1.1
 git submodule update --init --recursive
 cp .env.example .env
 
@@ -113,6 +113,15 @@ Dockerfile 分别位于 `docker/sim/`、`docker/policy/`、`docker/robot/`。宿
 checkpoint processor 和 RGB camera。完整 episode 输出在 `.s4/outputs/eval/`；环境通过不代表
 350K 策略一定成功，成功率以 summary 为准。
 
+本地 Linux 桌面需要观察 Isaac Sim 窗口时，安装宿主 `xauth` 后执行：
+
+```bash
+./s4 rollout sim-gui
+```
+
+该入口使用私有 X11 cookie，不需要 `xhost +`，并为有窗口渲染选择 NVIDIA GLX Vulkan ICD。
+它要求当前终端具有有效 `DISPLAY` 和 X11/XWayland 会话；无桌面服务器继续使用 headless 命令。
+
 ## 8. 训练复现
 
 ```bash
@@ -162,7 +171,7 @@ docker compose --profile real up policy-server
 | `.s4/artifacts/` | 可重下载发布制品 | 可清理后重建 |
 | `.s4/outputs/` | 唯一实验/采集输出 | 必须备份 |
 | `.s4/cache/` | Kit/XDG/运行缓存 | 可重建，离线运行前保留 |
-| `local_assets/isaac/` | NVIDIA 官方资产 | 按许可本地保存 |
+| `.s4/isaac-assets/` | NVIDIA 官方资产 | 按许可本地保存 |
 | `.env` | 机器配置 | 私密配置管理，不提交 |
 
 不要执行来源不明的递归删除。清理前先确认 `.s4/outputs/` 已备份。
@@ -174,6 +183,8 @@ docker compose --profile real up policy-server
 | submodule 目录为空 | `git submodule update --init --recursive` |
 | GHCR 拉取 401 | package 是否 Public；应按 manifest digest 拉取 |
 | ModelScope 下载失败 | revision、代理与 `.s4/modelscope/` 权限 |
+| bind mount 是 `root`/`nobody` | 使用新默认 `.s4/isaac-assets`；`./s4` 会在 Compose 前检查权限 |
+| GUI 没有窗口 | 从本地桌面终端运行，检查 `DISPLAY`、`xauth` 和 `/tmp/.X11-unix` |
 | CUDA 通过但 Vulkan 失败 | host driver、graphics capability、DRM node、Container Toolkit |
 | Kit 离线缺 extension | 执行带许可参数的 `setup-kit-extensions` |
 | 场景材质/纹理缺失 | Isaac asset lock 是否完整 |
@@ -183,6 +194,7 @@ docker compose --profile real up policy-server
 
 ## 12. 验收定义
 
-v0.1.0 发布验收包括本机三个镜像的构建与运行、ModelScope/GHCR 公共可访问性和 digest、CI、
-文档与旧单体入口移除。其他设备复现和实体机器人 live motion 当前明确暂缓，完成后另行记录
-兼容性矩阵，不能回填为本次已验证事实。
+v0.1.1 发布验收包括本机三个固定镜像的运行、独立干净 clone 消费路径、ModelScope/GHCR
+公共可访问性和 digest、headless/offline/GUI 仿真、训练 smoke、真机策略协议、robot 无硬件
+检查与 CI。另一台物理设备复现和实体机器人 live motion 当前明确暂缓，完成后另行记录兼容性
+矩阵，不能回填为本次已验证事实。

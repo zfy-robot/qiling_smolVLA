@@ -103,7 +103,7 @@ artifacts:
     lock_sha256: 2344db528e3cbf0c22fa0545432ef122d1b3e40dfaa6417a1aa2b876637e8afb
     file_count: 231
     total_bytes: 523528659
-    local_manifest: s4_smolvla_isaaclab/local_assets/isaac/5.1/manifest.json
+    local_manifest: .s4/isaac-assets/5.1/manifest.json
     redistribution_approved: false
     mount: assets/isaac/5.1
 
